@@ -1,4 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import i18n from '../i18n/index.ts';
+
+// 本套件断言过程行渲染出来的**文案**。文案走 i18n 后，jsdom 里 LanguageDetector
+// 会探到 en，断言就会因为语言而不是因为行为变红。钉住语言（同
+// src/components/filePreviewHost.test.tsx 先例）。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
+afterAll(async () => {
+  // i18next 是模块单例，别把语言留给下一个套件。
+  await i18n.changeLanguage('zh-CN');
+});
 
 // ChatComponents.tsx transitively imports api.ts which reads `window` at module
 // load. Provide the properties it needs BEFORE the component module is imported.
@@ -125,7 +137,8 @@ describe('AgentMessageBody live streaming bubble', () => {
     //   不需要拿「撑开明细」当进度信号。
     //   位置契约不变（Owner 2026-10-21）：过程行仍按原顺序穿插在正文之间。
     expect(html).toContain('data-process-state="running"');
-    expect(html).toContain('execution.processRun.runningTool');
+    // 断真实文案而不是 key：i18n 已初始化，断 key 只能证明「没翻译」。
+    expect(html).toContain('正在运行');
     expect(html).toContain('aria-expanded="false"');
     // 明细（思考正文 / 工具行）默认不在 DOM 里。
     expect(html).not.toContain('内心独白内容');
@@ -163,12 +176,12 @@ describe('AgentMessageBody live streaming bubble', () => {
 
     fireEvent.click(row());
     expect(row().getAttribute('aria-expanded')).toBe('true');
-    expect(container.textContent).toContain('execution.thinking');
+    expect(container.textContent).toContain('思考中');
     expect(detailRows()).toBeTruthy();
 
     fireEvent.click(row());
     expect(row().getAttribute('aria-expanded')).toBe('false');
-    expect(container.textContent).not.toContain('execution.thinking');
+    expect(container.textContent).not.toContain('思考中');
     expect(detailRows()).toBeNull();
   });
 
@@ -262,7 +275,7 @@ describe('ProcessRun — 折叠行的状态判定', () => {
   it('流式进行中 → running', async () => {
     const html = await render(completedTurn('running'), true);
     expect(html).toContain('data-process-state="running"');
-    expect(html).toContain('execution.processRun.state.running');
+    expect(html).toContain('执行中');
   });
 
   it('这轮结束后整条时间线折进顶部一行，气泡里不再有过程行', async () => {
@@ -542,7 +555,7 @@ describe('AgentMessageBody — 顶部一行的展开 / 收起', () => {
     expect(container.textContent).toContain('先说说思路');
     expect(btn().getAttribute('aria-expanded')).toBe('true');
     // 展开后过程行回来，失败次数写在文字里；但**绝不出现警告三角**。
-    expect(container.textContent).toContain('execution.processRun.errors');
+    expect(container.textContent).toContain('1 个失败');
     expect(container.innerHTML).not.toContain('10.29 3.86');
     // 两级展开：展开顶部行返回的是过程行的**收起态**，思考正文要再点一次过程行
     // 才出来。这里钉死「展开顶部行不等于把所有明细一次性铺满」。

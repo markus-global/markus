@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { SemanticMemorySearch, type EmbeddingProvider, type VectorStore } from '../src/memory/semantic-search.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { SemanticMemorySearch, OpenAIEmbeddingProvider, type EmbeddingProvider, type VectorStore } from '../src/memory/semantic-search.js';
 import type { MemoryEntry } from '../src/memory/types.js';
 
 function wordSetEmbedding(text: string): number[] {
@@ -240,5 +240,50 @@ describe('LocalVectorStore', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('OpenAIEmbeddingProvider deadline', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * Semantic recall is awaited on a turn's critical path, and every caller
+   * degrades to substring search when it throws. That degradation is only
+   * reachable if the request itself can end: a black-holed endpoint used to
+   * stall the turn for as long as the socket stayed open (measured 21s for two
+   * calls). The stub below NEVER settles on its own — only the deadline can end
+   * it, so dropping `signal` from the fetch makes this test hang and go red.
+   */
+  it('aborts a hanging embeddings request rather than stalling the caller', async () => {
+    let sawSignal: AbortSignal | undefined;
+    vi.stubGlobal('fetch', (_url: string, init?: { signal?: AbortSignal }) => {
+      sawSignal = init?.signal;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('embeddings deadline exceeded')));
+      });
+    });
+
+    const provider = new OpenAIEmbeddingProvider({ apiKey: 'sk-test', timeoutMs: 50 });
+    await expect(provider.embed('hello')).rejects.toThrow(/deadline exceeded/);
+    expect(sawSignal).toBeDefined();
+  });
+
+  it('bounds the request even when the caller does not pass a timeout', async () => {
+    let sawSignal: AbortSignal | undefined;
+    vi.stubGlobal('fetch', (_url: string, init?: { signal?: AbortSignal }) => {
+      sawSignal = init?.signal;
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ data: [{ embedding: [0.1, 0.2], index: 0 }] }),
+      });
+    });
+
+    const provider = new OpenAIEmbeddingProvider({ apiKey: 'sk-test' });
+    await provider.embed('hello');
+    // A default-constructed provider must still carry a deadline.
+    expect(sawSignal).toBeDefined();
+    expect(sawSignal!.aborted).toBe(false);
   });
 });

@@ -30,6 +30,20 @@ export interface SemanticSearchResult {
 }
 
 /**
+ * Upper bound for one embeddings request.
+ *
+ * Semantic recall is an OPTIONAL enhancement, but it is awaited on the critical
+ * path of a turn (`ContextEngine.retrieveRelevantMemories()`), and every caller
+ * already degrades on failure — that catch falls through to substring search.
+ * Without a deadline the degradation was unreachable: a slow or black-holed
+ * endpoint stalled the turn for as long as the socket stayed open. Measured
+ * 2026-11-19: two unbounded `api.openai.com/v1/embeddings` fetches added 21s to
+ * a single delegated-message turn. A normal embed of a small batch is <1s, so
+ * 5s is generous headroom while keeping the worst-case turn delay bounded.
+ */
+const EMBEDDING_TIMEOUT_MS = 5_000;
+
+/**
  * OpenAI-compatible embedding provider.
  * Works with OpenAI, Azure OpenAI, and any compatible API.
  */
@@ -38,12 +52,14 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private apiKey: string;
   private baseUrl: string;
   private model: string;
+  private timeoutMs: number;
 
-  constructor(opts: { apiKey: string; baseUrl?: string; model?: string; dimensions?: number }) {
+  constructor(opts: { apiKey: string; baseUrl?: string; model?: string; dimensions?: number; timeoutMs?: number }) {
     this.apiKey = opts.apiKey;
     this.baseUrl = opts.baseUrl ?? 'https://api.openai.com/v1';
     this.model = opts.model ?? 'text-embedding-3-small';
     this.dimensions = opts.dimensions ?? 1536;
+    this.timeoutMs = opts.timeoutMs ?? EMBEDDING_TIMEOUT_MS;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -63,6 +79,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         input: texts,
         dimensions: this.dimensions,
       }),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     if (!resp.ok) {

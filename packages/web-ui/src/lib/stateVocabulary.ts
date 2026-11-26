@@ -81,7 +81,8 @@ export const BLOCKED_REASON_KEY: Readonly<Record<BlockedReason, string>> = {
 };
 
 /**
- * 两类原因的视觉语气：`deps` 中性（灰，不是警告）、`hold` 警示（红）。
+ * 三类原因的视觉语气：`deps` / `workflow` 中性（灰 —— 引擎自己会恢复，无人需动手），
+ * `hold` 卡住橙（需要人推；与「等你」的紫、「出错」的红分开）。
  *
  * 与文案同处一个文件是刻意的：颜色和字是同一句话的两个部分，
  * 拆到两个模块里就会出现「灰色已挂起」这种自相矛盾的组合。
@@ -149,6 +150,23 @@ export function taskStatusPresentation(
     return { label, tone: BLOCKED_TONE[blockedReasonOf(blockedReason)] };
   }
   return { label, tone: null };
+}
+
+/**
+ * 闭态状态 chip（列表行 / 看板卡 / 详情头共用这一个写者）。
+ *
+ * blocked 且带缘由 → 返回 `{label, cls}`；其余 → `null`，调用方退回自己的静态徽章
+ * （静态徽章是「切换状态菜单」的通用词，见 taskStatusLabel 的注释）。
+ * 字与色必须来自同一次 presentation：只拿 label 再自己配色就是第二写者。
+ */
+export function taskStatusChip(
+  status: string | null | undefined,
+  t: TFunction,
+  blockedReason?: string | null,
+): { label: string; cls: string } | null {
+  if (status !== 'blocked' || blockedReason === undefined || blockedReason === null) return null;
+  const p = taskStatusPresentation(status, t, blockedReason);
+  return { label: p.label, cls: p.tone?.chip ?? TONE.neutral.chip };
 }
 
 /** 运行时注意力：三个值一一对应一张词表。 */

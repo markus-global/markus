@@ -1,4 +1,6 @@
 import { app, BrowserWindow, shell, dialog, session } from 'electron';
+import { setChromiumProxyApplier } from '@markus/shared';
+import { applyEmbeddedBrowserProxy } from './embedded-browser.js';
 import { join } from 'node:path';
 import { startMarkusBackend, shutdownBackend } from './backend.js';
 import { createMainWindow, getMainWindow, restoreOrCreateWindow } from './window.js';
@@ -10,6 +12,7 @@ import { registerProtocol, handleSecondInstanceArgs, consumePendingLaunchUrl, se
 import { startNotificationBridge, stopNotificationBridge } from './notifications.js';
 import { ensureWindowsShortcuts } from './windows-shortcuts.js';
 import { setAppQuitting } from './app-lifecycle.js';
+import { decideBackendAction } from './version-compare.js';
 
 app.setName('Markus');
 
@@ -18,7 +21,6 @@ const IS_MAS = process.env['MARKUS_MAS'] === 'true';
 interface HealthResult {
   running: boolean;
   version?: string;
-  sameVersion: boolean;
 }
 
 const APP_VERSION: string = (() => {
@@ -26,7 +28,7 @@ const APP_VERSION: string = (() => {
 })();
 
 async function probeHealth(url: string): Promise<HealthResult> {
-  const none: HealthResult = { running: false, sameVersion: false };
+  const none: HealthResult = { running: false };
   try {
     const http = await import('node:http');
     return await new Promise<HealthResult>((resolve) => {
@@ -37,7 +39,7 @@ async function probeHealth(url: string): Promise<HealthResult> {
           try {
             const data = JSON.parse(body);
             if (data.status === 'ok') {
-              resolve({ running: true, version: data.version, sameVersion: data.version === APP_VERSION });
+              resolve({ running: true, version: data.version });
               return;
             }
           } catch { /* not Markus */ }
@@ -138,7 +140,12 @@ app.whenReady().then(async () => {
 
   registerProtocol();
   setupIpcHandlers();
-  // NSIS upgrades often skip desktop shortcuts — create them from the app.
+  // One "network proxy" setting, one meaning: drive the embedded browser's session
+  // from the same egress policy the backend installs for fetch/undici. Without this
+  // the right panel kept routing direct while every agent request went via proxy
+  // (and vice versa after a change) — the setting looked applied but only half was.
+  // Registered here, not at module load: setProxy needs `app` to be ready.
+  setChromiumProxyApplier(applyEmbeddedBrowserProxy);
   void ensureWindowsShortcuts();
 
   // Handle file downloads (e.g. Chrome extension zip from Settings)
@@ -184,7 +191,9 @@ app.whenReady().then(async () => {
   }
   if (!startHidden) win.show();
 
-  // Start backend (or reuse an existing instance on the same port)
+  // Start backend — or reuse the running server when it is equal/newer.
+  // Takeover rule lives in version-compare.ts: only a provably OLDER server
+  // is stopped; equal/newer/unknown versions are always reused.
   const isZh = app.getLocale().startsWith('zh');
   const t = (en: string, zh: string) => isZh ? zh : en;
 
@@ -197,14 +206,15 @@ app.whenReady().then(async () => {
   try {
     const port = 8056;
     const health = await probeHealth(backendUrl);
+    const action = decideBackendAction(health, APP_VERSION);
 
-    if (health.running && health.sameVersion) {
-      console.log('[main] reusing existing Markus server (same version:', health.version, ')');
+    if (action === 'reuse') {
+      console.log('[main] reusing existing Markus server (version:', health.version, ', app:', APP_VERSION, ')');
       updateSplash(t('Connecting to running server...', '正在连接已运行的服务...'));
       setProtocolBackendUrl(backendUrl);
       backendReady = true;
     } else {
-      if (health.running) {
+      if (action === 'takeover') {
         console.log('[main] old Markus server detected (', health.version, '→', APP_VERSION, '), restarting...');
         updateSplash(t('Restarting server (upgrading)...', '正在重启服务（升级中）...'));
         await stopPortProcess(port);

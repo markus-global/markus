@@ -1,6 +1,19 @@
 export { OrganizationService } from './org-service.js';
+export { SqliteFactService, FACT_PREDICATE_LIST, type FactDb, type FactServiceOptions } from './fact-service.js';
 export { TaskService } from './task-service.js';
+export {
+  WorkUnitService,
+  WORK_UNIT_REF,
+  type WorkUnitPort,
+  type WorkUnitEvent,
+  type WorkStatusReport,
+} from './work-unit-service.js';
 export { APIServer } from './api-server.js';
+export {
+  ExternalSourceService,
+  type ExternalSourceServiceDeps,
+  type IngestOutcome,
+} from './external-source-service.js';
 export { WSBroadcaster } from './ws-server.js';
 export { HITLService, isAnswerableByTap, assessResponseCompleteness, type NotificationPriority } from './hitl-service.js';
 export type { ApprovalRequest, ApprovalResponse, Notification, IncompleteResponse } from './hitl-service.js';

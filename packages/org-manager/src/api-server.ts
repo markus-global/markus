@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, resolveJwtSecret, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
+import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus, isExternalIngressPolicy } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -48,6 +48,7 @@ import {
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
+import type { ExternalSourceService } from './external-source-service.js';
 import { persistChatImages } from './chat-attachments.js';
 import { getManifest } from '@markus/comms';
 import {
@@ -75,12 +76,14 @@ import {
   type InstanceChannelBinding,
   type InstanceStoreDeps,
 } from './instance-integrations.js';
-import { bucketedDirUsage } from './storage-usage.js';
+import { bucketedDirUsage, dirSizeAsync } from './storage-usage.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import { assessResponseCompleteness, type HITLService } from './hitl-service.js';
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
 import { leanChatMessage } from './message-lean.js';
+import { enqueueGatewayTaskReceipt } from './gateway-task-receipt.js';
+import { createWorklogEntityResolver } from './worklog-entity.js';
 import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
@@ -116,7 +119,8 @@ import { handleTasksRoutes } from './routes/tasks.js';
 import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
-import { AgentDelivery, newChainId } from './agent-delivery.js';
+import { AgentDelivery, newChainId, NULL_WORK_UNITS } from './agent-delivery.js';
+import { WorkUnitService, WORK_UNIT_REF } from './work-unit-service.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
 import {
   AgentConservator,
@@ -140,6 +144,7 @@ const PUBLIC_API_PREFIXES = [
   '/api/auth', // login / init / status / logout — must work before a session exists
   '/api/health', // liveness probe used by the desktop shell and CLI
   '/api/gateway', // external gateway — every branch verifies its own bearer token
+  '/api/webhooks', // C10-B external webhook entry — each source verifies its own config.token
   '/api/license', // desktop license refresh before a session exists
 ];
 
@@ -210,6 +215,9 @@ const ROLE_RULES: RoleRule[] = [
   { path: underPrefix('/api/system/maintenance'), minRole: 'admin' },
   // Per-user Hub tokens: every member manages their own.
   { path: underPrefix('/api/settings/hub-token'), minRole: 'member' },
+  // C10-B：外部信号源的自助面（GET/POST /api/external-sources、POST /api/external-sources/:id/toggle）
+  // —— 每个成员管**自己的**源；归属裁决在 ExternalSourceService（唯一写者），这里只声明门槛。
+  { path: underPrefix('/api/external-sources'), minRole: 'member' },
   { path: underPrefix('/api/settings'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'], minRole: 'admin' },
   { path: underPrefix('/api/oauth'), minRole: 'admin' },
 ];
@@ -438,9 +446,29 @@ const EMPTY_REMOTE_STATUS = {
  */
 export const DEFAULT_BIND_HOST = '0.0.0.0';
 
+/**
+ * 请求体硬上限（字节）。
+ *
+ * 为什么需要：`readBody` 是**不可信请求体进入内存的唯一关口**，而它原先无上限 ——
+ * 一个未登录的外部调用者就能把整个进程的内存吃满（markus 现在要给大量开源用户
+ * 部署，默认值即实际配置，不能指望运维去加反向代理）。
+ *
+ * 两条值分开，是因为两类入口的“合理大小”差两个量级：
+ *  - 平台内 API：UI 一次性提交的 JSON（批量导入/设置）可能不小，给 10 MB；
+ *  - `/api/webhooks/*`：对外公开、无会话、共享密钥就是全部凭据。外部系统需要投递的
+ *    只是一个事件信封，64 KB 足够；再大就是攻击面（提示注入 + 烧 token）。
+ */
+export const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
+export const WEBHOOK_MAX_BODY_BYTES = 64 * 1024;
+
+/** 按路径选上限 —— 唯一分派点，路由里不要再写第二份判断。 */
+export function maxBodyBytesForPath(path: string): number {
+  return path.startsWith('/api/webhooks/') ? WEBHOOK_MAX_BODY_BYTES : DEFAULT_MAX_BODY_BYTES;
+}
+
 export class APIServer {
   /**
-   * A2A 投递/回复的**唯一**执行点（docs/architecture/mailbox-system.md §11.1.1–§11.1.4）。
+   * A2A 投递/回复的**唯一**执行点（docs/architecture/a2a-communication.md §11.1.1–§11.1.4）。
    *
    * 惰性构造：依赖 storage / ws / agentManager，而这些在构造期未必都已就绪。
    * 所有"把消息交给另一个 agent"的路径都必须经它；所有"agent 在频道里说了一句"
@@ -469,11 +497,78 @@ export class APIServer {
           if (participants.length > 0) this.ws.sendToUsers(participants, event);
           else this.ws.broadcast(event);
         },
+        // 第七刀 C7-A：A2A 投递也产生 WU 身份（§16：一次投递 = 一个 WU，owner=发送方）。
+        // `transition` 在这里包成 service 的业务路径版（`tryTransition`）：记账失败
+        // 不得打断投递（观测设施不是故障点），矩阵错误照抛。
+        // 必填而非可选：没有 WU 服务的装配路径显式传 `NULL_WORK_UNITS`，让可选性
+        // 从调用点消失、变成这里一个看得见的决定。写成 `?` 的话，「没装配」和
+        // 「这条路本来就没有 WU」在类型上无法区分，整条链路静默跳过且没人发现。
+        workUnits: this.workUnits
+          ? {
+              ensure: (seed) => this.workUnits!.ensure(seed),
+              // C7-B：跨团队委派的父链 —— 读发送方 agent 本轮的 WU ref。
+              // 不抛：agent 不在内存（已停 / 冷启动）就不是「有回合」，显式 null。
+              turnWorkUnitRef: (agentId) => {
+                const manager = this.orgService.getAgentManager();
+                // C7-B：只把「agent 不在内存」这一种可识别情况当成 null；其余意外
+                // 照常抛 —— `try/catch { return null }` 会把「父链断了」micron成
+                // 「本来就没有父」，静默且不可察觉。
+                return manager.hasAgent(agentId) ? manager.turnWorkUnitRef(agentId) : null;
+              },
+              transition: (ref, to, opts) => this.workUnits!.tryTransition(ref, to as never, opts as never),
+            }
+          : NULL_WORK_UNITS,
       });
     }
     return this._delivery;
   }
   private _delivery?: AgentDelivery;
+
+  /**
+   * 第七刀 C7-A：WorkUnit 的唯一业务入口（惰性构造）。
+   *
+   * 未接线（无 storage / 无 workUnitRepo）时返回 `null` —— 所有生产者在
+   * `?.` 之后静默跳过，业务照常。这是「观测设施不得成为业务故障点」的落地：
+   * 没有 WU 是可知的降级，不是隐藏的崩溃。
+   */
+  private _workUnits?: WorkUnitService | null;
+  /** 僵尸 `running` 周期纠偏定时器（`setStorage()` 建立，`stop()` 清除）。 */
+  private workUnitReconcileTimer?: ReturnType<typeof setInterval>;
+  get workUnits(): WorkUnitService | null {
+    // 只缓存「有」，**绝不缓存「没有」**。
+    //
+    // 真实事故（2026-11-14）：`start.ts` 在 `setStorage()` 之前读了一次本 getter，
+    // 旧写法把当时的「还没有 storage」这个**时刻性答案**缓存成了永久 null，于是
+    // storage 接入后所有生产者（chat / task / a2a）仍然全部跳过，
+    // `work_units` 一行不写、且没有任何报错。
+    //
+    // 纪律：「暂时没有」不是事实。惰性装配的依赖晚到是常态，缺席不得被冻结成属性。
+    if (this._workUnits) return this._workUnits;
+    const repo = this.storage?.workUnitRepo;
+    if (!repo) return null;
+    this._workUnits = new WorkUnitService({
+      repo,
+      onEvent: (event) => {
+        // 事件 → 结构化日志：`work_unit.ensure_failed` 之类必须可计数，
+        // 而不是让人去 grep 一句自然语言。
+        if (event.type.endsWith('_failed')) {
+          log.warn('WorkUnit write failed (observation degraded, business continues)', {
+            event: event.type,
+            ref: event.ref,
+            itemId: event.itemId,
+            agentId: event.agentId,
+            error: event.error,
+          });
+        }
+      },
+    });
+    return this._workUnits;
+  }
+
+  /** 第七刀 C7-A：装配时注入唯一实例（未注入则按 storage 惰性自建）。 */
+  setWorkUnitService(service: WorkUnitService | null): void {
+    this._workUnits = service;
+  }
 
   static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
   /** Per-provider live key/model validation budget when a routing-candidates
@@ -1426,7 +1521,7 @@ export class APIServer {
             //  persisted to channel and the other party is auto-triggered).
             for (const peerId of peerAgentIds) {
               try {
-                // ── 投递 = mailbox item（唯一机制，见 docs/architecture/mailbox-system.md §11.1.1）
+                // ── 投递 = mailbox item（唯一机制，见 docs/architecture/a2a-communication.md §11.1.1）
                 //
                 // 旧实现在这里用 30 秒墙钟冷却 `continue` 掉「唤醒」：消息留在了
                 // channel_messages 里，但对方永远不会被唤醒，而 agent_send_message
@@ -1785,6 +1880,197 @@ export class APIServer {
     }
   }
 
+  /**
+   * C10-D：把本机组织对齐到它在 markus.global 的身份（幂等）。
+   *
+   * 为何要做：org_slug 是地址段 `<local>.<org>@markus.global` 的中间那段。没对齐时
+   * 本机拿的是本地占位 slug，hub 上拿的是 hub slug——同一个组织在两个世界里有两个
+   * 地址，用户复制哪个都可能解析不了。所以登录后以 hub 为准做一次镜像。
+   *
+   * 纪律：
+   * - 不替代主键：只写 organizations.hub_org_id，本地 id 与所有子表引用不动。
+   * - 幂等锚点：先认已绑 hub_org_id 的组织，再认从未绑过的，绝不新建组织。
+   * - 失败不阻断登录：本地可用是底线，对齐下次登录再补（写入本身就是幂等的）。
+   */
+  private async syncHubOrgIdentity(hubToken: string): Promise<void> {
+    const orgRepo = this.storage?.orgRepo;
+    if (!orgRepo?.bindHubOrg) return;
+
+    const res = await this.hubFetch(`${this.hubUrl}/api/orgs/mine`, {
+      headers: { Authorization: `Bearer ${hubToken}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) {
+      log.warn('hub org identity: /api/orgs/mine rejected', { status: res.status });
+      return;
+    }
+
+    const data = (await res.json()) as { orgs?: Array<{ id: string; slug?: string | null; role?: string }> };
+    const orgs = data.orgs ?? [];
+    // 拥有者优先：编辑/成员身份不该把别人的 slug 写到本机组织上。
+    const target = orgs.find((o) => o.role === 'owner') ?? orgs[0];
+    if (!target) return;
+
+    const local = orgRepo.listOrgs() as Array<{ id: string; orgSlug: string | null; hubOrgId: string | null }>;
+    const bound =
+      local.find((o) => o.hubOrgId === target.id) ?? local.find((o) => !o.hubOrgId) ?? local[0];
+    if (!bound) return;
+
+    const r = orgRepo.bindHubOrg(bound.id, target.id, target.slug ?? null) as {
+      ok: boolean;
+      orgSlug?: string | null;
+      slugSkipped?: string;
+    };
+    if (!r.ok) {
+      log.warn('hub org identity: local org missing', { orgId: bound.id });
+    } else if (r.slugSkipped) {
+      // 不静默：slug 没同步是一个用户可见的事实（他会在 hub 看到 A、本机看到 B）。
+      log.warn('hub org identity: slug not synced', {
+        orgId: bound.id,
+        reason: r.slugSkipped,
+        hubSlug: target.slug ?? null,
+        localSlug: bound.orgSlug,
+      });
+    } else if (r.orgSlug !== bound.orgSlug) {
+      log.info('hub org identity: slug synced', {
+        orgId: bound.id,
+        from: bound.orgSlug,
+        to: r.orgSlug,
+        hubOrgId: target.id,
+      });
+    }
+  }
+
+  /**
+   * C10-D：组织余额的唯一读取口（`org_usage` 工具 / 未来的 UI 都走这里）。
+   *
+   * 三条纪律：
+   * 1. **不本地重算**：`remainingCu` 的单一实现是 hub 的 `helpers/org-usage`；
+   *    这里只搬运，绝不写第二份「月配额+购买+赠送-已用」。
+   * 2. **0 与「不知道」必须可区分**：失败返回有名字的原因 + 下一步，绝不返回 0。
+   * 3. **组织优先按 hub_org_id 对齐**：同一个用户可能在 hub 有多个组织，只有
+   *    `hub_org_id` 才说明「本机这个组织」对应哪一个。
+   */
+  async getOrgUsage(orgId: string): Promise<
+    | {
+        ok: true;
+        usage: {
+          orgSlug: string | null;
+          plan: string;
+          remainingCu: number;
+          monthlyQuotaCu: number;
+          purchasedCu: number;
+          bonusCu: number;
+          cuUsed: number;
+          syncedAt: string;
+        };
+      }
+    | {
+        ok: false;
+        reason: 'not_connected' | 'hub_unreachable' | 'hub_rejected' | 'org_not_found';
+        hint: string;
+      }
+  > {
+    const org = this.storage?.orgRepo?.findOrgById(orgId) as
+      | { id: string; ownerId?: string; plan?: string; orgSlug?: string | null; hubOrgId?: string | null }
+      | undefined;
+    if (!org) {
+      return {
+        ok: false,
+        reason: 'org_not_found',
+        hint: `No local organisation "${orgId}". Call org_list to see the orgs on this instance.`,
+      };
+    }
+
+    // Token：优先该组织 owner 的 per-user hub token（需求 9），回落全局文件。
+    const ownerId = org.ownerId;
+    const perUser = ownerId ? (this.storage?.userRepo?.getHubToken(ownerId) as string | null) : null;
+    const token = perUser ?? this.readGlobalHubTokenForUsage();
+    if (!token) {
+      return {
+        ok: false,
+        reason: 'not_connected',
+        hint:
+          'This instance has no Hub session, so the credit balance is unknown (not zero). ' +
+          'Sign in with a Markus Hub account (hub-login) to read it.',
+      };
+    }
+
+    let res: Response;
+    try {
+      res = await this.hubFetch(`${this.hubUrl}/api/orgs/mine`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'hub_unreachable',
+        hint: `Could not reach ${this.hubUrl} (${(err as Error).message}). Local work continues; retry when the network is back.`,
+      };
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: 'hub_rejected',
+        hint: `The Hub refused the org query (HTTP ${res.status}). Re-run hub-login to refresh the session.`,
+      };
+    }
+
+    const data = (await res.json()) as {
+      orgs?: Array<{
+        id: string;
+        slug?: string | null;
+        role?: string;
+        plan?: string;
+        usage?: {
+          monthlyQuotaCu?: number;
+          purchasedCu?: number;
+          bonusCu?: number;
+          usedCu?: number;
+          remainingCu?: number;
+        };
+      }>;
+    };
+    const mine = data.orgs ?? [];
+    const match =
+      mine.find((o) => o.id === org.hubOrgId) ?? mine.find((o) => o.role === 'owner') ?? mine[0];
+    if (!match?.usage) {
+      return {
+        ok: false,
+        reason: 'hub_rejected',
+        hint:
+          `The Hub returned no usage block for "${orgId}". This hub is older than the identity contract — ` +
+          'upgrade markus-hub (GET /api/orgs/mine must carry usage) or read /api/orgs/:id/allocations instead.',
+      };
+    }
+
+    const u = match.usage;
+    return {
+      ok: true,
+      usage: {
+        orgSlug: match.slug ?? org.orgSlug ?? null,
+        plan: match.plan ?? org.plan ?? 'free',
+        remainingCu: Number(u.remainingCu ?? 0),
+        monthlyQuotaCu: Number(u.monthlyQuotaCu ?? 0),
+        purchasedCu: Number(u.purchasedCu ?? 0),
+        bonusCu: Number(u.bonusCu ?? 0),
+        cuUsed: Number(u.usedCu ?? 0),
+        syncedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  /** 全局 hub token（`~/.markus/hub-token`）—— 与 applyPreferredOrgNameToHub 同一来源。 */
+  private readGlobalHubTokenForUsage(): string | undefined {
+    try {
+      const tokenPath = join(homedir(), '.markus', 'hub-token');
+      return existsSync(tokenPath) ? readFileSync(tokenPath, 'utf-8').trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   setBillingService(service: BillingService): void {
     this.billingService = service;
   }
@@ -1971,9 +2257,126 @@ export class APIServer {
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
+    // 存储被替换（或首次接入）时，WorkUnit 服务必须重新从新存储派生，
+    // 否则它仍指向旧 repo —— 同一份数据两个句柄，写到哪份取决于谁先建。
+    this._workUnits = undefined;
     if (storage?.pendingCallbackRepo) {
       pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
     }
+    this.wireWorkUnits();
+    // C9-B：这里曾经有一个「僵尸活动收口」步骤（给未收口 activity 补写 ended_at）。
+    // 它存在的唯一理由是让「ended_at 为空 = 还在跑」这个读法成立；该读法已全仓删掉，
+    // 「在跑」只认 work_units，所以这个后台写也一并删掉。
+    // 契约见 docs/architecture/derived-views.md。
+    // C8：僵尸 running 纠偏 —— `status='running'` 但触发它的 mailbox 行已终态的，
+    // 就地收口为 idle。这是真正的根因面：收口漏写会让「在跑」变成一堆幽灵。
+    //
+    // 只跑一次不够：回合可能在启动**之后**结束，而收口路径本身漏写（取消 / 停止 /
+    // 异常）。真机 2026-11-17：`session:cs_…:r224/r225` 的 mailbox 行早已 `completed`，
+    // WU 仍停在 `running` → `work_status()` 与概览把已结束的回合当成「在跑」。
+    // 所以改成周期纠偏：判据仍是结构事实（触发行终态 / 孤儿 session 行），不看时间。
+    this.reconcileStaleWorkUnits();
+    if (!this.workUnitReconcileTimer) {
+      this.workUnitReconcileTimer = setInterval(() => this.reconcileStaleWorkUnits(), 60_000);
+      this.workUnitReconcileTimer.unref?.();
+    }
+  }
+
+  /** 僵尸 `running` 纠偏的**唯一**触发点（SQL 本体仍只有 repo 一份）。 */
+  private reconcileStaleWorkUnits(): void {
+    try {
+      const reconciled = this.storage?.workUnitRepo?.reconcileRunningAgainstTerminalMailbox?.();
+      if (reconciled) log.info('Reconciled stale running WorkUnits', { count: reconciled });
+    } catch (err) {
+      // 纠偏失败不阻断启动/心跳，但要说出来（静默失败比不纠偏更坏）。
+      log.warn('Failed to reconcile stale running WorkUnits', { error: String(err) });
+    }
+  }
+
+  /**
+   * 第七刀 C7 装配的**唯一**执行点。
+   *
+   * 为什云放在 `setStorage()` 里，而不是某个启动文件：**“有 storage”是 WorkUnit 存在的前提**，
+   * 而任何启动路径（CLI `commands/start.ts` / 桌面 `cli/backend.ts` 的 `startBackend()`）
+   * 都必须先 `setStorage`。装配写在任何一个启动文件里，就必然有第二个启动路径漏掉 ——
+   * 2026-11-14 真机事故就是这么发生的：装配在 `start.ts`，而桌面端走 `backend.ts`，
+   * 于是 taskService 端口没接、`work_status` 没注册、chat 链路静默不写。
+   *
+   * 三个写入面共用**一个** `WorkUnitService` 实例：`failures/created` 计数与事件只有一份，
+   * 否则看板会把同一批失败数三遍。写入仍只有 storage 层一个 SQL 点。
+   */
+  private wireWorkUnits(): void {
+    const units = this.workUnits;
+    if (!units) return;
+    this.taskService.setWorkUnitService(units);
+    const manager = this.orgService.getAgentManager();
+    // C9-A：facts 层的唯一写者接进 core（未接则三工具不注册、[FACTS:…] 不渲染）。
+    // 与 workUnits 同样惰性读 storage："暂时没有" 不是事实，晚到的依赖不能冻成 null。
+    manager.setFactService(this.storage?.factService ?? null);
+    // C9-E：同一份写者交给 TaskService —— 两个终态钩子（提交评审 / 打回）在它是**唯一**执行点。
+    this.taskService.setFactService(this.storage?.factService ?? null);
+    // `work_status()` 自省端口：答案来自 work_units 对象查询，不从 payload 推断。
+    manager.setWorkUnitStatusProvider((agentId, opts) => units.workStatus(agentId, opts));
+    // C7-B 委派端口：端口而不是 service 本身 —— core 不反向依赖 org-manager。
+    const storage = this.storage;
+    manager.setWorkUnitPort({
+      resolve: (ref) => {
+        const row = storage?.workUnitRepo?.getByRef(ref) as
+          | { id: string; ref: string; status: string; contextRef: string | null }
+          | undefined;
+        return row
+          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
+          : null;
+      },
+      ensureChild: (seed) => {
+        const row = units.ensure({ ...seed, status: 'running' });
+        return row
+          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
+          : null;
+      },
+      settle: (ref, opts) => units.settle(ref, opts),
+    });
+    // C10-C: trust-boundary ceiling port — org/policy decision lives here; core
+    // derives only the INPUT (unverified agent-origin senders of queued mail).
+    // 'auto' (human-approved, audited) lifts the ceiling; same-org senders never
+    // feed it. Storage absent ⇒ no ceiling (documented fail-open for embedded).
+    manager.setTrustBoundaryPort({
+      selfInitiationCeiling: (receiverOrgId, senderAgentIds, unverifiedExternal) => {
+        const org = storage?.orgRepo.findOrgById(receiverOrgId);
+        if ((org?.crossOrgPolicy ?? 'observe') === 'auto') return undefined;
+        // A: an external address has no agent row, so the lookup below can never
+        // see it. Decide it explicitly — unverified external input is at least as
+        // untrusted as a cross-org peer, never silently exempt.
+        if (unverifiedExternal) return 'observe';
+        for (const senderId of senderAgentIds) {
+          const sender = storage?.agentRepo.findById(senderId);
+          if (sender && sender.orgId !== receiverOrgId) return 'observe';
+        }
+        return undefined;
+      },
+    });
+    // C10-0A：身份 ensure 端口 —— 声明了的 ref 在 mailbox 装配点必须存在。
+    // 所有者解析归 org-manager（core 不猜实体语义）：task → assignee，
+    // requirement → creator；解析不到合法 agent 时落接收方。
+    manager.setMailboxIdentityPort({
+      ensureIdentity: ({ ref, agentId, taskId, requirementId }) => {
+        let owner = agentId;
+        const task = taskId ? this.taskService.getTask(taskId) : undefined;
+        if (task?.assignedAgentId && manager.hasAgent(task.assignedAgentId)) {
+          owner = task.assignedAgentId;
+        } else if (requirementId) {
+          const req = this.requirementService?.getRequirement(requirementId);
+          if (req?.createdBy && manager.hasAgent(req.createdBy)) owner = req.createdBy;
+        }
+        return units.ensure({
+          ref,
+          agentId: owner,
+          taskId: taskId ?? null,
+          status: 'idle',
+          contextRef: taskId ? ref : null,
+        }) !== null;
+      },
+    });
   }
 
   /**
@@ -2204,7 +2607,7 @@ export class APIServer {
           self.taskService.updateTaskStatus(taskId, status as TaskStatus, updatedBy);
         },
         createTask(req) {
-          return self.taskService.createTask({
+          const task = self.taskService.createTask({
             title: req.title, description: req.description,
             priority: req.priority as TaskPriority,
             orgId: req.orgId,
@@ -2212,6 +2615,19 @@ export class APIServer {
             reviewerId: req.reviewerId,
             createdBy: req.createdBy,
           });
+          // 第六刀 C2 / §2.3 投递点 2：外部网关建任务时同时写一条**带信封**的投递记录。
+          // C9 相邻路径：入队形状与身份表态收敛到 `enqueueGatewayTaskReceipt()`（唯一实现），
+          // 那里同时是测试直调的生产函数 —— 原先写在闭包里只能靠阅读判定，无契约可守。
+          try {
+            const assignee = self.orgService.getAgentManager().getAgent(req.assignedAgentId);
+            enqueueGatewayTaskReceipt(assignee, task, req);
+          } catch (err) {
+            // 投递记录写失败不得让建任务失败（任务已建成）。但也不静默：打日志。
+            log.warn('Gateway createTask: failed to write delivery record', {
+              taskId: task.id, error: String(err),
+            });
+          }
+          return task;
         },
       },
       {
@@ -2464,14 +2880,59 @@ export class APIServer {
     return user;
   }
 
+  /**
+   * C7-B —— 读记忆会话 id（`sess_*`）。**失败只能降级，不能让一次对话 500。**
+   *
+   * 这是增强信息：没有它，回合 WU 的 `context_ref` 走 fallback，锁键仍然正确。
+   * 但它是 HTTP 屏障上的一次**同步**读（参数求值处）——直接写 `agent.getMemorySessionId()`
+   * 会在 agent 对象不完整时抛 TypeError，把一个能正常工作的对话变成 500（实测：三条
+   * `/api/message` 用例就是这么红的）。所以这里只做**能力判定**（方法不存在 = 没有该
+   * 能力），不吞掉方法内部的异常。
+   */
+  private memorySessionIdOf(agent: unknown): string | null {
+    const fn = (agent as { getMemorySessionId?: () => string | undefined }).getMemorySessionId;
+    return typeof fn === 'function' ? (fn.call(agent) ?? null) : null;
+  }
+
   /** Persist a chat turn (user + assistant) to DB if storage is available */
   private async persistChatTurn(
     agentId: string,
     userMessage: string,
     reply: string,
-    senderId?: string,
-    tokensUsed = 0,
-    metadata?: unknown
+    /**
+     * 必填 `string | undefined`（不是 `?`）：`mailboxItemId` 必须必填，而 TS 不允许
+     * 必填参数跟在可选参数后面。把可选性换成显式 `undefined`，调用点就得表态。
+     */
+    senderId: string | undefined,
+    tokensUsed: number,
+    metadata: unknown,
+    /**
+     * 第七刀 C7-A：触发这一轮的 mailbox item 身份（由入口的 `onItemEnqueued`
+     * 回调带回来）。没有它就无法把 `mailbox_items.work_unit_ref` 指向本轮 WU ——
+     * 而「猜最近一条」是从时序推断结构，明确禁止。
+     *
+     * 必填 `string | null`：`null` = 本轮没有 item 身份（历史重放 / 直接调用），
+     * 由调用点显式表态。写成 `?:` 会让「漏传」与「确实没有」在类型上无法区分。
+     */
+    mailboxItemId: string | null,
+    /**
+     * C7-B：本轮的**记忆会话 id**（`sess_*`，即 `Agent.currentSessionId`）。
+     *
+     * 为什么要显式传而不是在这里现算：`work_units.context_ref` 是会话锁键的
+     * 单一来源（`sessionLockKeyOfContextRef`），而**只有 `sess_*` 能当会话锁键**。
+     * 库会话 id（`cs_*`）是另一个命名空间；把它存进 `context_ref` 会让新路径
+     * 永远 fallback，等于这条收敛没生效。没有记忆会话（历史重放）时显式 null。
+     */
+    memorySessionId: string | null,
+    /**
+     * C8：回合**开始时**就定下的 WU ref（`prepareChatTurnWorkUnit` 的返回值）。
+     *
+     * 必填（`string | null`）：收口必须用同一个身份，不能再在这里解析一次。
+     * 2026-11-14 真机：多会话 agent 上，这里用 `getSessionsByAgent(...)[0]` 重算，
+     * 拿到的是主会话（旧），于是收口落在旧 ref 上，**真正在跑的那一行永远不收口**
+     * （实测 `session:cs_66bc3ebf…:r50/r51/r52` 同时挂着）。
+     */
+    turnWorkUnitRef: string | null,
   ): Promise<void> {
     if (!this.storage) return;
     try {
@@ -2480,6 +2941,10 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
+      // 轮次必须在**追加之前**取：一轮 = 一问一答两条消息，追加后计数会把
+      // 本轮的 assistant 也算进去，导致同一轮重复递增（ref 漂移）。
+      const priorMessages = this.storage.chatSessionRepo.getMessageCount(session.id);
+      const round = Math.floor(priorMessages / 2) + 1;
       const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
       await this.storage.chatSessionRepo.appendMessage(
@@ -2491,8 +2956,145 @@ export class APIServer {
         metadata
       );
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
+
+      // ── 第七刀 C7-A：一轮对话 = 一个 WorkUnit ─────────────────────────────
+      // 顺序不可反：**先建实体（ensure），再收口**。
+      // 反过来就是 C6 刻意避免的「先建引用后建实体」，一行指向不存在 WU 的
+      // `work_unit_ref` 比 null 更坏 —— 它看起来像有身份。
+      // C10-0B：这里不再回写 `mailbox_items.work_unit_ref`（chat 行在入队时
+      // 就带着同一个 ref；把同一个值再写一遍是第二个写者，而不是保险）。
+      const units = this.workUnits;
+      if (units) {
+        // C8 收口纠偏：优先用**回合开始时写在那条 mailbox 行上的 ref**。
+        //
+        // 真机实测（2026-11-14）：收口时重算 round 会漂移 —— 用户消息先落库，
+        // 消息数变了，算出的 ref 与回合开始建的那一行不是同一个 → 回合开始的行
+        // 永远停在 `running`（一次会话里积了 4 条）。已记录的引用才是事实。
+        const linkedRef = mailboxItemId
+          ? (this.storage?.mailboxRepo?.getById(mailboxItemId)?.workUnitRef ?? null)
+          : null;
+        const ref = turnWorkUnitRef ?? linkedRef ?? WORK_UNIT_REF.chat(session.id, round);
+        // C7-B：`context_ref` 优先记记忆会话 id（`sess_*`），它才是会话锁键的同源事实。
+        // C9-工作记录：`addressRef` 记**对话地址**（chat session id）——它是这条 WU
+        // 所属实体的结构事实。不写它，「这条记录属于哪个会话」就只能从 ref 字符串
+        // 反解；而 ref 是派生键，名字也不在里面。实测修复前 129 个 session 单元的
+        // `address_ref` 全为 NULL，UI 只能靠正则猜。
+        const wu = units.ensure({ ref, agentId, addressRef: session.id, contextRef: memorySessionId ?? session.id });
+        void wu;
+        // 收口走唯一执行点（非流式入口同样调它，见 settleChatTurnWorkUnit）。
+        this.settleChatTurnWorkUnit(agentId, ref, {
+          memorySessionId: memorySessionId ?? session.id,
+          mailboxItemId,
+        });
+      }
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
+    }
+  }
+
+  /**
+   * C7-B —— 回合**开始**就给这一轮 chat 发身份。
+   *
+   * 为什么必须前移到开始：`work_status()` 要能回答「这个 agent 现在在干什么」。
+   * 若 WU 只在回复落库后创建，任何 mid-turn 查询都读不到 `running` —— 那正是
+   * 需求 §10.1 缺口 A 的关闭点，不能靠「其实创建了」自证。
+   *
+   * ref 与 `persistChatTurn()` 同源（session + round）：round 在两个函数里都用
+   * 「追加消息之前」的消息数推导，所以收口时命中同一行，`running → idle` 只写一次。
+   * `context_ref` 此刻**就是不知道**（还没决定跑进哪个会话）→ 显式 null，收口时由
+   * `adoptContextRef` 补。不要在这里读 `agent.getMemorySessionId()`：那一读可能抛，而
+   * 它发生在本函数体外（参数求值处），会把一次正常对话变成 500 —— 已经踩过。
+   */
+  /**
+   * C7-B：在**入队前**准备好本轮的 WorkUnit，并返回它的 ref。
+   *
+   * 旧写法是 `openChatTurnWorkUnit(agentId, senderId, item.id)`：入队后再异步查会话、
+   * 算 round、再回写 `mailbox_items.work_unit_ref`。但 agent 可能在这一行入队后立刻
+   * 开始处理它 —— 那一刻 `item.workUnitRef` 还是 null，于是本回合的
+   * `agent.turnWorkUnitRef()` 为 null（身份由 `processMailboxItemInternal` 的 ALS 携带），
+   * 回合内的 `spawn_subagents` 拿不到父 ref，子 WU 只能落 `delegation:root:…`（父链断）。
+   *
+   * 现在改回正确的因果方向：**身份先于消息存在**，ref 作为入队参数一起落地。
+   */
+  /**
+   * C8 —— 回合收口的**唯一执行点**。
+   *
+   * 为什么必须有这一个点：2026-11-14 浏览器模拟发现，`/api/agents/:id/message`
+   * 的非流式分支只写 assistant 消息就结束了，**从未走到收口** —— 于是每个回合
+   * 都在 `work_units` 里留下一条永远 `running` 的行（实测一轮一积：1 → 3）。
+   * 「回合结束」这个事实原本有三个写者各自记一遍，漏一个不报错，只是台账说错话。
+   *
+   * 顺序：先补 context_ref（只填空值）→ running → idle。
+   * 只在 `running` 上迁：重放同一轮会命中已 `idle` 的行，那不是「未收口」。
+   *
+   * C10-0B：删除了其中的「回填 mailbox 引用」一步。chat 行在**入队时**就带着 ref，
+   * 再写一遍只会让「谁写这列」重新长成两处（任务链的 leak 正是从这种补写开始的）。
+   */
+  private settleChatTurnWorkUnit(
+    agentId: string,
+    ref: string | null,
+    opts: { memorySessionId?: string | null; mailboxItemId?: string | null } = {},
+  ): void {
+    if (!ref) return;
+    const units = this.workUnits;
+    if (!units) return;
+    try {
+      const contextRef = opts.memorySessionId ?? null;
+      if (contextRef) units.adoptContextRef(ref, contextRef);
+      const row = this.storage?.workUnitRepo?.getByRef(ref);
+      if (row?.status === 'running') {
+        units.tryTransition(ref, 'idle', {
+          changedByType: 'system',
+          reason: 'chat_turn_settled',
+        });
+      }
+    } catch (err) {
+      log.warn('Failed to settle chat turn WorkUnit', { agentId, ref, error: String(err) });
+    }
+  }
+
+  private async prepareChatTurnWorkUnit(
+    agentId: string,
+    senderId: string | undefined,
+    /** 入口已经确定的本轮 DB 会话 id（团队聊天路径在落用户消息时就拿到了）。
+     *  传了就不再自己查一遍 —— 同一个事实两个解析器，迟旱会算出两个 round。 */
+    knownSessionId?: string | null,
+  ): Promise<string | null> {
+    const units = this.workUnits;
+    if (!units || !this.storage) return null;
+    try {
+      let sid = knownSessionId ?? null;
+      if (!sid) {
+        // ⚠️ 2026-11-14 真机根因：这里原本取 `getSessionsByAgent(..., 1)[0]`，而那个查询
+        // 按 `is_main DESC, last_message_at DESC` 排序 —— 主会话永远排在最前，哪怕它
+        // 是几小时前的。于是每个回合的 ref 都算在主会话上（如 r322，早已 idle），
+        // 真正在跑的那个会话永远没有 running 行 →「运行与注意力」显示「正在运行 0」。
+        //
+        // 「本轮是哪个会话」只能由**入口**回答（它刚落了用户消息），不能靠排序猜。
+        // 拿不到 id 时，退而取**最近活跃**的那个（按 last_message_at），而不是主会话。
+        const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 5, senderId);
+        const latest = sessions
+          .slice()
+          .sort((a: { lastMessageAt?: string | null }, b: { lastMessageAt?: string | null }) =>
+            String(b.lastMessageAt ?? '').localeCompare(String(a.lastMessageAt ?? '')))[0];
+        const existing = latest ?? await this.storage.chatSessionRepo.createSession(agentId, senderId);
+        sid = existing.id;
+      }
+      if (!sid) return null;
+      const priorMessages = this.storage.chatSessionRepo.getMessageCount(sid);
+      const round = Math.floor(priorMessages / 2) + 1;
+      const ref = WORK_UNIT_REF.chat(sid, round);
+      // 回合正在开始 ⇒ 这一行**必须是** running。`ensure()` 对已存在的行什么都不做，
+      // 所以 ref 撞上一个已收口的 idle 行时（重试 / 同轮重入 / 早先提前收口）
+      // 必须显式拉回 running —— 否则台账说「没在跑」而回合正在输出。
+      const row = units.ensure({ ref, agentId, addressRef: sid, status: 'running', contextRef: null });
+      if (row && row.status !== 'running') {
+        units.transition(ref, 'running');
+      }
+      return ref;
+    } catch (err) {
+      log.warn('Failed to prepare chat turn WorkUnit', { agentId, error: String(err) });
+      return null;
     }
   }
 
@@ -2871,6 +3473,10 @@ export class APIServer {
     // Same reasoning as applyBindHost(): http close() waits for every connection
     // to end, and an open /ws socket never ends on its own. Drop WS + force-close
     // sockets so shutdown does not hang.
+    if (this.workUnitReconcileTimer) {
+      clearInterval(this.workUnitReconcileTimer);
+      this.workUnitReconcileTimer = undefined;
+    }
     this.ws.detach();
     const live = this.server;
     if (!live) return;
@@ -3144,6 +3750,8 @@ export class APIServer {
       } else {
         if (msg.startsWith('CONTENT_TYPE_ERROR:')) {
           this.json(res, 415, { error: 'Content-Type must be application/json' });
+        } else if (msg.startsWith('BODY_TOO_LARGE:')) {
+          this.json(res, 413, { error: 'Request body too large' });
         } else if (msg.startsWith('BODY_PARSE_ERROR:')) {
           this.json(res, 400, { error: 'Invalid request body' });
         } else {
@@ -3170,7 +3778,7 @@ export class APIServer {
       || (req.method === 'DELETE' && Number(req.headers['content-length'] ?? 0) > 0)) {
       const ct = String(req.headers['content-type'] ?? '').toLowerCase();
       if (!ct.includes('multipart/form-data')) {
-        await this.readBody(req);
+        await this.readBody(req, { maxBytes: maxBodyBytesForPath(path) });
       }
     }
 
@@ -3537,6 +4145,14 @@ export class APIServer {
         await this.applyPreferredOrgNameToHub(hubToken);
       } catch (err) {
         log.warn('Failed to sync preferred org name to Hub', { error: (err as Error).message });
+      }
+
+      // C10-D：对齐 hub 身份。放在改名之后：改名会动 hub org，slug 不会，但两者
+      // 读的都是 /api/orgs/mine，保持同一个会话内的先后顺序才不会对到半个状态。
+      try {
+        await this.syncHubOrgIdentity(hubToken);
+      } catch (err) {
+        log.warn('Failed to sync hub org identity', { error: (err as Error).message });
       }
 
       // Await OpenRouter + recommended routing before returning so the client
@@ -3968,6 +4584,170 @@ export class APIServer {
         userId: authUser?.userId,
       });
       this.json(res, 200, result);
+      return;
+    }
+
+    // C8-E：「在跑」的**唯一权威来源** —— 只读 `work_units`（status + claimed_by +
+    // lease_until），不从 activity 表、也不从内存注册表派生。
+    //
+    // 真实事敀（2026-11-14）：Owner 看到 agent 「还在干活」，而「运行与注意力」页面
+    // 一个进行中的 session 都看不到 —— 因为那个页面在自己派生「进行中」，而且
+    // `agent_activities` 里积了一批 `ended_at` 永远为 NULL 的僵尸回合。
+    // 权威对象是 WU：僵尸回合没有 running 行，因此永远不会出现在这里；
+    // 内部 session（requirement_* / channel_dm:* / session:*）则一定会出现。
+    if (path.match(/^\/api\/agents\/[^/]+\/work-units$/) && req.method === 'GET') {
+      await this.getAuthUser(req);
+      const agentId = path.split('/')[3]!;
+      const repo = this.storage?.workUnitRepo;
+      if (!repo) {
+        this.json(res, 200, { units: [], running: 0, source: 'work_units' });
+        return;
+      }
+      const statusParam = url.searchParams.get('status');
+      const statuses = (statusParam ? [statusParam] : ['running']) as never[];
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 50) || 50, 1), 200);
+      type WorkUnitRow = {
+        ref: string; status: string; parentId: string | null; claimedBy: string | null;
+        leaseUntil: string | null; budget: number | null; used: number; contextRef: string | null;
+      };
+      const units = (repo.listByAgent(agentId, { statuses, limit }) as WorkUnitRow[]).filter(u =>
+        // 租约已过期的 running 不是「在跑」，是没被收口的僵尸行。
+        u.status !== 'running' || !u.leaseUntil || new Date(u.leaseUntil).getTime() > Date.now());
+      this.json(res, 200, {
+        source: 'work_units',
+        running: units.filter(u => u.status === 'running').length,
+        units: units.map(u => ({
+          ref: u.ref,
+          status: u.status,
+          parentId: u.parentId,
+          claimedBy: u.claimedBy,
+          leaseUntil: u.leaseUntil,
+          budget: u.budget,
+          used: u.used,
+          contextRef: u.contextRef,
+          // C9-B：拆解 ref 为结构字段的那一步只在这里（用 shared 的唯一解析器）。
+          // 客户端只做集合成员判断，不再各自解析 ref —— 否则就是第二个解析器。
+          taskId: taskIdOfWorkUnitRef(u.ref) ?? null,
+          internal: /^(requirement_|channel_|session:)/.test(u.ref),
+        })),
+      });
+      return;
+    }
+
+    // ── C10-B：外部信号源（webhook 入口 + 自助面）────────────────────────────
+    //
+    // webhook 入口是**公开**路径（PUBLIC_API_PREFIXES）：外部系统没有本地会话，每个源用
+    // 自己 config.token 验身（同 /api/gateway 的口径）。判决全在服务层
+    // （ExternalSourceService.receiveWebhook：源存在 / kind / token / 翻译 / ingest），
+    // 这里只搬运 sourceId/body/token —— 路由不做第二个决策点。
+    // 未接线 ⇒ 503（fail-closed：不假装收下了，也不回一个会让人以为「已投递」的 200）。
+    if (path.match(/^\/api\/webhooks\/[^/]+$/) && req.method === 'POST') {
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      const sourceId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      // token：显式头优先，其次 Bearer（外部系统习惯把共享密钥放 Authorization）。
+      const hdr = req.headers['x-webhook-token'];
+      const authz = req.headers['authorization'];
+      const token = (typeof hdr === 'string' && hdr.length > 0 ? hdr : null)
+        ?? (typeof authz === 'string' && authz.startsWith('Bearer ') ? authz.slice(7).trim() : null);
+      const out = svc.receiveWebhook(sourceId, body, token);
+      this.json(res, out.http, out.body);
+      return;
+    }
+    // 自助面（member 门槛见 ROLE_GATES）：orgId 取会话身份（成员不能跨 org 看别人的源），
+    // agentId 是被查询/操作的主体；归属裁决仍只在 service（唯一写者）。
+    if (path === '/api/external-sources') {
+      const authUser = await this.getAuthUser(req, res);
+      if (!authUser) return;
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      if (req.method === 'GET') {
+        const agentId = url.searchParams.get('agentId') ?? url.searchParams.get('agent_id') ?? '';
+        if (!agentId) { this.json(res, 400, { error: 'agentId is required' }); return; }
+        // C10-F：策略与源列表同一次读返回 —— 界面必须能同时看到「总闸」和「它所管的源」，
+        // 否则会出现「看似开着、实际被总闸拦住」的误读。
+        this.json(res, 200, {
+          policy: svc.policyOf(authUser.orgId),
+          sources: svc.listSources(authUser.orgId, agentId),
+        });
+        return;
+      }
+      if (req.method === 'POST') {
+        const body = await this.readBody(req);
+        const agentId = typeof body['agentId'] === 'string' ? body['agentId'] : '';
+        if (!agentId) { this.json(res, 400, { error: 'agentId is required' }); return; }
+        const rawConfig = body['config'];
+        const config = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig)
+          ? (rawConfig as Record<string, unknown>)
+          : undefined;
+        const out = svc.registerSource({
+          orgId: authUser.orgId,
+          agentId,
+          kind: typeof body['kind'] === 'string' ? body['kind'] : '',
+          address: typeof body['address'] === 'string' ? body['address'] : '',
+          config,
+        });
+        // 结果形状与工具面同一份（status 字段是唯一判决）；HTTP 码只做粗粒度映射。
+        this.json(res, out.status === 'forbidden' ? 403 : out.status === 'registered' ? 201 : 400, out);
+        return;
+      }
+    }
+    if (path.match(/^\/api\/external-sources\/[^/]+\/toggle$/) && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req, res);
+      if (!authUser) return;
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      const body = await this.readBody(req);
+      const agentId = typeof body['agentId'] === 'string' ? body['agentId'] : '';
+      const enabled = body['enabled'];
+      // 非布尔一律拒绝：把 "false" 静默强转成 true 等于「以为关掉了其实没关」。
+      if (!agentId || typeof enabled !== 'boolean') {
+        this.json(res, 400, { error: 'agentId (string) and enabled (boolean) are required' });
+        return;
+      }
+      const out = svc.setSourceEnabled({ orgId: authUser.orgId, agentId, sourceId: path.split('/')[3]!, enabled });
+      this.json(res, out.status === 'forbidden' ? 403 : 200, out);
+      return;
+    }
+
+    // C10-F：轮换 webhook 共享密钥。与 toggle 同门槛（每个成员管自己的源），归属裁决在 service。
+    // 密钥只在本次响应里出现一次；列表接口只回尾四位。
+    if (path.match(/^\/api\/external-sources\/[^/]+\/token$/) && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req, res);
+      if (!authUser) return;
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      const body = await this.readBody(req);
+      const agentId = typeof body['agentId'] === 'string' ? body['agentId'] : '';
+      if (!agentId) { this.json(res, 400, { error: 'agentId is required' }); return; }
+      const out = svc.rotateSecret({ orgId: authUser.orgId, agentId, sourceId: path.split('/')[3]! });
+      this.json(res, out.status === 'forbidden' ? 403 : out.status === 'rotated' ? 200 : 400, out);
+      return;
+    }
+
+    // B（Owner 2026-11-25）：鉴权运营投递入口。成员门槛由上面的 /api/external-sources    // 前缀闸门覆盖；orgId 取会话身份，归属裁决仍只在 service（唯一写者）。
+    // 与公开 webhook 入口的区别：这里可以指定**目标地址**（无人认领的地址也有入站口），
+    // 而公开入口结构上拿不到这个能力 —— 外部方不能重定向。
+    if (path.match(/^\/api\/external-sources\/[^/]+\/deliver$/) && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req, res);
+      if (!authUser) return;
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      const body = await this.readBody(req);
+      const agentId = typeof body['agentId'] === 'string' ? body['agentId'] : '';
+      const address = typeof body['address'] === 'string' ? body['address'] : '';
+      const payload = body['payload'];
+      // payload 必须显式给出：不从控制字段里「剩下的就当载荷」推断结构。
+      if (!agentId || !address || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        this.json(res, 400, { error: 'agentId (string), address (string) and payload (object) are required' });
+        return;
+      }
+      const out = svc.deliverAsOperator({
+        orgId: authUser.orgId, agentId, sourceId: path.split('/')[3]!, address, body: payload,
+      });
+      // status 字段是唯一判决；退信是合法结果（与 webhook 入口同口径：200 + status）。
+      this.json(res, out.status === 'forbidden' ? 403 : 200, out);
       return;
     }
 
@@ -4435,15 +5215,30 @@ export class APIServer {
       const channelContext = await buildChannelContext();
 
       let reply: string;
+      // 入口不知道自己这条消息在 mailbox 里的 id —— 它由 mailbox 在入队时生成。
+      // 只有 `onItemEnqueued` 回调带回来的那个 id 才是真的；任何「最近一条」的
+      // 猜测都是时序推断（R3），一旦有并发就会挂错行。
+      let enqueuedItemId: string | null = null;
       const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
+      // C7-B：身份先于消息 —— 入队前就把本轮 WU 准备好。
+      const turnRef = routedAgentId
+        ? await this.prepareChatTurnWorkUnit(routedAgentId, senderId)
+        : null;
       try {
         reply = await agent.sendMessage(text, senderId, senderInfo, {
           sourceType: 'human_chat',
+          // 人类直聊 → 'chat'。显式表态，不靠下游 `?? 'chat'`。
+          scenario: 'chat',
           channelContext,
           images,
           fileNames,
           imagePaths,
           toolEventCollector: toolEvents,
+          // C7-B：本轮 WU 身份随 item 一起落地（不再是入队后回填）。
+          workUnitRef: turnRef,
+          onItemEnqueued: (item) => {
+            enqueuedItemId = item.id;
+          },
         });
       } catch (err) {
         const raw = String(err);
@@ -4513,7 +5308,7 @@ export class APIServer {
           mentions: [],
           metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
         });
-        void this.persistChatTurn(routedAgentId, text, reply, senderId);
+        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId, this.memorySessionIdOf(agent), turnRef);
       }
 
       // No WS broadcast here — the HTTP response delivers the agentMessage directly
@@ -4849,7 +5644,7 @@ export class APIServer {
         const fromAgentId = body['fromAgentId'] as string;
         const messageText = body['message'] as string;
         const fromAgent = this.orgService.getAgentManager().getAgent(fromAgentId);
-        // 唯一投递点（docs/architecture/mailbox-system.md §11.1.1）。
+        // 唯一投递点（docs/architecture/a2a-communication.md §11.1.1）。
         // 这里曾经直接 targetAgent.sendMessage(...)：绕过 deliver() 就成了
         // 一条「没有来源标记、不走 mailbox 合并、不记统一投递日志」的旁路，
         // 而文档却声称本层只有一个投递出口。
@@ -4867,7 +5662,7 @@ export class APIServer {
           chainId: newChainId(),
           depth: 1,
         });
-        // 投递即返回，不等回复（mailbox-system.md §11.2：A2A 永远异步）。
+        // 投递即返回，不等回复（a2a-communication.md §11.2：A2A 永远异步）。
         // 旧实现在这里同步等交对端回答，与异步契约直接矛盾：对端选择不回复时，
         // 请求就只能靠超时结束，调用方分不清「对方在思考」和「对方不回」。
         this.json(res, 200, {
@@ -5021,7 +5816,13 @@ export class APIServer {
           if (this.storage && sessionId) {
             await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo, chipsMeta, titleSource);
           }
-          agent.injectFollowUp(agentText, senderId, senderInfo, images);
+          // C8：追随消息（用户在 agent 正在输出时打字）同样是这一回合的工作 ——
+          // 以前这里不传回合身份，于是这一行 `work_unit_ref = NULL`、台账里也
+          // 从未建过该回合的 WorkUnit，最终表现为同一面板上「处理中 1」与
+          // 「正在运行 0」同时存在。round 与回合开始时同源（消息在回合结束后
+          // 才落库），所以这里算出的是**同一个 ref**，不是新开一个。
+          const followUpRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, sessionId ?? null);
+          agent.injectFollowUp(agentText, senderId, senderInfo, images, { workUnitRef: followUpRef });
           this.json(res, 200, { injected: true });
           return;
         }
@@ -5061,6 +5862,11 @@ export class APIServer {
             agent.setTurnModelOverride(null);
           }
 
+          // C7-B：团队聊天的 SSE 入口也要在**入队前**拿到本轮 WU 身份。
+          // 漏了这一处，就像 2026-11-14 那次：三个入口只改了两个。
+          // 2026-11-14 二次修正：**必须把入口已知的 sessionId 传进去** —— 不传就让
+          // 函数自己去猜「最新会话」，而它猜的是主会话，于是本轮 WU 落到旧 ref 上。
+          const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, sessionId ?? null);
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
@@ -5086,6 +5892,8 @@ export class APIServer {
             isResume,
             sessionRestore: deferredRestore,
             activeStreams: this.activeStreams,
+            // C7-B：身份随 item 一起入队（不是入队后回填）。
+            workUnitRef: turnRef,
           });
 
           await sseHandler.handle(res);
@@ -5095,9 +5903,16 @@ export class APIServer {
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
           const deferredRestoreNonStream = sessionRestoreData;
+          // C7-B：非流式团队聊天同样「身份先于消息」。
+          const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, persistedSessionId);
+          let enqueuedItemId: string | null = null;
           try {
             reply = await agent.sendMessage(agentText, senderId, senderInfo, {
+              // 非流式团队聊天 = 人类直聊 → 'chat'（显式表态）。
+              scenario: 'chat',
               images, fileNames, imagePaths, toolEventCollector: toolEvents,
+              workUnitRef: turnRef,
+              onItemEnqueued: (item) => { enqueuedItemId = item.id; },
               // 把本轮 DB 会话 id 显式交给处理该消息的分身：它用它写 DB→memory 绑定。
               // 以前这里什么都不传，于是新对话的首条消息根本落不下绑定 —— 第二条
               // 只能从瘦 DB 重建（明明是同一个会话，却换了个内存会话）。
@@ -5112,6 +5927,11 @@ export class APIServer {
             throw err;
           }
           this.json(res, 200, { reply, sessionId: persistedSessionId });
+          // 模拟验证发现的缺口：这个分支以前从不收口 → 每个回合留一条永久 running。
+          this.settleChatTurnWorkUnit(agentId!, turnRef, {
+            memorySessionId: this.memorySessionIdOf(agent),
+            mailboxItemId: enqueuedItemId,
+          });
           const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
           // Single shared constructor — keeps this path's segments byte-identical in
           // shape to what the SSE path persists (same fields, incl. `createdAt`).
@@ -5764,6 +6584,121 @@ export class APIServer {
       return;
     }
 
+    // ─── 组织标识（org slug）—— 只读镜像，写入在 markus.global ────────────
+    //
+    // slug 的唯一意义是 Hub 上的全局唯一命名空间（`hub_organizations.slug` 上有
+    // UNIQUE INDEX）。本机不提供写入口：离线时无法判断名字是否已被占，写了也会被
+    // 下次登录的 syncHubOrgIdentity 覆盖 —— 那是个会静默回滚用户的陷阱。
+    // 本端点只做读取，供 UI 展示 Hub 镜像下来的值。
+    const orgSlugMatch = path.match(/^\/api\/orgs\/([^/]+)\/slug$/);
+    if (orgSlugMatch) {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const orgId = orgSlugMatch[1]!;
+      const repo = this.storage?.orgRepo as
+        | {
+            findOrgById?: (id: string) => { id: string; orgSlug: string | null; hubOrgId?: string | null } | undefined;
+            countBoundAddresses?: (id: string) => number;
+          }
+        | undefined;
+      if (!repo?.findOrgById) {
+        this.json(res, 503, { error: 'org repository not available', code: 'ORG_REPO_UNAVAILABLE' });
+        return;
+      }
+      const org = repo.findOrgById(orgId);
+      if (!org) {
+        this.json(res, 404, { error: 'Organization not found', code: 'ORG_NOT_FOUND' });
+        return;
+      }
+      // 仅本组织 owner 可声明：slug 是全局唯一的地址段，不能让成员改走别人的名字。
+      if (authUser.role !== 'owner' || authUser.orgId !== orgId) {
+        this.json(res, 403, {
+          error: 'Only the organization owner can set its address prefix',
+          code: 'NOT_ORG_OWNER',
+        });
+        return;
+      }
+
+      if (req.method === 'GET') {
+        const issuedAddresses = repo.countBoundAddresses?.(orgId) ?? 0;
+        this.json(res, 200, {
+          orgId,
+          orgSlug: org.orgSlug,
+          hubOrgId: org.hubOrgId ?? null,
+          // 已签发地址的组织不能改 slug（否则已发出的地址会变成悬空引用）。
+          issuedAddresses,
+          locked: issuedAddresses > 0,
+        });
+        return;
+      }
+
+      this.json(res, 405, { error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' });
+      return;
+    }
+
+    // C10-C: cross_org_policy elevation — human-only (owner/admin), audited.
+    // The service re-validates the actor against the users table; this gate is
+    // the role check, not a second source of the human/agent decision.
+    const crossOrgPolicyMatch = path.match(/^\/api\/orgs\/([^/]+)\/cross-org-policy$/);
+    if (crossOrgPolicyMatch && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'cross_org_policy change requires owner or admin', code: 'FORBIDDEN' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const policy = body['policy'];
+      if (policy !== 'observe' && policy !== 'auto') {
+        this.json(res, 400, { error: "policy must be 'observe' or 'auto'" });
+        return;
+      }
+      try {
+        const result = await this.orgService.setCrossOrgPolicy(crossOrgPolicyMatch[1]!, policy, authUser.userId);
+        this.json(res, 200, { ok: true, ...result });
+      } catch (err) {
+        this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
+    // C10-F: external_ingress — the org-level inbound switch. Read is a member
+    // action (everyone needs to know whether the door is open); write is
+    // owner/admin and human-only, mirrored structurally in
+    // OrganizationService.setExternalIngress (users-table actor + audit row).
+    const externalIngressMatch = path.match(/^\/api\/orgs\/([^/]+)\/external-ingress$/);
+    if (externalIngressMatch) {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const orgId = externalIngressMatch[1]!;
+      if (req.method === 'GET') {
+        const org = this.orgService.getOrganization(orgId);
+        if (!org) { this.json(res, 404, { error: 'organization not found' }); return; }
+        const policy = (org as { externalIngress?: string }).externalIngress ?? 'off';
+        this.json(res, 200, { policy });
+        return;
+      }
+      if (req.method === 'POST') {
+        if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+          this.json(res, 403, { error: 'external_ingress change requires owner or admin', code: 'FORBIDDEN' });
+          return;
+        }
+        const body = await this.readBody(req);
+        const policy = body['policy'];
+        if (!isExternalIngressPolicy(policy)) {
+          this.json(res, 400, { error: "policy must be 'off', 'observe' or 'accept'" });
+          return;
+        }
+        try {
+          const result = await this.orgService.setExternalIngress(orgId, policy, authUser.userId);
+          this.json(res, 200, { ok: true, ...result });
+        } catch (err) {
+          this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+    }
+
     // Team export — read all team directory files
     if (path.match(/^\/api\/teams\/[^/]+\/export$/) && req.method === 'GET') {
       const teamId = path.split('/')[3]!;
@@ -5847,6 +6782,11 @@ export class APIServer {
       const status = url.searchParams.get('status') ?? undefined;
       const category = url.searchParams.get('category') ?? undefined;
       const sourceType = url.searchParams.get('sourceType') ?? undefined;
+      // 列表单条正文的截断上限。实测 human_chat 单条可达 ~100KB，
+      // 50 条 = 2.68MB；收起态用不到全文，展开时走 /mailbox/:itemId 取。
+      const CONTENT_PREVIEW_CHARS = 800;
+      // 单条详情：列表把正文截到 800 字，展开时用 `?itemId=` 取那一条的全文。
+      const itemId = url.searchParams.get('itemId') ?? undefined;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const queued = agent.getMailbox().getQueuedItems();
@@ -5861,7 +6801,250 @@ export class APIServer {
         }
 
         let history: Array<Record<string, unknown>> = [];
-        if (this.storage?.mailboxRepo) {
+        // ── 实体解析：一条记录属于哪件事，名字从**实体表**取 ──────────────
+        //
+        // 为什么在这里而不是前端：名字不在 `work_unit.ref` 里（那是 `(实体,轮次)`
+        // 的序列化键），在 `tasks` / `chat_sessions` 自己的 title 列里。前端用正则
+        // 反解 ref 再拼「任务 tsk_xxx」是把派生键当结构源，且永远拿不到名字。
+        //
+        // 旧数据必须能读（main 上的历史行）：`workUnitRef` 大量为 NULL，且实体行
+        // 可能已被删。所以解析失败一律**降级到短 id 标签**，绝不返回空。
+        // 实体解析的唯一写者是 worklog-entity.ts 的纯函数（可被行为测试逐条钉死）。
+        // 名字从实体表取，经注入点访问 storage；IM 人类会话读入口声明的 channelKey。
+        const resolveEntity = createWorklogEntityResolver({
+          agentId,
+          taskTitle: id => this.taskService?.getTask(id)?.title,
+          requirementTitle: id =>
+            (this.storage?.requirementRepo?.findById?.(id) as { title?: string } | undefined)?.title,
+          chatSessionTitle: id =>
+            (this.storage?.chatSessionRepo?.getSession?.(id) as { title?: string } | undefined)?.title,
+        });
+        // ── 工作记录：左栏 = 实体分组（服务端聚合 + 分页）───────────
+        // 聚合必须在**整段历史**上做，否则实体计数会随当前页漂移。
+        const wrmode = url.searchParams.get('mode') ?? '';
+        const entityKey = url.searchParams.get('entity') ?? '';
+        /** 左栏实体类别筛选：`task` / `requirement` / `channel` / `none`（空 = 全部）。 */
+        const entityKindFilter = (url.searchParams.get('entityKind') ?? '').trim();
+        const SCAN = Math.min(Number.parseInt(url.searchParams.get('scan') ?? '5000', 10) || 5000, 50000);
+        /** 状态的唯一读取归一：`status=bounced` 必须能命中历史 `dropped` 行（反之亦然）。 */
+        const statusWanted = status ? normalizeSignalStatus(status) : undefined;
+        /**
+         * 扫描缓存。
+         *
+         * `groups` 和 `entity` 两条通路都需要在**整段历史**上做实体解析（实体是
+         * `workUnitRef` + payload 兼底解出来的，没法用 SQL 直接过滤）。
+         * 旧写法每点一个实体就把 5000 行重新拉一遍并逐行 resolve → 手感上就是「很卡」。
+         *
+         * 【为什么缓存键**不含**状态/类别筛选】筛选现在是**扫描后**在内存里做的：
+         * 同一批行要同时回答「左栏有几条 / 右栏有哪些 / 另一根轴各多少个」。
+         * 把筛选放进缓存键就会为同一个 agent 缓存多份几乎一样的行，而且
+         * 「按状态筛选后的计数」会把筛选自身当成事实来回答。
+         */
+        type ResolvedMailboxRow = { row: Record<string, unknown>; kind: string; key: string; name: string };
+        /**
+         * 工作记录**不收录**的执行流水/遥测：
+         *
+         *  - `heartbeat`：旧调度器的节拍器 tick（登记表 `producedBy: ['legacy']`）。
+         *    全库 169 233 条，不回答「这是哪件事」；它的去处是「心跳」页与运行态。
+         *  - **无实体归属**的 `callback_result`：后台命令回执（`[BACKGROUND PROCESS
+         *    COMPLETED] … tail -c 200 …`）。有实体归属（带 workUnitRef / taskId）的
+         *    回执照常进工作记录并落在那个实体上；没归属的只回答“命令跑完了”。
+         *
+         * 【为什么在扫描层统一滤】左栏实体、kindCounts、statusCounts、右栏记录必须
+         * 同一个宇宙；只滤一处就是同一条事实两种统计。数据一条不删，只不进这块面板。
+         */
+        const WORKLOG_ALWAYS_TELEMETRY = new Set(['heartbeat']);
+        const WORKLOG_TELEMETRY_WHEN_UNOWNED = new Set(['callback_result']);
+        const isWorkLogRow = (r: ResolvedMailboxRow): boolean => {
+          const t = String(r.row['sourceType'] ?? '');
+          if (WORKLOG_ALWAYS_TELEMETRY.has(t)) return false;
+          if (r.kind === 'none' && WORKLOG_TELEMETRY_WHEN_UNOWNED.has(t)) return false;
+          return true;
+        };
+        const scanCacheRef = this as unknown as { __wrScanCache?: Map<string, { at: number; rows: ResolvedMailboxRow[] }> };
+        const scanCache = (scanCacheRef.__wrScanCache ??= new Map());
+        const scanKey = JSON.stringify([agentId, SCAN]);
+        const scannedRows = (): ResolvedMailboxRow[] => {
+          const now = Date.now();
+          const hit = scanCache.get(scanKey);
+          if (hit && now - hit.at < 15000) return hit.rows;
+          const raw = this.storage!.mailboxRepo!.getHistory(agentId, { limit: SCAN, offset: 0 }) as unknown as Array<Record<string, unknown>>;
+          const rows: ResolvedMailboxRow[] = raw.map(row => {
+            const ent = resolveEntity(row as never);
+            return {
+              row,
+              kind: ent?.kind ?? 'none',
+              // 未归属桶用**非空哨兵键** `none:`：空串在客户端会被当成「没选实体」。
+              key: ent ? `${ent.kind}:${ent.id}` : 'none:',
+              name: ent?.name ?? '',
+            };
+          }).filter(isWorkLogRow);
+          if (scanCache.size > 32) scanCache.clear();
+          scanCache.set(scanKey, { at: now, rows });
+          return rows;
+        };
+        /** 当前 agent 里**陈旧** processing 行数（与「清理」按钮同一判据）。 */
+        const staleProcessingCount = (() => {
+          try { return agent.getMailbox().countStaleProcessing(); } catch { return 0; }
+        })();
+
+        if (wrmode === 'groups' && this.storage?.mailboxRepo) {
+          // 扫描结果 = 全量历史（无筛选）。两根轴（实体类别 / 状态）在这里**各筛一次**，
+          // 计数与列表从同一批行派生 —— 否则「筛选后的列表」与「筛选后的计数」会互相矛盾。
+          const base = scannedRows().filter(r => {
+            if (!sourceTypes || sourceTypes.length === 0) return true;
+            return sourceTypes.includes(String(r.row['sourceType'] ?? ''));
+          });
+          const kindCounts: Record<string, number> = {};
+          for (const r of base) kindCounts[r.kind] = (kindCounts[r.kind] ?? 0) + 1;
+          const kindScoped = entityKindFilter ? base.filter(r => r.kind === entityKindFilter) : base;
+          const statusCounts: Record<string, number> = {};
+          for (const r of kindScoped) {
+            const s = normalizeSignalStatus(String(r.row['status'] ?? ''));
+            statusCounts[s] = (statusCounts[s] ?? 0) + 1;
+          }
+          const all = statusWanted
+            ? kindScoped.filter(r => normalizeSignalStatus(String(r.row['status'] ?? '')) === statusWanted)
+            : kindScoped;
+          const agg = new Map<string, { kind: string; id: string; name: string; count: number; units: Set<string>; latestAt: string }>();
+          const toIndex: Array<{ id: string; kind: string; entityId: string }> = [];
+          for (const { row, kind, key, name } of all) {
+            // 顺手把解析结果回填到 entity_kind/entity_id（只填 NULL 行）。
+            // 旧库因此会在第一次扫描后自己完成迁移，不需要单独跑迁移脚本。
+            if (kind !== 'none' && row['entityId'] == null) {
+              toIndex.push({ id: String(row['id']), kind, entityId: key.slice(kind.length + 1) });
+            }
+            const at = String(row['queuedAt'] ?? row['createdAt'] ?? '');
+            const hit = agg.get(key);
+            const ref = row['workUnitRef'];
+            if (hit) {
+              hit.count++;
+              if (typeof ref === 'string') hit.units.add(ref);
+              if (at > hit.latestAt) hit.latestAt = at;
+            } else {
+              agg.set(key, {
+                kind,
+                id: kind === 'none' ? '' : key.slice(kind.length + 1),
+                name,
+                count: 1,
+                units: new Set<string>(typeof ref === 'string' ? [ref] : []),
+                latestAt: at,
+              });
+            }
+          }
+          const sorted = [...agg.entries()]
+            .map(([key, g]) => ({ key, kind: g.kind, id: g.id, name: g.name, count: g.count, units: g.units.size, latestAt: g.latestAt }))
+            .sort((a, b) => (b.latestAt > a.latestAt ? 1 : b.latestAt < a.latestAt ? -1 : 0));
+          try { this.storage.mailboxRepo.setEntityKeys(toIndex); } catch { /* 回填失败不影响本次返回 */ }
+          const size = Math.min(Math.max(limit, 1), 200);
+          this.json(res, 200, {
+            groups: sorted.slice(offset, offset + size),
+            totalGroups: sorted.length,
+            scanned: all.length,
+            kindCounts,
+            statusCounts,
+            staleProcessingCount,
+            offset,
+            limit: size,
+            hasNext: offset + size < sorted.length,
+          });
+          return;
+        }
+
+        if (entityKey && this.storage?.mailboxRepo) {
+          // ── 工作记录：右栏 = 某实体的**全部**记录（不分页）───────────
+          const MAX_ITEMS = 2000;
+          const [entKindRaw, ...entIdParts] = entityKey.split(':');
+          const entKind = entKindRaw ?? '';
+          const entId = entIdParts.join(':');
+          // 1) 已回填的行：走 idx_mailbox_entity（快路径，不再扫全量）
+          const indexed = (entKind && entId
+            ? this.storage.mailboxRepo.getByEntityKey(agentId, entKind, entId, MAX_ITEMS)
+            : []) as unknown as Array<Record<string, unknown>>;
+          // 2) 旧行（entity_* 为 NULL）：用**同一个**解析器兜底 —— 旧库照旧可读，
+          //    不依赖任何迁移脚本先跑过。
+          const legacyAll = this.storage.mailboxRepo.getUnindexed(agentId, SCAN) as unknown as Array<Record<string, unknown>>;
+          const legacyMatched = legacyAll.filter(row => {
+            const ent = resolveEntity(row as never);
+            return (ent ? `${ent.kind}:${ent.id}` : 'none:') === entityKey;
+          });
+          // 顺手把命中行的解析结果回填，下次就走索引
+          try {
+            this.storage.mailboxRepo.setEntityKeys(legacyMatched.map(row => {
+              const ent = resolveEntity(row as never);
+              return { id: String(row['id']), kind: ent?.kind ?? '', entityId: ent?.id ?? '' };
+            }).filter(x => x.kind && x.entityId));
+          } catch { /* 回填失败不影响本次返回 */ }
+          const matched0 = [...indexed, ...legacyMatched]
+            .sort((a, b) => (String(b['queuedAt'] ?? '') > String(a['queuedAt'] ?? '') ? 1 : -1));
+          // 右栏必须听筛选片的话：此前这条通路**完全忽略** `status` / `sourceTypes`
+          // （只有左栏的 groups 通路应用了它们），于是「切换状态筛选，右栏列表纹丝不动」。
+          // 状态比对走读路径归一（`bounced` ↔ 历史 `dropped`）。
+          const matched = matched0
+            .filter(row => {
+              if (!sourceTypes || sourceTypes.length === 0) return true;
+              return sourceTypes.includes(String(row['sourceType'] ?? ''));
+            })
+            .filter(row => !statusWanted || normalizeSignalStatus(String(row['status'] ?? '')) === statusWanted)
+            .slice(0, MAX_ITEMS);
+          const ids = matched.map(r => String(r['id']));
+          const dMap = this.storage.decisionRepo ? this.storage.decisionRepo.getByMailboxItemIds(ids) : new Map<string, unknown[]>();
+          const aMap = this.storage.activityRepo ? this.storage.activityRepo.getByMailboxItemIds(ids) : new Map<string, unknown>();
+          history = matched.map(row => {
+            const enriched: Record<string, unknown> = { ...row };
+            enriched.decisions = dMap.get(String(row['id'])) ?? [];
+            enriched.entity = resolveEntity(row as never);
+            const act = aMap.get(String(row['id'])) as Record<string, unknown> | undefined;
+            enriched.activity = act ? {
+              id: act.id, type: act.type, label: act.label,
+              startedAt: act.startedAt, endedAt: act.endedAt,
+              workUnitRef: act.workUnitRef ?? null,
+              totalTokens: act.totalTokens, totalTools: act.totalTools, success: act.success,
+            } : null;
+            // 正文不在列表里带（两条记录路径同一规则）：展开单卡时走 `?itemId=` 取。
+            const rawPayload = enriched.payload as Record<string, unknown> | undefined;
+            let slim: Record<string, unknown> | undefined = rawPayload;
+            const extra = rawPayload?.['extra'] as Record<string, unknown> | undefined;
+            if (extra && (extra['sessionHint'] || extra['sessionRestore'])) {
+              const se: Record<string, unknown> = { ...extra };
+              for (const k of ['sessionHint', 'sessionRestore'] as const) {
+                const v = se[k] as Record<string, unknown> | undefined;
+                if (!v || typeof v !== 'object' || !('messages' in v)) continue;
+                const dropped = v['messages'];
+                const copy: Record<string, unknown> = { ...v };
+                delete copy['messages'];
+                copy['messagesDropped'] = Array.isArray(dropped) ? dropped.length : 0;
+                se[k] = copy;
+              }
+              slim = { ...rawPayload, extra: se };
+            }
+            const content = slim?.['content'];
+            if (typeof content === 'string' && content.length > 0) {
+              const lean: Record<string, unknown> = { ...slim };
+              delete lean['content'];
+              slim = lean;
+              enriched.contentTruncated = true;
+              enriched.contentLength = content.length;
+            }
+            if (slim !== rawPayload) enriched.payload = slim;
+            return enriched;
+          });
+          this.json(res, 200, { history, matched: matched.length, truncatedByScan: legacyAll.length >= SCAN, staleProcessingCount });
+          return;
+        }
+
+        if (itemId && this.storage?.mailboxRepo) {
+          // 单条详情：不截断，原样返回全文。
+          const one = this.storage.mailboxRepo.getById(itemId);
+          if (one) {
+            const enriched: Record<string, unknown> = { ...one };
+            enriched.entity = resolveEntity(one as unknown as Record<string, unknown>);
+            enriched.decisions = this.storage?.decisionRepo
+              ? (this.storage.decisionRepo.getByMailboxItemIds([itemId]).get(itemId) ?? [])
+              : [];
+            history = [enriched];
+          }
+        } else if (this.storage?.mailboxRepo) {
           const raw = this.storage.mailboxRepo.getHistory(agentId, { limit, offset, sourceTypes, status });
           const itemIds = raw.map((item: { id: string }) => item.id);
 
@@ -5875,6 +7058,7 @@ export class APIServer {
           history = raw.map((item: { id: string; [k: string]: unknown }) => {
             const enriched: Record<string, unknown> = { ...item };
             enriched.decisions = decisionsMap.get(item.id) ?? [];
+            enriched.entity = resolveEntity(item);
             const act = activitiesMap.get(item.id) as Record<string, unknown> | undefined;
             enriched.activity = act ? {
               id: act.id,
@@ -5882,10 +7066,49 @@ export class APIServer {
               label: act.label,
               startedAt: act.startedAt,
               endedAt: act.endedAt,
+              workUnitRef: act.workUnitRef ?? null,
               totalTokens: act.totalTokens,
               totalTools: act.totalTools,
               success: act.success,
             } : null;
+            // 【列表只给摘要】一条 `human_chat` 的 `payload.content` 实测可达 ~100KB，
+            // 50 条 = **2.68MB**：每次交互前端都要先 JSON.parse 这份载荷、再在它上面
+            // 重新分组/渲染，滚一次又追加 2.68MB。DB 查询只要 48ms，卡的是载荷。
+            // 收起态只用 title/subtitle/徽标，用不到全文 → 这里截断并打标记，
+            // 展开时前端再走 `GET /agents/:id/mailbox/:itemId` 取全文。
+            const rawPayload = enriched.payload as Record<string, unknown> | undefined;
+            let slimPayload: Record<string, unknown> | undefined = rawPayload;
+            // 【真正的重量在这里】一条 human_chat 实测 ~95KB，其中 **98% 是
+            // `payload.extra.sessionHint.messages` 与 `payload.extra.sessionRestore.messages`**
+            // —— 同一份会话历史被内嵌了两遍（各约 46KB）。那是**入队时给回合用的路由上下文**，
+            // 工作记录列表从不渲染它。列表里只留标量路由字段（kind / dbSessionId / isRetry …），
+            // 消息数组丢掉并留一个长度计数，需要时能看出它存在但不再占载荷。
+            const extra = rawPayload?.['extra'] as Record<string, unknown> | undefined;
+            if (extra && (extra['sessionHint'] || extra['sessionRestore'])) {
+              const slimExtra: Record<string, unknown> = { ...extra };
+              for (const k of ['sessionHint', 'sessionRestore'] as const) {
+                const v = slimExtra[k] as Record<string, unknown> | undefined;
+                if (!v || typeof v !== 'object' || !('messages' in v)) continue;
+                const dropped = v['messages'];
+                const copy: Record<string, unknown> = { ...v };
+                delete copy['messages'];
+                copy['messagesDropped'] = Array.isArray(dropped) ? dropped.length : 0;
+                slimExtra[k] = copy;
+              }
+              slimPayload = { ...rawPayload, extra: slimExtra };
+            }
+            // 【列表不带正文】正文只在展开单卡时取（`?itemId=`）。收起态只渲染标题/副标题/
+            // 徽标，正文是纯死重量：带着它，每追加一页就多一份 JSON.parse + 对象图遍历，
+            // 而「加载过程中」正是体感最卡的时候（加载完不再追加就变顺）。
+            const content = slimPayload?.['content'];
+            if (typeof content === 'string' && content.length > 0) {
+              const lean: Record<string, unknown> = { ...slimPayload };
+              delete lean['content'];
+              slimPayload = lean;
+              enriched.contentTruncated = true;
+              enriched.contentLength = content.length;
+            }
+            if (slimPayload !== rawPayload) enriched.payload = slimPayload;
             return enriched;
           });
         }
@@ -5905,6 +7128,7 @@ export class APIServer {
           queueDepth: queued.length,
           statusCounts,
           sourceTypeCounts,
+          staleProcessingCount,
           history,
         });
       } catch {
@@ -5915,16 +7139,44 @@ export class APIServer {
 
     // Agent mailbox — runtime stale-processing recovery (manual「清理」entry).
     // 「运行与注意力」amber 警告条旁的清理按钮调这里：把卡在 processing 的陈旧行
-    // 标为 dropped（租约感知，不误杀其它实例/在飞项），让运行中可自愈而不必重启。
+    // 标为 bounced(lease_expired) 并归集到 catch-all（租约感知，不误杀其它实例/在飞项），
+    // 让运行中可自愈而不必重启。
     // 对应 docs/records/message-stop-cancel-fix-plan.md §2.3c 残余 → §2.6 步骤 2c。
     if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/) && req.method === 'POST') {
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
-        const dropped = agent.getMailbox().cleanStaleProcessing();
-        this.json(res, 200, { dropped });
+        // C3：写的是 bounced 行（原因 lease_expired），响应字段必须同名 ——
+        // 继续叫 `dropped` 会让调用方以为那个终态还在。
+        const bounced = agent.getMailbox().cleanStaleProcessing();
+        this.json(res, 200, { bounced });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // 单个 agent 的磁盘占用（只扫它自己的目录）。
+    //
+    // 【为什么需要独立入口】概览「设置」组原先调 `/api/system/storage` —— 它会遍历
+    // 整个数据目录（每个 agent 子目录都扫一遍，实测 1.4s / 60KB+），而页面上只用到
+    // 其中一个 agent 的数字。一次「看一眼」要等全组织扫描，体感就是「加载特别慢」。
+    // 这里只走 `bucketedDirUsage(agentDir)`：同一套分桶规则（标签不会与内容漂移），
+    // 代价从 O(全部 agent) 降为 O(1 个 agent)。
+    if (path.match(/^\/api\/agents\/[^/]+\/storage$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agentDataDir = join(this.orgService.getAgentManager().getDataDir(), agentId);
+        const usage = await bucketedDirUsage(agentDataDir);
+        this.json(res, 200, {
+          agentId,
+          dataDir: agentDataDir,
+          size: usage.total,
+          subItems: usage.buckets,
+          depthLimited: usage.depthLimited,
+        });
+      } catch (err) {
+        this.json(res, 404, { error: `Agent storage unavailable: ${String(err)}` });
       }
       return;
     }
@@ -5933,8 +7185,8 @@ export class APIServer {
     // cancel-processing (打断 = stop the running turn and requeue its item) and
     // from recover-stale (bulk cleanup of stuck rows): here the operator says
     // "this particular item should not be handled", and why. The reason is
-    // logged and broadcast as `mailbox:dropped`, so a dropped message is
-    // traceable instead of just never arriving.
+    // logged and broadcast, and the item becomes a `bounced(stale_signal)` row in
+    // the catch-all overview — C3 deleted the old reason-less `dropped` terminal.
     if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/[^/]+\/drop$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -5947,8 +7199,15 @@ export class APIServer {
         : 'operator';
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
-        const dropped = agent.getMailbox().drop(itemId, `operator: ${reason}`);
-        this.json(res, 200, { status: 'dropped', itemId, dropped: Boolean(dropped) });
+        const bounced = agent.getMailbox().drop(itemId, `operator: ${reason}`);
+        // C3：终态是 bounced→catch_all（drop_reason='stale_signal'），不再是 dropped。
+        this.json(res, 200, {
+          status: 'bounced',
+          dropReason: 'stale_signal',
+          itemId,
+          // 「这次丢弃是否真的生效」——不叫 dropped：那个终态已不存在。
+          applied: Boolean(bounced),
+        });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -6011,9 +7270,25 @@ export class APIServer {
         }
         if (body['agentRole'] !== undefined) cfg.agentRole = body['agentRole'];
         if (body['skills'] !== undefined) cfg.skills = body['skills'];
-        if (body['llmConfig'] !== undefined) {
+        // Only touch the model column when the caller actually sent it. This
+        // used to write `cfg.llmConfig` back unconditionally, so an unrelated
+        // PATCH (rename, title) rewrote the column from the in-memory object and
+        // could clobber a newer value written by an agent's own tool.
+        const llmConfigProvided = body['llmConfig'] !== undefined;
+        const previousLlmConfig = cfg.llmConfig;
+        if (llmConfigProvided) {
           const lc = body['llmConfig'] as Record<string, unknown>;
-          cfg.llmConfig = { ...(cfg.llmConfig as Record<string, unknown>), ...lc };
+          const merged: Record<string, unknown> = { ...(cfg.llmConfig as Record<string, unknown>) };
+          for (const [key, value] of Object.entries(lc)) {
+            // `null` means "remove this key". A plain spread cannot express that:
+            // callers used to send `defaultModel: undefined`, JSON.stringify
+            // dropped it, and the merge kept the old model on the row — so
+            // resetting to "follow global" left a stale model that resurrected
+            // itself the next time the mode flipped back to 'custom'.
+            if (value === null) delete merged[key];
+            else merged[key] = value;
+          }
+          cfg.llmConfig = merged;
         }
         // Apply the heartbeat interval live (clamped) so the scheduler picks
         // up the new cadence immediately without a process restart.
@@ -6041,12 +7316,20 @@ export class APIServer {
               name: body['name'] !== undefined ? stripHtmlTags(body['name'] as string) : undefined,
               agentRole: body['agentRole'] as string | undefined,
               skills: body['skills'] as unknown,
-              llmConfig: cfg.llmConfig,
+              llmConfig: llmConfigProvided ? cfg.llmConfig : undefined,
               heartbeatIntervalMs: effectiveHeartbeatMs,
               profile: titleProvided ? cfg.profile : undefined,
             });
           } catch (persistErr) {
-            log.warn('Failed to persist agent config to DB', { agentId, error: String(persistErr) });
+            // A failed write must not answer 200. It used to log a warning and
+            // report success, so the UI showed the new model, the live process
+            // used it, and the binding evaporated on the next restart because
+            // the row was never updated. Roll the live value back so memory and
+            // DB agree, then tell the caller it did not save.
+            if (llmConfigProvided) cfg.llmConfig = previousLlmConfig;
+            log.error('Failed to persist agent config to DB', { agentId, error: String(persistErr) });
+            this.json(res, 500, { error: 'Failed to save agent config; the change was not persisted' });
+            return;
           }
         }
 
@@ -6073,12 +7356,44 @@ export class APIServer {
         // 否则「观察缓冲很大」会被误读成「注入知识超预算」。
         const health = (() => {
           try {
-            const h = (mem as unknown as { getMemoryHealth?: () => { percent: number; curatedChars: number; curatedCap: number; observationPercent: number; observationChars: number; observationCap: number; observations: number; curatedSections: number; archiveChars: number; lastConsolidatedAt: string | null } }).getMemoryHealth?.();
+            const h = (mem as unknown as {
+              getMemoryHealth?: () => {
+                injectedChars: number;
+                injectionCapChars: number;
+                injectionUsedPercent: number;
+                omittedSectionCount: number;
+                injectionMeasured: boolean;
+                curatedChars: number;
+                curatedCap: number;
+                curatedPercent: number;
+                observationPercent: number;
+                observationChars: number;
+                observationCap: number;
+                observations: number;
+                curatedSections: number;
+                archiveChars: number;
+                lastConsolidatedAt: string | null;
+              };
+            }).getMemoryHealth?.();
+            // 【为什么要交两套数字，而不是一个 usedPercent】记忆有两个**独立预算**：
+            //   ① 注入轴：本轮 prompt 实际注入了多少知识 / 本轮注入上限（4800 或 6000）；
+            //   ② 磁盘策展区：knowledge.md 的 curated 区字节数 / 15000（仅报告）。
+            // 旧响应只交 `usedPercent`（注入轴）+ `budgetChars/budgetLimit`（磁盘轴）——
+            // 前端拿一个当数字、另一个当进度条宽度，于是“百分比”与“条”永远对不上。
+            // 现在两轴各自成套下发（名字与分子分母同名），前端不需要再自己猜哪个是哪个。
             return h
               ? {
-                  usedPercent: h.percent,
-                  budgetChars: h.curatedChars,
-                  budgetLimit: h.curatedCap,
+                  // ① 注入轴（每轮变，受 prompt 预算约束）
+                  injectedChars: h.injectedChars,
+                  injectionCapChars: h.injectionCapChars,
+                  injectionPercent: h.injectionUsedPercent,
+                  injectionOmittedCount: h.omittedSectionCount,
+                  injectionMeasured: h.injectionMeasured,
+                  // ② 磁盘策展区（仅报告；超了会被无损归档）
+                  curatedChars: h.curatedChars,
+                  curatedCap: h.curatedCap,
+                  curatedPercent: h.curatedPercent,
+                  // ③ 观察缓冲（不注入）
                   observationPercent: h.observationPercent,
                   observationChars: h.observationChars,
                   observationLimit: h.observationCap,
@@ -6778,7 +8093,11 @@ EXPLANATION_END`;
             heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
             orgId: agent.config.orgId,
             teamId: agent.config.teamId,
-            createdAt: agent.config.createdAt,
+            // 【为什么取持久层那一列】`agent.config.createdAt` 是**运行时对象**的
+            // 字段（构造/恢复时生成），重启一次就是「现在」——前端把它当「创建时间」
+            // 展示，于是同一个 agent 每次重启都“新建”一次。真正的创建时间只有
+            // `agents.created_at` 这一列有（写入即不变）。
+            createdAt: storedAgent?.createdAt ? storedAgent.createdAt.toISOString() : agent.config.createdAt,
           },
           effectiveModel: (agent as unknown as { getEffectiveModelInfo?: () => { provider?: string; model?: string; source: 'override' | 'custom' | 'global' } }).getEffectiveModelInfo?.() ?? { source: 'global' },
           tools: toolList,
@@ -7070,6 +8389,8 @@ EXPLANATION_END`;
         : ({ kind: 'unknown', reason: 'POST /api/message 未提供 sessionId 或 channelId' } as const);
       if (stream) {
         const userText = body['text'] as string;
+        // C7-B：身份先于消息 —— 入队前就把本轮 WU 准备好（见 prepareChatTurnWorkUnit）。
+        const turnRef = await this.prepareChatTurnWorkUnit(targetAgentId, senderId);
 
         const sseHandler = new SSEHandler({
           agentId: targetAgentId,
@@ -7082,9 +8403,11 @@ EXPLANATION_END`;
           senderInfo,
           sessionHint,
           executionStreamRepo: this.storage?.executionStreamRepo,
-          onComplete: async (reply, segments, tokensUsed) => {
+          // C7-B：本轮 WU 身份随 item 一起落地（不再是入队后回填）。
+          workUnitRef: turnRef,
+          onComplete: async (reply, segments, tokensUsed, enqueuedItemId) => {
             const meta = segments.length > 0 ? { segments } : undefined;
-            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta);
+            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, this.memorySessionIdOf(agent), turnRef);
           },
         });
 
@@ -7093,8 +8416,20 @@ EXPLANATION_END`;
         const userText = body['text'] as string;
         const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
         let reply: string;
+        // 与 SSE 路径同源：item id 只能来自入队回调，不能猜。
+        let enqueuedItemId: string | null = null;
+        // C7-B：同上 —— 身份先于消息。
+        const turnRef = await this.prepareChatTurnWorkUnit(targetAgentId, senderId);
         try {
-          reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint });
+          reply = await agent.sendMessage(userText, senderId, senderInfo, {
+            // Agent Chat 面板的人类消息 → 'chat'（显式表态）。
+            scenario: 'chat',
+            images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint,
+            workUnitRef: turnRef,
+            onItemEnqueued: (item) => {
+              enqueuedItemId = item.id;
+            },
+          });
         } catch (err) {
           throw err;
         }
@@ -7104,7 +8439,7 @@ EXPLANATION_END`;
         // segment shape the SSE path persists).
         const segments = buildNonStreamingSegments({ thinking, toolEvents, cleanReply });
         const meta = segments ? { segments } : undefined;
-        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta);
+        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId, this.memorySessionIdOf(agent), turnRef);
       }
       const _st2 = agent.getState();
       this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt, currentActivity: _st2.currentActivity });
@@ -8007,6 +9342,98 @@ EXPLANATION_END`;
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const summary = this.auditService.summary(orgId);
       this.json(res, 200, { summary });
+      return;
+    }
+
+    // ── Facts audit (C9-E) ─────────────────────────────────────────────────
+    //
+    // 只读、只给 owner/admin。产品口径：**人不感知事实本身**，但证据链与审计痕迹
+    // 必须可见 —— 所以这是一个“深链页面 + 后端硬门”的组合：前端不挂载页面，
+    // 后端仍然 403（深链接、直接 curl 都过不去；不靠 UI 隐藏作为访问控制）。
+    //
+    // 无写入口：只有 GET。断言/取代/验证三个动作只存在于 agent 工具层，
+    // 审计页不可能成为第二个写者。
+    if (path === '/api/facts' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Access denied: the facts audit trail is owner/admin only' });
+        return;
+      }
+      const factService = this.storage?.factService;
+      if (!factService) {
+        // 「没有接线」与「没有数据」必须是两个不同的回答：空表会被读成“一条事实也没有”。
+        this.json(res, 200, { facts: [], truncated: false, disabled: true });
+        return;
+      }
+      const limitParam = url.searchParams.get('limit');
+      const limit = limitParam ? Math.max(1, Math.min(Number(limitParam) || 200, 1000)) : 200;
+      const rows = factService.queryActive({
+        subjectKind: (url.searchParams.get('subjectKind') as FactSubjectKind | null) ?? undefined,
+        subjectId: url.searchParams.get('subjectId') ?? undefined,
+        predicate: url.searchParams.get('predicate') ?? undefined,
+        predicatePrefix: url.searchParams.get('predicatePrefix') ?? undefined,
+        activeOnly: url.searchParams.get('includeSuperseded') === '1' ? false : true,
+        createdAfter: url.searchParams.get('since') ?? undefined,
+        createdBefore: url.searchParams.get('until') ?? undefined,
+        limit,
+      });
+      const auditRows = rows as Array<{
+        id: string; subjectKind: string; subjectId: string; predicate: string; value: unknown;
+        workUnitRef: string; assertedBy: string; sourceRefs: string[];
+        verification?: { result: 'pass' | 'fail'; verified_by: string; evidence_refs?: string[]; verified_at?: string; work_unit_ref?: string };
+        confidence: number; createdAt: string; supersededBy?: string; supersededAt?: string;
+      }>;
+      // 页面是给人看的：能解析出名字就带名字，id 退到次级位置（title 提示保留 id）。
+      // 同一请求内缓存解析结果 —— 一张表里 200 行不该打出 400 次 findById。
+      const labelCache = new Map<string, string | null>();
+      const labelOf = (kind: string, id: string | null | undefined): string | null => {
+        if (!id) return null;
+        const key = `${kind}:${id}`;
+        if (labelCache.has(key)) return labelCache.get(key)!;
+        let label: string | null = null;
+        try {
+          const s = this.storage;
+          if (kind === 'task') label = (s?.taskRepo?.findById(id) as { title?: string } | undefined)?.title ?? null;
+          else if (kind === 'agent') label = (s?.agentRepo?.findById(id) as { name?: string } | undefined)?.name ?? null;
+          else if (kind === 'requirement') label = (s?.requirementRepo?.findById(id) as { title?: string } | undefined)?.title ?? null;
+          else if (kind === 'deliverable') label = (s?.deliverableRepo?.findById(id) as { title?: string } | undefined)?.title ?? null;
+          else if (kind === 'project') label = (s?.projectRepo?.findById(id) as { name?: string } | undefined)?.name ?? null;
+        } catch {
+          label = null; // 主体已被删除 / repo 不可用：没有名字不是错误，页面回落到 id。
+        }
+        labelCache.set(key, label);
+        return label;
+      };
+      this.json(res, 200, {
+        facts: auditRows.map(r => ({
+          id: r.id,
+          subjectKind: r.subjectKind,
+          subjectId: r.subjectId,
+          subjectLabel: labelOf(r.subjectKind, r.subjectId),
+          predicate: r.predicate,
+          value: r.value,
+          workUnitRef: r.workUnitRef,
+          assertedBy: r.assertedBy,
+          assertedByName: labelOf('agent', r.assertedBy),
+          sourceRefs: r.sourceRefs,
+          verification: r.verification
+            ? {
+                result: r.verification.result,
+                verifiedBy: r.verification.verified_by,
+                verifiedByName: labelOf('agent', r.verification.verified_by),
+                evidenceRefs: r.verification.evidence_refs ?? [],
+                verifiedAt: r.verification.verified_at,
+                workUnitRef: r.verification.work_unit_ref,
+              }
+            : null,
+          confidence: r.confidence,
+          createdAt: r.createdAt,
+          supersededBy: r.supersededBy ?? null,
+          supersededAt: r.supersededAt ?? null,
+        })),
+        truncated: rows.length >= limit,
+      });
       return;
     }
 
@@ -9336,6 +10763,7 @@ EXPLANATION_END`;
         return;
       }
       const { installEgress, EGRESS_PROBE_URL } = await import('@markus/shared');
+      const { classifyFetchFailure } = await import('@markus/comms');
       const status = await installEgress({ force: true });
       const startedAt = Date.now();
       try {
@@ -9347,16 +10775,29 @@ EXPLANATION_END`;
           latencyMs: Date.now() - startedAt,
           proxied: status.installed,
           source: status.policy.source,
-          error: probe.ok ? null : `probe returned HTTP ${probe.status}`,
+          probeUrl: EGRESS_PROBE_URL,
+          // The chain DID reach the probe, so a non-2xx here is not a routing
+          // failure — say that plainly instead of implying the proxy is broken.
+          failure: probe.ok ? null : { code: 'probe_http_error', detail: `HTTP ${probe.status}` },
         });
       } catch (err) {
+        // undici folds every transport failure into `TypeError: fetch failed` and
+        // hides the real errno on `cause`. Serialising String(err) to the UI made the
+        // settings page print that internal exception verbatim, which tells the user
+        // nothing and does not distinguish "proxy not running" from "bad host" from
+        // "timeout" — three different remedies. classifyFetchFailure recovers the
+        // errno here, once, so the UI can switch on a code instead of parsing prose.
+        const classified = classifyFetchFailure(err);
         this.json(res, 200, {
           ok: false,
           exitIp: null,
           latencyMs: Date.now() - startedAt,
           proxied: status.installed,
           source: status.policy.source,
-          error: String(err),
+          probeUrl: EGRESS_PROBE_URL,
+          failure: classified
+            ? { code: classified.code, detail: classified.detail }
+            : { code: 'probe_failed', detail: err instanceof Error ? err.message : String(err) },
         });
       }
       return;
@@ -12775,7 +14216,7 @@ EXPLANATION_END`;
     if (path === '/api/system/storage' && req.method === 'GET') {
       try {
         const dataDir = join(homedir(), '.markus');
-        const result = this.collectStorageInfo(dataDir);
+        const result = await this.collectStorageInfo(dataDir);
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 500, { error: `Storage scan failed: ${String(err)}` });
@@ -12785,7 +14226,7 @@ EXPLANATION_END`;
 
     if (path === '/api/system/storage/orphans' && req.method === 'GET') {
       try {
-        const result = this.detectOrphans();
+        const result = await this.detectOrphans();
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 500, { error: `Orphan detection failed: ${String(err)}` });
@@ -12797,7 +14238,7 @@ EXPLANATION_END`;
       try {
         const body = await this.readBody(req);
         const ids = Array.isArray(body?.ids) ? body.ids as string[] : undefined;
-        const result = this.purgeOrphans(ids);
+        const result = await this.purgeOrphans(ids);
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 500, { error: `Orphan cleanup failed: ${String(err)}` });
@@ -14327,6 +15768,7 @@ EXPLANATION_END`;
 
       // ── Orgs ─────────────────────────────────────────────────────────────
       exact('/api/orgs', 'GET', 'POST'),
+      regex(/^\/api\/orgs\/[^/]+\/cross-org-policy$/, 'POST'),
 
       // ── Message ──────────────────────────────────────────────────────────
       exact('/api/message', 'POST'),
@@ -14423,6 +15865,8 @@ EXPLANATION_END`;
       exact('/api/audit', 'GET'),
       exact('/api/audit/summary', 'GET'),
       exact('/api/audit/tokens', 'GET'),
+      // C9-E: facts audit trail (owner/admin, read-only).
+      exact('/api/facts', 'GET'),
 
       // ── Plan ─────────────────────────────────────────────────────────────
       exact('/api/plan', 'GET', 'POST'),
@@ -14622,6 +16066,12 @@ EXPLANATION_END`;
   setDeliverableService(svc: DeliverableService): void {
     this.deliverableService = svc;
   }
+  /** C10-B：外部信号源服务（webhook 入口 + RSS 轮询 + 源 CRUD 唯一裁决）。惰性接线（cli 注入）。 */
+  private externalSourceService?: ExternalSourceService;
+  setExternalSourceService(svc: ExternalSourceService): void {
+    this.externalSourceService = svc;
+  }
+
   setRequirementService(svc: RequirementService): void {
     this.requirementService = svc;
   }
@@ -14767,7 +16217,11 @@ EXPLANATION_END`;
     res.end(payload);
   }
 
-  readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  readBody(
+    req: IncomingMessage,
+    opts: { maxBytes?: number } = {},
+  ): Promise<Record<string, unknown>> {
+    const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BODY_BYTES;
     // Return cached body if already pre-read at route level (BUG-003/005)
     const cached: unknown = (req as any).__parsedBody__;
     if (cached !== undefined) {
@@ -14790,8 +16244,27 @@ EXPLANATION_END`;
       }
 
       const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      // 超限后**继续排水但不缓冲**：既不把内存交给调用者，也不用 destroy 掐掉连接
+      // （掐连接会让 413 根本发不出去，调用方只看到 connection reset）。
+      let received = 0;
+      let tooLarge = false;
+      req.on('data', (chunk: Buffer) => {
+        received += chunk.length;
+        if (tooLarge) return;
+        if (received > maxBytes) {
+          tooLarge = true;
+          chunks.length = 0;
+          return;
+        }
+        chunks.push(chunk);
+      });
       req.on('end', () => {
+        if (tooLarge) {
+          const err = new Error(`BODY_TOO_LARGE: request body exceeds ${maxBytes} bytes`);
+          (req as any).__parsedBody__ = err;
+          reject(err);
+          return;
+        }
         try {
           const raw = Buffer.concat(chunks).toString();
           const parsed = JSON.parse(raw);
@@ -14862,25 +16335,17 @@ EXPLANATION_END`;
     return null;
   }
 
-  private collectStorageInfo(dataDir: string): StorageScanResult {
+  private async collectStorageInfo(dataDir: string): Promise<StorageScanResult> {
     const cached = storageScanCache;
     if (cached && cached.key === dataDir && Date.now() - cached.at < STORAGE_SCAN_TTL_MS) {
       return cached.value;
     }
 
-    const dirSize = (p: string, maxDepth = 3, depth = 0): number => {
-      if (!existsSync(p)) return 0;
-      try {
-        const st = statSync(p);
-        if (st.isFile()) return st.size;
-        if (!st.isDirectory() || depth >= maxDepth) return 0;
-        let total = 0;
-        for (const entry of readdirSync(p, { withFileTypes: true })) {
-          total += dirSize(join(p, entry.name), maxDepth, depth + 1);
-        }
-        return total;
-      } catch { return 0; }
-    };
+    // One walk implementation lives in storage-usage.ts. The inline copy that used to
+    // sit here called `readdirSync`/`statSync`, so the whole scan ran on the event loop:
+    // on a real org (100+ agents) that is a measured >60 s during which *every* other
+    // request in the app is frozen — which is why opening the data page appeared to
+    // hang the entire application, not just that page.
 
     const topLevelItems: Array<{ name: string; path: string; size: number; description: string }> = [
       { name: 'Database', path: join(dataDir, 'data.db'), size: 0, description: 'SQLite database (tasks, agents, chat, etc.)' },
@@ -14900,7 +16365,7 @@ EXPLANATION_END`;
           if (existsSync(f)) { try { item.size += statSync(f).size; } catch { /* */ } }
         }
       } else {
-        item.size = dirSize(item.path);
+        item.size = await dirSizeAsync(item.path);
       }
     }
 
@@ -14919,7 +16384,7 @@ EXPLANATION_END`;
         // `size` that was only the sum of those five picks (22% of the agent
         // directory missing) and a depth cap that bit silently. See
         // storage-usage.ts for the measurements.
-        const usage = bucketedDirUsage(agentDir);
+        const usage = await bucketedDirUsage(agentDir);
         agentInfos.push({
           id: entry.name,
           name: agent?.config?.name ?? entry.name,
@@ -14953,7 +16418,7 @@ EXPLANATION_END`;
     return value;
   }
 
-  private detectOrphans() {
+  private async detectOrphans() {
     const dataDir = join(homedir(), '.markus');
     const am = this.orgService.getAgentManager();
     const knownAgentIds = new Set(am.listAgents().map(a => a.id));
@@ -14963,27 +16428,13 @@ EXPLANATION_END`;
     const orphanAgents: Array<{ id: string; path: string; size: number }> = [];
     const orphanTeams: Array<{ id: string; path: string; size: number }> = [];
 
-    const dirSize = (p: string, maxDepth = 3, depth = 0): number => {
-      if (!existsSync(p)) return 0;
-      try {
-        const st = statSync(p);
-        if (st.isFile()) return st.size;
-        if (!st.isDirectory() || depth >= maxDepth) return 0;
-        let total = 0;
-        for (const entry of readdirSync(p, { withFileTypes: true })) {
-          total += dirSize(join(p, entry.name), maxDepth, depth + 1);
-        }
-        return total;
-      } catch { return 0; }
-    };
-
     const agentsDir = join(dataDir, 'agents');
     if (existsSync(agentsDir)) {
       for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
         if (!entry.isDirectory() || entry.name === 'vector-store') continue;
         if (!knownAgentIds.has(entry.name)) {
           const p = join(agentsDir, entry.name);
-          orphanAgents.push({ id: entry.name, path: p, size: dirSize(p) });
+          orphanAgents.push({ id: entry.name, path: p, size: await dirSizeAsync(p) });
         }
       }
     }
@@ -14994,7 +16445,7 @@ EXPLANATION_END`;
         if (!entry.isDirectory()) continue;
         if (!knownTeamIds.has(entry.name)) {
           const p = join(teamsDir, entry.name);
-          orphanTeams.push({ id: entry.name, path: p, size: dirSize(p) });
+          orphanTeams.push({ id: entry.name, path: p, size: await dirSizeAsync(p) });
         }
       }
     }
@@ -15006,10 +16457,10 @@ EXPLANATION_END`;
     };
   }
 
-  private purgeOrphans(ids?: string[]) {
+  private async purgeOrphans(ids?: string[]) {
     // Deleting directories invalidates the disk-usage cache.
     storageScanCache = null;
-    const orphans = this.detectOrphans();
+    const orphans = await this.detectOrphans();
     const filter = ids && ids.length > 0 ? new Set(ids) : null;
     const purgedAgents: string[] = [];
     const purgedTeams: string[] = [];

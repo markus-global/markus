@@ -22,8 +22,12 @@ const REVIEW = (taskId: string, round: number) => ({
   summary: `Review ${taskId} r${round}`,
   content: 'please review',
   taskId,
-  extra: { round },
 });
+/** 生产侧评审投递（第六刀 C2）：轮次是**结构字段**，不再写 `payload.extra.round`。 */
+const enqueueReview = (
+  mb: AgentMailbox, taskId: string, round: number,
+  options?: Parameters<AgentMailbox['enqueue']>[2],
+) => mb.enqueue('review_request', REVIEW(taskId, round), { ...options, round });
 
 interface FakeRow {
   id: string;
@@ -94,8 +98,8 @@ describe('P1.x (c) · resolveReinjectDecision 四态（唯一判定实现）', (
     }
   });
 
-  it('未收口终态（dropped / failed）→ reuse（允许补偿重投）', () => {
-    for (const s of ['dropped', 'failed']) {
+  it('未收口终态（bounced / failed / 历史 dropped）→ reuse（允许补偿重投）', () => {
+    for (const s of ['bounced', 'failed', 'dropped']) {
       const d = resolveReinjectDecision(row(s));
       expect(d.action, s).toBe('reuse');
     }
@@ -121,11 +125,11 @@ describe('P1.x (a)(b) · enqueue 复用原行回队（返回 queued）', () => {
     const { p, rows } = makeFake();
     const mb = makeMailbox(p);
 
-    const item = mb.enqueue('review_request', REVIEW('task_1', 1));
+    const item = enqueueReview(mb, 'task_1', 1);
     const dequeued = mb.dequeue()!;
     expect(rows.get(item.id)!.status).toBe('processing');
 
-    const requeued = mb.enqueue('review_request', REVIEW('task_1', 1), { reuseItemId: dequeued.id });
+    const requeued = enqueueReview(mb, 'task_1', 1, { reuseItemId: dequeued.id });
 
     expect(requeued.id, '复用原行 id（不新增行）').toBe(item.id);
     expect(requeued.status, 'QA 硬验收：必须返回 queued，不得返回 dropped').toBe('queued');
@@ -148,7 +152,7 @@ describe('P1.x (a)(b) · enqueue 复用原行回队（返回 queued）', () => {
     });
     const mb = makeMailbox(p);
 
-    const out = mb.enqueue('review_request', REVIEW('task_9', 2));
+    const out = enqueueReview(mb, 'task_9', 2);
 
     expect(out.id).toBe('mbx_old');
     expect(out.status).toBe('queued');
@@ -164,10 +168,10 @@ describe('P1.x (a)(b) · enqueue 复用原行回队（返回 queued）', () => {
     });
     const mb = makeMailbox(p);
 
-    const out = mb.enqueue('review_request', REVIEW('task_7', 1));
+    const out = enqueueReview(mb, 'task_7', 1);
 
-    expect(out.status).toBe('dropped');
-    expect(rows.get('mbx_done')!.status).toBe('completed');
+    expect(out.status).toBe('bounced');
+    expect(out.dropReason).toBe('duplicate_message_id');
     expect(mb.depth).toBe(0);
   });
 });
@@ -177,12 +181,13 @@ describe('P1.x · 既有 P0/P1 语义不回归', () => {
     const warn = vi.spyOn(Logger.prototype, 'warn');
     const { p, rows } = makeFake();
     const mb = makeMailbox(p);
-    mb.enqueue('review_request', REVIEW('task_5', 3));
+    enqueueReview(mb, 'task_5', 3);
 
     const resolve = vi.fn();
-    const dup = mb.enqueue('review_request', REVIEW('task_5', 3), { runtime: { responsePromise: { resolve } } } as never);
+    const dup = enqueueReview(mb, 'task_5', 3, { runtime: { responsePromise: { resolve } } } as never);
 
-    expect(dup.status).toBe('dropped');
+    expect(dup.status).toBe('bounced');
+    expect(dup.dropReason).toBe('duplicate_message_id');
     expect(resolve).toHaveBeenCalledWith('[duplicate-delivery-suppressed]');
     expect(rows.size).toBe(1);
     expect(warn.mock.calls.some(c => (c[1] as Record<string, unknown> | undefined)?.['event']
@@ -196,7 +201,7 @@ describe('P1.x · 既有 P0/P1 语义不回归', () => {
     };
     const mb = makeMailbox(legacy, 'agt_legacy');
 
-    expect(mb.enqueue('review_request', REVIEW('task_1', 1)).status).toBe('dropped');
+    expect(enqueueReview(mb, 'task_1', 1).status).toBe('bounced');
   });
 
   it('putBack 走 requeueItem，不再依赖 releaseClaim（D1）', () => {

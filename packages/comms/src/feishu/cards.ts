@@ -24,6 +24,37 @@ export interface NotificationCardAction {
 }
 
 /**
+ * A card button whose tap is reported through the app's **callback subscription**.
+ *
+ * Feishu picks the delivery channel from the button's *shape*:
+ *   • `behaviors: [{ type: 'callback', value }]` → the card-callback subscription,
+ *     which a desktop install receives over the long connection (no public URL);
+ *   • `value` alone → the legacy 「消息卡片请求网址」, i.e. a public URL.
+ *
+ * These cards only ever carried `value`, so taps were addressed to a URL that a
+ * long-connection install does not have. Feishu then answered the tap with
+ * "目标回调服务当前未在线" even though the long connection was healthy — an
+ * approval could not be completed from the card at all (found 2026-11-21).
+ *
+ * Both fields come from the SAME object on purpose: `behaviors` is the channel we
+ * want, `value` keeps the payload legible for clients that only implement the
+ * legacy shape. One value, two carriers — there is no second copy to drift.
+ */
+function callbackButton(opts: {
+  text: string;
+  type?: 'primary' | 'default' | 'danger';
+  value: Record<string, string>;
+}): Record<string, unknown> {
+  return {
+    tag: 'button',
+    text: { tag: 'plain_text', content: opts.text },
+    type: opts.type ?? 'default',
+    value: opts.value,
+    behaviors: [{ type: 'callback', value: opts.value }],
+  };
+}
+
+/**
  * Build the interactive card an outbound notification/approval is rendered as
  * (slice T2). The `notifyTarget`-annotated adaptation lives in the adapter; this
  * is the card dialect itself: header + markdown body + one action row of
@@ -53,13 +84,11 @@ export function buildNotificationCard(opts: {
   if (actions.length > 0) {
     elements.push({
       tag: 'action',
-      actions: actions.map((a) => ({
-        tag: 'button',
-        text: { tag: 'plain_text', content: a.label },
-        type: a.style ?? 'default',
+      actions: actions.map((a) => {
         // `ref` is verified inbound; `action` is a non-secret fallback label.
-        value: { ref: a.ref, action: a.id },
-      })),
+        const value = { ref: a.ref, action: a.id };
+        return callbackButton({ text: a.label, type: a.style, value });
+      }),
     });
   }
 
@@ -196,10 +225,9 @@ export function buildStatusCard(opts: {
   if (opts.actions?.length) {
     elements.push({
       tag: 'action',
-      actions: opts.actions.map((a) => ({
-        tag: 'button',
-        text: { tag: 'plain_text', content: a.text },
-        type: a.type ?? 'default',
+      actions: opts.actions.map((a) => callbackButton({
+        text: a.text,
+        type: a.type,
         value: { action: a.value, agent: opts.agentName },
       })),
     });
@@ -247,18 +275,16 @@ export function buildTaskCard(opts: {
       {
         tag: 'action',
         actions: [
-          {
-            tag: 'button',
-            text: { tag: 'plain_text', content: 'Mark Complete' },
+          callbackButton({
+            text: 'Mark Complete',
             type: 'primary',
             value: { action: 'complete_task', taskId: opts.taskId },
-          },
-          {
-            tag: 'button',
-            text: { tag: 'plain_text', content: 'Reassign' },
+          }),
+          callbackButton({
+            text: 'Reassign',
             type: 'default',
             value: { action: 'reassign_task', taskId: opts.taskId },
-          },
+          }),
         ],
       },
     ],

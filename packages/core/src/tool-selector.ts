@@ -2,14 +2,15 @@ import { createLogger, type LLMTool } from '@markus/shared';
 import type { SkillManifest } from './skills/types.js';
 import {
   type CapabilityPack,
+  ACTION_TOOL_IDS,
+  actionToolGuardEnabled,
   allowsWorkContextBoundTools,
+  allowsLoopOnlyTools,
+  isLoopOnlyTool,
   CONVERSE_FORBIDDEN_DEFAULT,
-  evictToolsToBudget,
   getReflexAllowlist,
   isSkillOrMcpToolName,
   isWorkContextBoundTool,
-  packToolDefBudget,
-  SCHEMA_INJECTED_TOOLS,
   TASK_EXECUTION_EXTRA_TOOLS,
   TOOL_DEF_CORE_KEEP,
   TOOL_DEF_PROTECTED,
@@ -25,9 +26,6 @@ const log = createLogger('tool-selector');
  * Tool names must correspond to actual tools from createBuiltinTools() or
  * other tool providers (A2A, task, memory, etc.).
  */
-
-/** Evicted-tool catalog from the last selectTools call (Afford.S2 side channel). */
-type DeferredCatalogEntry = { name: string; description: string };
 
 export interface ToolGroup {
   name: string;
@@ -169,28 +167,9 @@ const BASE_TOOL_NAMES = new Set([
 export class ToolSelector {
   private groups: ToolGroup[];
   private baseToolNames: Set<string>;
-  /** Side channel: tools evicted in the last selectTools (inject into system Tier 3). */
-  private lastDeferredCatalog: DeferredCatalogEntry[] = [];
-  /** Activated skill/MCP names deferred under budget (caller should prune sticky set). */
-  private lastEvictedActivated: string[] = [];
-
   constructor(customGroups?: ToolGroup[]) {
     this.groups = customGroups ?? TOOL_GROUPS;
     this.baseToolNames = new Set(BASE_TOOL_NAMES);
-  }
-
-  /** Consume deferred catalog from the last selectTools (clears after read). */
-  consumeDeferredCatalog(): DeferredCatalogEntry[] {
-    const catalog = this.lastDeferredCatalog;
-    this.lastDeferredCatalog = [];
-    return catalog;
-  }
-
-  /** Consume activated names that were LRU-deferred (clears after read). */
-  consumeEvictedActivated(): string[] {
-    const names = this.lastEvictedActivated;
-    this.lastEvictedActivated = [];
-    return names;
   }
 
   selectTools(opts: {
@@ -204,6 +183,14 @@ export class ToolSelector {
     isReview?: boolean;
     /** Team Chat (DM) — enables right-panel layout tools. */
     isChat?: boolean;
+    /**
+     * 本回合的回复**直接呈现给人**（`human_chat`）。
+     *
+     * 为 true 时**不提供** `end_turn`：人类对话里静默收尾 == 没回复（用户只看到空白）。
+     * 判据必须是 item 的 `sourceType`，不能用 `scenario`（A2A 有不传 scenario、默认
+     * `'chat'` 的调用点）。
+     */
+    humanFacing?: boolean;
     skillCatalog?: SkillManifest[];
     /** Scenario capability pack (AGENT-RUNTIME §2). Default converse. */
     pack?: CapabilityPack;
@@ -221,12 +208,22 @@ export class ToolSelector {
      * shrink or end the turn — see `context-gate.ts`.
      */
     contextPct?: number;
+    /**
+     * C8-D single switch — explicit override of `MARKUS_ACTION_TOOL_GUARD`.
+     * `false` restores the legacy face: action tools are neither forced into the
+     * selection nor protected from budget eviction.
+     */
+    actionToolGuard?: boolean;
   }): LLMTool[] {
     const pack: CapabilityPack = opts.pack
       ?? (opts.isTaskExecution ? 'execute' : opts.isReview ? 'govern' : 'converse');
     const scenario = opts.scenario
       ?? (opts.isTaskExecution ? 'task_execution' : opts.isReview ? 'review' : undefined);
     const allowWorkCtx = allowsWorkContextBoundTools(pack, scenario);
+    // `rest` 只属于决策 loop：别的场景欠人回复/欠任务结果，不该停泊 8 小时。
+    const allowLoopOnly = allowsLoopOnlyTools(scenario);
+    // C8-D: one switch for "action tools are always reachable". Off ⇒ legacy face.
+    const actionGuard = opts.actionToolGuard ?? actionToolGuardEnabled();
     const selected = new Set<string>();
 
     if (pack === 'reflex') {
@@ -241,6 +238,16 @@ export class ToolSelector {
       // to skill/MCP schemas, not to these. Never leave them deferred behind Feishu.
       for (const name of TOOL_DEF_CORE_KEEP) {
         if (opts.allTools.has(name)) selected.add(name);
+      }
+      // C8-D: action tools are not "situational extras". An agent that cannot
+      // create / update / submit work, read its own ledger or queue, or answer a
+      // human cannot do the job at all, so they are forced into the face
+      // regardless of keywords. Reflex is excluded on purpose: a patrol tick is
+      // not a work unit, and WORK_ENTITY lifecycle tools stay session-gated.
+      if (actionGuard) {
+        for (const name of ACTION_TOOL_IDS) {
+          if (opts.allTools.has(name)) selected.add(name);
+        }
       }
     }
 
@@ -331,12 +338,14 @@ export class ToolSelector {
           if (!opts.allTools.has(name)) continue;
           if (isSkillOrMcpToolName(name) && !activated.has(name)) continue;
           if (isWorkContextBoundTool(name) && !allowWorkCtx) continue;
+          if (isLoopOnlyTool(name) && !allowLoopOnly) continue;
           selected.add(name);
         }
       }
       for (const name of activated) {
         if (!opts.allTools.has(name)) continue;
         if (isWorkContextBoundTool(name) && !allowWorkCtx) continue;
+        if (isLoopOnlyTool(name) && !allowLoopOnly) continue;
         selected.add(name);
       }
     }
@@ -355,6 +364,10 @@ export class ToolSelector {
       if (isSkillOrMcpToolName(name) && !activated.has(name)) continue;
       // Defense in depth: work-context tools stay out of free chat / reflex
       if (isWorkContextBoundTool(name) && !allowWorkCtx) continue;
+      // Defense in depth: `rest` is a loop statement. This is the single choke
+      // point every path funnels through, so protected/activated/sticky entries
+      // cannot smuggle it into a chat or task schema.
+      if (isLoopOnlyTool(name) && !allowLoopOnly) continue;
       const tool = opts.allTools.get(name);
       if (tool) {
         result.push({
@@ -408,11 +421,16 @@ export class ToolSelector {
     // telling the model to "reply [NO_RESPONSE]" invites it to paraphrase the
     // decision into prose — and that prose IS a message, which re-triggers the peer
     // and restarts the loop it was meant to end. A tool call cannot be paraphrased.
+    //
+    // 人类对话里不提供这个工具（Owner 2026-11-18）。**排除点在函数末尾统一执行**：
+    // end_turn 同时存在于 `TOOL_DEF_PROTECTED` / `TOOL_DEF_CORE_KEEP` / `ACTION_TOOL_IDS`
+    // 三个强制加入路径，逐个堵 = 同一不变量多个执行点（漏一个就失效）。
     pushUnique({
       name: 'end_turn',
       description:
         'End this turn WITHOUT sending any message to the conversation. '
-        + 'Use it in an agent-to-agent conversation when the exchange is complete — you have no new fact, no question, and no correction. '
+        + 'Use it ONLY in an agent-to-agent conversation when the exchange is complete — you have no new fact, no question, and no correction. '
+        + 'Never use it in a conversation with a human: there your reply IS the deliverable, so stay silent and the user sees nothing. '
         + 'This is the ONLY correct way to stop a back-and-forth loop: do NOT write a reply saying you have nothing to add, and do NOT write an acknowledgement. '
         + 'Call end_turn and write no message text.',
       inputSchema: {
@@ -596,38 +614,6 @@ export class ToolSelector {
       },
     });
 
-    pushUnique({
-      name: 'complete_deliberation',
-      description: 'Finalize your mailbox deliberation. Declare which item(s) to process next, which to defer/drop, and which you handled inline. Supports batch processing: pass multiple IDs in process_item_ids to handle related items together in one session. Only available in deliberation mode.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          process_item_id: { type: 'string', description: 'ID of the primary mailbox item to process next. Required unless process_item_ids is provided.' },
-          process_item_ids: { type: 'array', items: { type: 'string' }, description: 'Batch mode: IDs of multiple items to process together in one session. Use for related items (same channel, same topic). Overrides process_item_id when length > 1.' },
-          batch_context: { type: 'string', description: 'When using batch mode, optional synthesis/instruction for how to handle the batch together.' },
-          defer_item_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of items to defer for later' },
-          drop_item_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of stale/redundant items to drop' },
-          inline_completed_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of items you already handled inline during this deliberation (e.g., sent a notification, posted a comment)' },
-          reasoning: { type: 'string', description: '1-2 sentence explanation of your decision' },
-          situational_awareness: { type: 'string', description: 'Your current understanding of the situation — injected into future prompts for continuity' },
-          memory_updates: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                type: { type: 'string', enum: ['working', 'longterm'], description: 'working = volatile per-session memory, longterm = persisted to knowledge.md' },
-                key: { type: 'string', description: 'Memory key/section name' },
-                content: { type: 'string', description: 'Content to store' },
-              },
-              required: ['type', 'key', 'content'],
-            },
-            description: 'Memory updates to apply after deliberation. Use to record observations, team decisions, or context for future cycles.',
-          },
-        },
-        required: ['reasoning'],
-      },
-    });
-
     // check_mailbox / defer / drop / prioritize are available via DELIBERATION_ALLOWED_TOOLS
     // only — they are NOT always-on during normal processing to prevent the agent
     // from getting distracted by the full backlog instead of focusing on the
@@ -678,69 +664,23 @@ export class ToolSelector {
       }
     }
 
-    const budget = packToolDefBudget(pack);
-    // HITL/discover + Markus core are eviction-immune.
-    // 审计 P0-3：**已激活工具一律晋升 protected（豁免驱逐）**。
-    // 旧实现只豁免「非 skill/MCP」的激活工具，导致 skill/MCP 被 discover_tools 激活后
-    // 可能在同一轮就被预算驱逐 → agent.ts 静默删除激活态 → 工具彻底不可见 → 模型反复
-    // discover_tools 空烧 token。未激活的 skill/MCP 仍按渐进披露（catalog）延迟。
-    const protectedNames = new Set<string>([...TOOL_DEF_PROTECTED, ...TOOL_DEF_CORE_KEEP]);
-    for (const name of activated) {
-      // registered handler OR schema-injected (pushUnique) tool — both must be
-      // eviction-immune once explicitly activated via discover_tools, otherwise
-      // activation is a no-op after budget eviction (P0-1 self-management fix).
-      if (opts.allTools.has(name) || SCHEMA_INJECTED_TOOLS.has(name)) protectedNames.add(name);
-    }
-    const { tools: capped, evicted } = evictToolsToBudget(
-      result,
-      budget,
-      protectedNames,
-      TOOL_DEF_CORE_KEEP,
-    );
-    // Afford.S2: catalog goes to system Tier 3 via consumeDeferredCatalog — NOT tool schema.
-    this.lastDeferredCatalog = evicted.map((e) => ({
-      name: e.name,
-      description: (e.description || '').slice(0, 40),
-    }));
-    this.lastEvictedActivated = evicted
-      .map((e) => e.name)
-      .filter((n) => activated.has(n) && isSkillOrMcpToolName(n));
-    if (evicted.length) {
-      log.info('Tool defs capped to pack budget', {
-        pack,
-        budget,
-        kept: capped.length,
-        evicted: evicted.map((e) => e.name),
-        evictedActivated: this.lastEvictedActivated,
-      });
-    }
-
-    // D-guard: an evicted tool must still be recoverable. If it has neither a
-    // registered handler (`allTools`) nor a schema-injection entry, then it is
-    // gone from the schema AND `discover_tools` will answer "unknown" → the tool
-    // is unreachable for the rest of the turn. That is a should-never-happen
-    // event (it is how `end_turn` and open/collapse_right_panel silently died),
-    // so make it loud instead of burying it in the info-level cap log.
-    const unreachable = evicted
-      .map((e) => e.name)
-      .filter((n) => !opts.allTools.has(n) && !SCHEMA_INJECTED_TOOLS.has(n));
-    if (unreachable.length) {
-      log.warn('Evicted tool is not re-activatable — unreachable for this turn', {
-        pack,
-        budget,
-        unreachable,
-        hint: 'Add to TOOL_DEF_PROTECTED (must never evict) or SCHEMA_INJECTED_TOOLS (discover_tools can restore it).',
-      });
-    }
-
+    // No budget eviction (Owner 2026-11-20; mechanism removed in PR #471).
+    // The tool face is a FIXED segment: availability is a hard invariant, not a
+    // budget line. Context pressure compresses the VARIABLE segment (history)
+    // downstream; the face is never shrunk. External skill/MCP tools stay out
+    // until discover_tools activation (progressive disclosure above), and
+    // activation is sticky for the session.
     log.debug('Tool selection complete', {
       total: opts.allTools.size,
-      selected: capped.length,
+      selected: result.length,
       pack,
       groups: this.groups.filter(g => g.toolNames.some(n => selected.has(n))).map(g => g.name),
     });
 
-    return applyContextGateToTools(capped, opts.contextPct);
+    // 人类对话的唯一排除点：静默收尾 = 用户看到空白，所以 human_chat 回合的工具面里
+    // 不允许出现 end_turn（执行侧还有第二道闸，见 Agent.runTool 的 humanFacing 分支）。
+    const face = opts.humanFacing ? result.filter((t) => t.name !== 'end_turn') : result;
+    return applyContextGateToTools(face, opts.contextPct);
   }
 
   /**

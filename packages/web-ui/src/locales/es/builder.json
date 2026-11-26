@@ -77,7 +77,11 @@
     "requiredEnv": "Env requerido",
     "skills": "Habilidades",
     "files": "Archivos ({{count}})",
-    "members": "Miembros ({{count}})"
+    "members": "Miembros ({{count}})",
+    "noFilesForMember": "Este miembro aún no tiene archivos.",
+    "aboutThisAgent": "Sobre este agente",
+    "integrations": "Integraciones",
+    "instructions": "Instrucciones"
   },
   "share": {
     "imagePrompt": "¿Te gustaría añadir imágenes antes de compartir? Imágenes ayudan a atraer más usuarios en el Hub.",
@@ -157,7 +161,9 @@
     "addDescription": "Haga clic para añadir una descripción...",
     "typeTagAndEnter": "Tipo y prensa Entrar",
     "pasteEmojiOrUrl": "Pruebe emoji o URL de imagen...",
-    "upload": "Subir"
+    "upload": "Subir",
+    "files": "Archivos",
+    "shareAfterVersionBump": "Después de subir la versión, puedes compartir la nueva versión en Hub."
   },
   "sidebar": {
     "info": "Información",

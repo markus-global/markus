@@ -32,6 +32,7 @@ import {
   resolveActionSecret,
   resolveHostLocale,
   installEgress,
+  catchAllTargetOf,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -45,6 +46,7 @@ import {
   type GatewayStore,
   type ExternalAgentRegistration,
   proxyFetch,
+  rehydrateStructuredFields,
 } from '@markus/core';
 import {
   OrganizationService,
@@ -85,9 +87,11 @@ import {
   type PlatformIntegrationStoreDeps,
   recordInstanceVerification,
   type InstanceStoreDeps,
+  ExternalSourceService,
 } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
+import { buildImInboundOrigin, buildImInboundWorkUnitRef } from './im-inbound-origin.js';
 import { buildApprovalCardResolution, cardActorFields, scheduleCardRewrite } from './approval-card.js';
 import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
 import { openBrowserAfterHealthCheck } from '../utils/browser.js';
@@ -1298,39 +1302,52 @@ async function startServerCore(
   archiveService.setRequirementService(requirementService);
   archiveService.start();
 
-  // Stale task detection: alert humans when tasks are stuck in review/in_progress/pending
+  // Stale task detection. Scope (Owner 2026-11-18): the ONLY things this periodic
+  // scan may surface are (a) `stuck_task` → one human notification, and
+  // (b) `review_reminder` → a message to the RESPONSIBLE REVIEWER agent.
+  //
+  // Removed on purpose: the timed "Stale review" human notification (a card waiting on
+  // a NAMED reviewer does not need the whole org pinged on a clock), and the human
+  // fallback when a reviewer is unreachable (it surfaced as "Unstarted task", wrong on
+  // both counts — not unstarted, and not the reader's job). A reminder that cannot be
+  // delivered is logged and dropped; it never becomes a human notification.
   const staleDetector = new StaleDetector(taskService, undefined, (items) => {
     for (const item of items) {
-      // A review reminder belongs to the REVIEWER, not to a human. The 2026-10-17
-      // failure was exactly this inversion: nobody able to act was ever told, and the
-      // only signal fired 12h later into the human's bell. Wake the owner of the step
-      // first; escalate to a human only if that agent cannot be reached.
-      if (item.type === 'review_reminder' && item.agentId) {
+      if (item.type === 'review_reminder') {
+        if (!item.agentId) {
+          log.warn('Review reminder has no reviewer to wake — dropped (no human escalation)', {
+            taskId: item.taskId,
+          });
+          continue;
+        }
         try {
           const reviewer = agentManager.getAgent(item.agentId);
           void reviewer
             .sendMessage(item.message, undefined, undefined, {
               sourceType: 'review_request',
+              // 评审提醒 = 评审回合（mailboxScenario('review_request') = 'review'）。
+              scenario: 'review',
               ...(item.taskId ? { taskId: item.taskId } : {}),
             })
             .catch((err: unknown) =>
               log.warn('Review reminder delivery failed', { taskId: item.taskId, error: String(err) }),
             );
-          continue;
         } catch (err) {
-          log.warn('Reviewer unavailable for reminder — escalating to human', {
+          log.warn('Reviewer unavailable for reminder — dropped (no human escalation)', {
             agentId: item.agentId,
             taskId: item.taskId,
             error: String(err),
           });
         }
+        continue;
       }
+      // Only `stuck_task` reaches the human notification list.
       hitlService.notify({
         targetUserId: 'all',
         type: 'system',
-        title: item.type === 'review_stale' ? 'Stale review' : item.type === 'stuck_task' ? 'Stuck task' : 'Unstarted task',
+        title: 'Stuck task',
         body: item.message,
-        priority: item.type === 'review_stale' ? 'high' : 'normal',
+        priority: 'normal',
         actionType: item.taskId ? 'navigate' : 'none',
         actionTarget: item.taskId ? JSON.stringify({ path: `/work?openTask=${item.taskId}` }) : undefined,
         metadata: {
@@ -1340,10 +1357,7 @@ async function startServerCore(
           // The title and body as structure: the detector knows *what* to say,
           // this is the only place that knows the sentence's key.
           i18n: {
-            titleKey:
-              item.type === 'review_stale'
-                ? 'notifications.titles.staleReview'
-                : 'notifications.titles.stuckTask',
+            titleKey: 'notifications.titles.stuckTask',
             ...(item.i18n ?? {}),
           },
         },
@@ -1412,6 +1426,10 @@ async function startServerCore(
       orgService.addHumanUser(firstOrgId, 'Owner', 'owner', { id: ownerUserId });
     }
   }
+
+  // 第七刀 C7 的装配已在 `APIServer.setStorage()` 里完成（单一执行点）。
+  // 这里**不再重复**：装配写在启动文件里就必然有第二个启动路径（桌面端走
+  // `cli/backend.ts#startBackend`）漏掉 —— 2026-11-14 真机事故的成因。
 
   // Seed default team + Secretary agent (runs for both DB and in-memory mode)
   await orgService.seedDefaultTeam(firstOrgId, ownerUserId);
@@ -2236,6 +2254,8 @@ async function startServerCore(
             taskId: activity.taskId,
             mailboxItemId: activity.mailboxItemId,
             startedAt: activity.startedAt,
+            // C9-B：身份由生产者带入（回合的 WorkUnit ref），不在这里反推。
+            workUnitRef: activity.workUnitRef ?? null,
           });
         } catch (err) {
           log.warn('Failed to persist activity start', { activityId: activity.id, error: String(err) });
@@ -2252,6 +2272,8 @@ async function startServerCore(
               type: data.type,
               content: data.content,
               metadata: data.metadata,
+              // C9-B：与所属 activity 同一个 ref（同一回合身份，不在读路径再猜）。
+              workUnitRef: data.workUnitRef ?? null,
             });
           } catch (err) {
             log.warn('Failed to persist execution stream activity log', { activityId: data.activityId, error: String(err) });
@@ -2265,7 +2287,8 @@ async function startServerCore(
       },
       onEnd: (activityId, summary) => {
         try {
-          actRepo.updateActivity(activityId, summary);
+          // C10-0E：结束不是改写活动行，而是追加一条 activity_end 事件（append-only）。
+          actRepo.appendActivityEnd(activityId, summary);
         } catch (err) {
           log.warn('Failed to persist activity end', { activityId, error: String(err) });
         }
@@ -2296,6 +2319,87 @@ async function startServerCore(
     agentManager.setSessionRepo(storage.chatSessionRepo);
   }
 
+  // 邮箱地址自助工具（第六刀 C1）：把 storage 的唯一写者/解析器接进 Agent 工具面。
+  // 未接线 ⇒ 工具不注册（见 AgentManager.setAddressBindingPort 的说明）。
+  if (storage?.addressBindingRepo) {
+    const addressRepo = storage.addressBindingRepo;
+    agentManager.setAddressBindingPort({
+      bind: (input) => addressRepo.bind(input),
+      revoke: (input) => addressRepo.revoke(input),
+      list: (input) => addressRepo.listVisible(input),
+    });
+  }
+
+  // C10-D：组织身份 / 余额查询工具（org_info / org_list / org_usage）。
+  // info+list 读本地投影（唯一写者 = SqliteOrgRepo）；余额走 apiServer.getOrgUsage，
+  // 它只搬运 hub 的单一实现，不在本地重算「月配额+购买+赠送-已用」。
+  // 未接线 ⇒ 工具不注册（与地址工具同一惰性纪律）。
+  if (storage?.orgRepo) {
+    const orgRepo = storage.orgRepo;
+    const toView = (o: {
+      id: string;
+      name: string;
+      orgSlug?: string | null;
+      hubOrgId?: string | null;
+      plan?: string;
+      hubSyncedAt?: string | null;
+    }) => ({
+      id: o.id,
+      name: o.name,
+      orgSlug: o.orgSlug ?? null,
+      hubOrgId: o.hubOrgId ?? null,
+      plan: o.plan ?? 'free',
+      hubSyncedAt: o.hubSyncedAt ?? null,
+      addressCount: orgRepo.countBoundAddresses(o.id) as number,
+    });
+    agentManager.setOrgQueryPort({
+      info: ({ orgId }) => {
+        const org = orgRepo.findOrgById(orgId);
+        return org ? toView(org) : null;
+      },
+      list: () => (orgRepo.listOrgs() as Parameters<typeof toView>[0][]).map(toView),
+      usage: ({ orgId }) => apiServer.getOrgUsage(orgId),
+    });
+  }
+
+  // C10-B：外部信号源（webhook/RSS）—— 地址簿 lookup + 自助工具 + 唯一 ingest 服务 + RSS 轮询。
+  // 未接线（缺 repo）⇒ 工具不注册、路由 503（同 address-tools 惰性纪律，不注册空能力）。
+  if (storage?.addressBindingRepo && storage?.externalSourceRepo) {
+    const addressRepo = storage.addressBindingRepo;
+    const sourceRepo = storage.externalSourceRepo;
+    const findActive = (addr: string) => {
+      const row = addressRepo.findActive(addr);
+      return row ? { agentId: row.agentId, targetRef: row.targetRef } : undefined;
+    };
+    // D8：地址簿只读端口接进每 agent mailbox（外部信号路由跟绑定走，不跟源主走）。
+    agentManager.setAddressLookup({ findActive });
+    const externalSourceService = new ExternalSourceService({
+      sources: sourceRepo,
+      findActive,
+      mailboxOf: (agentId) => {
+        try { return agentManager.getAgent(agentId)?.getMailbox(); } catch { return undefined; }
+      },
+      // C10-F：组织级入站策略的现读口（org-manager 只做决策，不自己持库）。
+      // 缺行 / 缺列 ⇒ 'off'：失败关闭，与列默认值一致。
+      ingressPolicy: (orgId) => {
+        const row = storage.orgRepo.findOrgById(orgId) as { externalIngress?: string } | undefined;
+        const policy = row?.externalIngress;
+        return policy === 'accept' || policy === 'observe' ? policy : 'off';
+      },
+    });
+    // 工具端口：归属裁决在 service（org-manager 唯一写者），core 工具面只翻译表面语义。
+    agentManager.setExternalSourcePort({
+      register: (input) => externalSourceService.registerSource(input),
+      list: (input) => ({
+        policy: externalSourceService.policyOf(input.orgId),
+        sources: externalSourceService.listSources(input.orgId, input.agentId),
+      }),
+      toggle: (input) => externalSourceService.setSourceEnabled(input),
+    });
+    apiServer.setExternalSourceService(externalSourceService);
+    externalSourceService.startPolling();
+  }
+
   // Wire mailbox + decision persistence to SQLite
   if (storage?.mailboxRepo && storage?.decisionRepo) {
     const mbRepo = storage.mailboxRepo;
@@ -2308,12 +2412,31 @@ async function startServerCore(
           save: (item, dedupKey) => {
             try {
               const inserted = mbRepo.save({
+                // C8 第七层根因：这里是**手写字段列举**，列到 `dropReason` 就结束 ——
+                // 以后每加一个字段（本轮就是 `workUnitRef`）都会被静默丢掉，而两端
+                // “看起来都对”。改成展开 + 覆盖：新字段自动流过，只显式覆盖需要
+                // 转型的那几个（信封序列化、结构投影）。
+                ...item,
                 id: item.id, agentId: item.agentId, sourceType: item.sourceType,
                 priority: item.priority, status: item.status,
                 payload: item.payload as unknown as Record<string, unknown>,
                 metadata: (item.metadata ?? {}) as Record<string, unknown>,
                 queuedAt: item.queuedAt,
                 dedupKey,
+                // 第六刀 C2：信封与它的结构投影一起落库（单一写入点）。
+                envelope: item.envelope ? JSON.stringify(item.envelope) : null,
+                messageId: item.envelope?.messageId ?? null,
+                signalClass: item.envelope?.signalClass ?? null,
+                intent: item.envelope?.intent ?? null,
+                dropReason: item.dropReason ?? null,
+                // C8 第七层：**适配器也得带身份**。
+                //
+                // 这一层是 core → storage 的手写字段映射，之前只写到 `dropReason` 就结束，
+                // `workUnitRef` 在这里被丢掉。后果：task-service / requirement-service /
+                // enqueueFor 全都“传对了”，save() 也“会写了”，但真机落库仍是 NULL ——
+                // 取消投递行带着 `invalidatesPremise:true` 却没有身份，delta 永远匹配不到。
+                // 2026-11-14 三次重建都没发现，就是因为只看两端、没人看中间的搬运层。
+                workUnitRef: item.workUnitRef ?? null,
               });
               if (!inserted) {
                 // P0 幂等键：重复投递（同 agent + 同 dedup_key）被 DB 拒绝，不产生第二行。
@@ -2334,8 +2457,8 @@ async function startServerCore(
             try { mbRepo.updateStatus(itemId, status, extra as Record<string, unknown>); }
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
-          markStaleProcessingAsDropped: (aid: string, nowIso?: string, ownerId?: string) =>
-            mbRepo.markStaleProcessingAsDropped(aid, nowIso, ownerId),
+          markStaleProcessingAsBounced: (aid: string, nowIso?: string, ownerId?: string) =>
+            mbRepo.markStaleProcessingAsBounced(aid, nowIso, ownerId),
           loadQueued: (aid: string) => {
             const rows = mbRepo.getByAgent(aid, { status: 'queued' });
             return rows.map((r: any) => ({
@@ -2346,6 +2469,8 @@ async function startServerCore(
               status: r.status as 'queued',
               payload: r.payload,
               metadata: r.metadata,
+              // C2：信封/轮次结构字段（含旧行唯一一次回填解码，见 rehydrateStructuredFields）
+              ...rehydrateStructuredFields(r),
               queuedAt: r.queuedAt,
               startedAt: r.startedAt ?? undefined,
               completedAt: r.completedAt ?? undefined,
@@ -2364,6 +2489,8 @@ async function startServerCore(
               status: r.status as 'deferred',
               payload: r.payload,
               metadata: r.metadata,
+              // C2：同 loadQueued（同一解码函数，不写第二份）。
+              ...rehydrateStructuredFields(r),
               queuedAt: r.queuedAt,
               startedAt: r.startedAt ?? undefined,
               completedAt: r.completedAt ?? undefined,
@@ -2386,9 +2513,41 @@ async function startServerCore(
           requeueItem: (itemId: string, opts?: { queuedAt?: string }) => mbRepo.requeueItem(itemId, opts),
           // findByDedupKey：只读，供 mailbox 三态判定（新增/幂等抑制/复用原行回队）取既有行状态。
           findByDedupKey: (aid: string, dedupKey: string) => mbRepo.findByDedupKey(aid, dedupKey),
+          // ── 第六刀 C2：信封幂等（V5）与退信行写入 ────────────────────────
+          // findByMessageId：同一 messageId 已在队/已收口 → mailbox 写一条
+          //   `duplicate_message_id` 退信行后返回（不再静默 suppressed）。
+          findByMessageId: (aid: string, messageId: string) => mbRepo.findByMessageId(aid, messageId),
+          saveBounced: (item, dropReason) => {
+            try {
+              mbRepo.save({
+                id: item.id, agentId: item.agentId, sourceType: item.sourceType,
+                priority: item.priority, status: 'bounced',
+                payload: item.payload as unknown as Record<string, unknown>,
+                metadata: (item.metadata ?? {}) as Record<string, unknown>,
+                queuedAt: item.queuedAt,
+                dedupKey: undefined,
+                envelope: item.envelope ? JSON.stringify(item.envelope) : null,
+                // 退信行**不占** messageId 唯一键（它记录的是“这次没进去”，
+                // 不是同一条消息的第二份）——见 uq_mailbox_agent_message 的谓词。
+                messageId: null,
+                signalClass: item.envelope?.signalClass ?? null,
+                intent: item.envelope?.intent ?? null,
+                dropReason,
+                // 第六刀 C3：退信行直接带上归集桶（构造时就已确定，不靠后续 UPDATE 补）。
+                bounceTarget: catchAllTargetOf(agentId),
+              });
+            } catch (e) {
+              log.warn('Failed to persist bounced mailbox item', { id: item.id, dropReason, error: String(e) });
+            }
+          },
+          // 第六刀 C3：路由取证 / catch-all 概览（工具面的两个只读端口）。
+          findRouteByMessageId: (aid: string, messageId: string) => mbRepo.findRouteByMessageId(aid, messageId),
+          listCatchAll: (aid: string, limit?: number) => mbRepo.listCatchAll(aid, limit),
+          // ghost drop 读真实状态，让状态机矩阵能裁制它（不盲写）。
+          getStatus: (id: string) => mbRepo.getStatus(id),
         });
-        const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
-        if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });
+        const { bounced, restored, expired, merged } = mailbox.recoverStaleItems();
+        if (bounced > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, bounced, restored, expired, merged });
         agent.getAttentionController().setDecisionPersistence({
           save: (decision) => {
             try {
@@ -2398,35 +2557,24 @@ async function startServerCore(
                 context: decision.context as unknown as Record<string, unknown>,
                 reasoning: decision.reasoning ?? '',
                 outcome: decision.outcome,
+                // 身份与判断来源必须一起穿过这一层。此前这里逐字段手抄却漏了
+                // workUnitRef —— 上游 recordDecision 写了、下游 INSERT 也有列，
+                // 唯独中间的适配器把它丢掉，于是 22.7 万条决策 0 条能回溯到回合
+                //（2026-11-18 实测）。字段在两端都存在，不代表它穿得过中间。
+                workUnitRef: decision.workUnitRef ?? null,
+                source: decision.source,
+                overrode: decision.overrode,
                 createdAt: decision.createdAt,
               });
             } catch (e) { log.warn('Failed to persist decision', { id: decision.id, error: String(e) }); }
           },
         });
-        // Wire LLM interrupt judge — evaluates whether to preempt current
-        // work when a new message arrives (e.g. "stop publishing", "pause that task").
-        // Only called when heuristics return 'continue' for ambiguous cases.
-        const triageProvider = agent.config.llmConfig?.modelMode === 'custom'
-          ? agent.config.llmConfig.primary : undefined;
-        const interruptSystemPrompt = 'You are an attention interrupt judge. Decide whether to interrupt current work for a new incoming message. Reply with ONLY one word: continue, preempt, cancel, merge, or defer. Use "preempt" to pause (resume later) and "cancel" to permanently stop current work.';
-        const interruptCacheSegments = [{ content: interruptSystemPrompt, cacheBreakpoint: true }];
-        agent.getAttentionController().setLLMJudge(async (prompt: string) => {
-          const response = await llmRouter.chat({
-            messages: [
-              { role: 'system', content: interruptSystemPrompt },
-              { role: 'user', content: prompt },
-            ],
-            systemCacheSegments: interruptCacheSegments,
-            temperature: 0.1,
-            // No maxTokens cap: a tight cap (e.g. 32) is fully consumed by a
-            // reasoning model's hidden reasoning, leaving content empty so the
-            // judge always degrades to 'continue'. The router fills the model's
-            // real limit; the one-word answer stops the generation naturally.
-          }, triageProvider);
-          const raw = response.content.trim().toLowerCase();
-          const valid: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
-          return valid.includes(raw as DecisionType) ? (raw as DecisionType) : 'continue';
-        });
+        // Interrupt decisions are purely heuristic (priority + type). There is
+        // deliberately no LLM judge here: "should I pause this work for that
+        // message?" is a decidable rule question, not a reasoning question.
+        // The old wiring paid a model call on every same-priority interrupt and
+        // could only answer 'continue' when the model produced no content —
+        // a silent degradation nobody could observe.
       } catch { /* agent not found */ }
     };
 
@@ -2591,7 +2739,20 @@ async function startServerCore(
       // (no per-channel key).
       const channelKey =
         target.conversationKey === MAIN_CONVERSATION_KEY ? undefined : target.conversationKey;
-      const reply = await agent.sendMessage(message.content.text ?? '', message.senderId, undefined, { channelKey });
+      const reply = await agent.sendMessage(message.content.text ?? '', message.senderId, undefined, {
+        // IM 入站 = 外部人类发来的消息 → 聊天回合（显式表态）。
+        scenario: 'chat',
+        channelKey,
+        // 第六刀 C2（§2.3 投递点 1）+ C10-B2（S1）：IM 入站信封头的唯一写者
+        // 是 buildImInboundOrigin。messageId = 适配器在分派点 surface 的 native
+        // id（飞书 om_*）→ 重投命中 V5 (agent, messageId) 去重；未 envelope 化
+        // 的平台回退 message.id（原行为不变）。
+        origin: buildImInboundOrigin(message),
+        // C10-B2（S3）：IM 入口入队前铸 per-message external ref（唯一 C10-B
+        // 构造器），经 options.workUnitRef 传入 → 装配点 ensureIdentity 保证实体。
+        // 与 Web UI prepareChatTurnWorkUnit / injectFollowUp 同一不变量：入口写 ref。
+        workUnitRef: buildImInboundWorkUnitRef(message),
+      });
       auditService.record({
         orgId: 'default',
         agentId,

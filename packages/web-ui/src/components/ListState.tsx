@@ -16,6 +16,7 @@
  *   4. 重试必须走**同一个取数口**（由调用方传 `onRetry`），不新开读路径。
  */
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { listView, type Resource } from '../lib/resourceState.ts';
 
 /**
@@ -29,7 +30,7 @@ export function ReadErrorNotice({
   error,
   notEquals,
   onRetry,
-  retryLabel = '重试',
+  retryLabel,
   hint,
   variant = 'bar',
 }: {
@@ -45,9 +46,10 @@ export function ReadErrorNotice({
   hint?: string;
   variant?: 'bar' | 'inline';
 }) {
+  const { t } = useTranslation('common');
   const text = (
     <span className={variant === 'inline' ? 'text-[11px] text-rose-500' : 'text-xs text-rose-500'}>
-      {subject}读取失败：{error}（这不等于「{notEquals}」）
+      {t('readErrorNotice', { subject, error, notEquals })}
     </span>
   );
   const actions = onRetry ? (
@@ -56,7 +58,7 @@ export function ReadErrorNotice({
       onClick={onRetry}
       className="text-xs text-brand-500 hover:text-brand-400 shrink-0 cursor-pointer"
     >
-      {retryLabel}
+      {retryLabel ?? t('retry')}
     </button>
   ) : hint ? (
     <span className="text-xs text-fg-tertiary shrink-0">{hint}</span>
@@ -117,11 +119,12 @@ export function ListState<T>({
   children: (rows: readonly T[]) => ReactNode;
   noticeVariant?: 'bar' | 'inline';
 }) {
+  const { t } = useTranslation('common');
   const view = listView(resource);
   const notice = view.error ? (
     <ReadErrorNotice
       subject={subject}
-      error={resource.error ?? '读取失败'}
+      error={resource.error ?? t('loadFailed')}
       notEquals={notEquals}
       onRetry={onRetry}
       {...(retryLabel !== undefined ? { retryLabel } : {})}

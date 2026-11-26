@@ -223,6 +223,7 @@ const loadedImageCache = new Map<string, string>();
 const failedImageCache = new Map<string, string>();
 
 export const MarkdownImage = memo(function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: string; onPreview?: (src: string) => void; basePath?: string }) {
+  const { t } = useTranslation('common');
   const effectiveSrc = useMemo(() => localImageApiUrl(src, basePath) ?? src, [src, basePath]);
 
   const isLocalApi = effectiveSrc.startsWith('/api/files/image?');
@@ -334,7 +335,7 @@ export const MarkdownImage = memo(function MarkdownImage({ src, alt, onPreview, 
       <button
         type="button"
         onClick={retryLoad}
-        title={errorDetail ?? 'Click to retry'}
+        title={errorDetail ?? t('markdown.clickToRetry')}
         className="inline-flex items-center gap-1.5 px-3 py-2 text-xs text-fg-tertiary bg-surface-elevated rounded-lg border border-border-default hover:bg-surface-overlay hover:text-fg-secondary cursor-pointer transition-colors max-w-full"
       >
         <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
@@ -342,7 +343,7 @@ export const MarkdownImage = memo(function MarkdownImage({ src, alt, onPreview, 
           <circle cx="8.5" cy="8.5" r="1.5" />
           <polyline points="21 15 16 10 5 21" />
         </svg>
-        <span className="truncate">Failed to load image — click to retry{errorDetail ? ` (${errorDetail})` : ''}</span>
+        <span className="truncate">{t('markdown.imageLoadFailed')}{errorDetail ? ` (${errorDetail})` : ''}</span>
       </button>
     );
   }
@@ -504,7 +505,7 @@ export function ImagePreviewModal({ src, onClose }: { src: string; onClose: () =
       )}
       <img
         src={src}
-        alt="Preview"
+        alt={t('fileEditor.preview')}
         className="max-w-full max-h-[90vh] object-contain rounded-lg"
         onClick={e => e.stopPropagation()}
       />

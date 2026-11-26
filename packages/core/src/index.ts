@@ -23,7 +23,6 @@ export {
   type SkillWarnings,
   type SkillLookup,
 } from './skill-warnings.js';
-export { HeartbeatScheduler } from './heartbeat.js';
 export { ContextEngine, type OrgContext, type ContextConfig, type LLMSummarizer, type SystemPromptResult, type SystemPromptSegment } from './context-engine.js';
 export {
   SmartTokenCounter,
@@ -150,12 +149,11 @@ export type {
 } from './review-service.js';
 export { EventBus } from './events.js';
 export { decideTurnReply, shouldComposeAnswer, type TurnReply, type TurnReplyInput } from './turn-completion.js';
-export { AgentMailbox, type EnqueueOptions, type MailboxPersistence } from './mailbox.js';
+export { AgentMailbox, type EnqueueOptions, type MailboxPersistence, type DeliveryOrigin, rehydrateStructuredFields } from './mailbox.js';
 export {
   AttentionController,
   type AttentionDelegate,
   type DecisionPersistence,
-  type LLMDecisionJudge,
 } from './attention.js';
 export { SecurityGuard, defaultSecurityGuard, type SecurityPolicy } from './security.js';
 export {
@@ -187,6 +185,7 @@ export {
   createPatchTool,
   createBackgroundExecTool,
   createProcessTool,
+  wasBackgroundResultConsumed,
   onBackgroundCompletion,
   drainCompletedNotifications,
   MCPClientManager,
@@ -322,13 +321,9 @@ export { getAdapter, getAllAdapters } from './coding-tools/index.js';
 // Agent Runtime — Context Economics + Learning Loop
 export {
   scenarioToPack,
-  packToolDefBudget,
   getReflexAllowlist,
   getDistillationAllowlist,
   DISTILLATION_EXTRA_TOOLS,
-  estimateToolDefTokens,
-  evictToolsToBudget,
-  formatEvictedToolCatalog,
   TASK_EXECUTION_EXTRA_TOOLS,
   COMMENT_RESPONSE_ALLOWED_TOOLS,
   REQUIREMENT_ACTION_ALLOWED_TOOLS,
@@ -368,6 +363,61 @@ export {
   type ShareStatus,
 } from './deliverable-share.js';
 export { matchAgentsForSkillFanout, applyFanoutDailyCap } from './skill-fanout.js';
+// 第九刀 C9-A：facts 层的 port（唯一 SQL 写者在 org-manager/src/fact-service.ts）
+// 与 `[FACTS:<subject>]` 注入构造器（纯函数）。
+export {
+  stableJson,
+  type FactAssertInput,
+  type FactAsserted,
+  type FactRejected,
+  type FactRejectionCode,
+  type FactRecord,
+  type FactQuery,
+  type FactService,
+  type FactSupersedeInput,
+  type FactVerification,
+  type FactVerifyInput,
+  type FactWriteResult,
+} from './facts/fact-service.js';
+// 第九刀 C9-E：dream 的七条建议动作（关闭 DR7）—— 纯派生 + 闭集解析，零 IO。
+export {
+  deriveConsolidationSuggestions,
+  parseConsolidationSuggestions,
+  mergeSuggestions,
+  toConsolidationFactValue,
+  describeDropped,
+  CONSOLIDATION_THRESHOLDS,
+  type ConsolidationSuggestion,
+  type ConsolidationSignals,
+  type SkillSignal,
+  type NotebookSignal,
+  type ObservationCluster,
+  type NegativeFeedbackSignal,
+  type PeerThemeSignal,
+} from './facts/consolidation-suggestions.js';
+// 第九刀 C9-C：`deriveStage()` —— 「这条流此刻在等谁」的唯一派生点（纯函数，零 IO）。
+export {
+  deriveStage,
+  isThreadStage,
+  THREAD_STAGES,
+  COMPLETION_EVIDENCE_PREDICATE,
+  type Approval,
+  type DeriveStageInput,
+  type FsmSnapshot,
+  type ThreadFsmStatus,
+  type ThreadStage,
+} from './facts/derive-stage.js';
+export {
+  renderFactsBlock,
+  renderFactsContext,
+  factsSubjectLabel,
+  toFactView,
+  FACTS_BLOCK_MAX_FACTS,
+  FACTS_BLOCK_MAX_CHARS,
+  type FactView,
+  type FactsBlockOptions,
+  type FactsPromptContext,
+} from './facts/facts-block.js';
 export { extractTextFromFile, convertFilesToText, resetMarkitdownCache, type ConvertedFile } from './file-converter.js';
 export { requestHistoryStart, requestHistoryWindow } from './history-window.js';
 export {

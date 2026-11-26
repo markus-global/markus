@@ -5,7 +5,7 @@
  * 11 次被墙钟冷却静默丢弃；工具仍返回 dispatched。根因是"投递"与"唤醒"被拆成
  * 两个可分离动作，且唤醒上的闸会丢弃而不告知。
  *
- * 本测试锁住新模型的不变量（docs/architecture/mailbox-system.md §11.1.1–§11.1.4）：
+ * 本测试锁住新模型的不变量（docs/architecture/a2a-communication.md §11.1.1–§11.1.4）：
  *   ① 投递**不可丢失**：N 次 deliver = N 次入队（是否合并是 mailbox 的事，不是这里丢）；
  *   ② 不存在半状态：要么入队，要么目标不存在（记录跳过），要么抛错——三者皆可见；
  *   ③ 因果链透传：chainId / depth 原样带进 payload，回复时沿用；
@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { AgentDelivery, newChainId, type DeliveryDeps, type DeliveryRequest } from '../src/agent-delivery.js';
+import { AgentDelivery, newChainId, NULL_WORK_UNITS, type DeliveryDeps, type DeliveryRequest } from '../src/agent-delivery.js';
 
 type Enqueued = { agentId: string; sourceType: string; payload: Record<string, unknown>; options?: Record<string, unknown> };
 
@@ -37,6 +37,8 @@ function makeDeps(overrides: Partial<DeliveryDeps> = {}) {
     getAgent: (id: string) => (id === 'missing' ? undefined : ensure(id)),
     persistReply,
     broadcastReply,
+    // 端口必填：这些用例不关心 WU，显式声明「没有 WU 服务」而不是漏传。
+    workUnits: NULL_WORK_UNITS,
     ...overrides,
   };
   return { deps, enqueued, persistReply, broadcastReply, agents };
@@ -242,5 +244,99 @@ describe('AgentDelivery.postReply — 回复只有一个写点', () => {
     await new AgentDelivery(deps).postReply({ orgId: 'org-1', channelKey: 'dm:a2a:agt_a:agt_b', agentId: 'agt_b', text: 'pong' });
     // 唯一的投递入口是 deliver；postReply 不得产生任何 mailbox 入队
     expect(enqueued).toHaveLength(0);
+  });
+});
+
+// ─── C8-A：身份是「这件事」，不是「这次投递」────────────────────────────────
+
+describe('C8-A — A2A 的身份由实体回答', () => {
+  /** 只关心「ref / 会话 key 怎么算」的端口替身。 */
+  function makeWuDeps(turnRef: string | null) {
+    const ensured: Array<{ ref: string; parentRef?: string | null }> = [];
+    const workUnits: DeliveryDeps['workUnits'] = {
+      ensure: vi.fn((seed: { ref: string; parentRef?: string | null }) => {
+        ensured.push({ ref: seed.ref, parentRef: seed.parentRef });
+        return { status: 'running' };
+      }),
+      turnWorkUnitRef: vi.fn(() => turnRef),
+      transition: vi.fn(),
+    };
+    return { workUnits, ensured };
+  }
+
+  it('同一任务连发三条 → 三个 item 共享同一个 ref（旧实现是三个）', () => {
+    const { workUnits, ensured } = makeWuDeps('task_tsk_1_r2');
+    const { deps } = makeDeps({ workUnits });
+    const delivery = new AgentDelivery(deps);
+
+    for (let i = 0; i < 3; i++) delivery.deliver(req({ content: `msg ${i}` }));
+
+    expect(ensured).toHaveLength(3);
+    // 三个 ref 完全相同 —— 这就是「三份分裂会话」被根除的机制
+    expect(new Set(ensured.map(e => e.ref))).toEqual(new Set(['a2a:task:tsk_1']));
+    // 父链仍然是发送方本轮 WU（C7-B 语义不变）
+    expect(ensured[0]!.parentRef).toBe('task_tsk_1_r2');
+  });
+
+  it('同一任务连发三条 → 三个 item 的会话 key 相同（会话不分裂）', () => {
+    const { workUnits } = makeWuDeps('task_tsk_1_r2');
+    const { deps, enqueued } = makeDeps({ workUnits });
+    const delivery = new AgentDelivery(deps);
+
+    for (let i = 0; i < 3; i++) delivery.deliver(req({ content: `msg ${i}` }));
+
+    const keys = enqueued.map(e => {
+      const extra = (e.payload as { extra: Record<string, unknown> }).extra;
+      const hint = extra['sessionHint'] as { kind: string; role?: string; key?: string };
+      return hint.key;
+    });
+    expect(new Set(keys)).toEqual(new Set(['a2a_task_tsk_1']));
+  });
+
+  it('identity lands on the item at enqueue time (memory, not only the DB column)', () => {
+    const { workUnits } = makeWuDeps('task_tsk_1_r2');
+    const { deps, enqueued } = makeDeps({ workUnits });
+    new AgentDelivery(deps).deliver(req());
+
+    expect(enqueued[0]!.options?.['workUnitRef']).toBe('a2a:task:tsk_1');
+  });
+
+  it('发送方没有回合 WU → 退到「对话即实体」，仍然不把投递 id 编进身份', () => {
+    const { workUnits, ensured } = makeWuDeps(null);
+    const { deps } = makeDeps({ workUnits });
+    const delivery = new AgentDelivery(deps);
+
+    delivery.deliver(req({ content: 'a' }));
+    delivery.deliver(req({ content: 'b' }));
+
+    expect(new Set(ensured.map(e => e.ref))).toEqual(new Set(['a2a:channel:dm:a2a:agt_a:agt_b']));
+  });
+
+  it('不同任务 → 不同 ref（不误合并）', () => {
+    const refs: string[] = [];
+    for (const turn of ['task_tsk_1_r2', 'task_tsk_2_r1']) {
+      const { workUnits, ensured } = makeWuDeps(turn);
+      new AgentDelivery(makeDeps({ workUnits }).deps).deliver(req());
+      refs.push(ensured[0]!.ref);
+    }
+    expect(refs[0]).not.toBe(refs[1]);
+  });
+
+  it('DB 引用在入队那一刻就带上 entityRef（唯一写者是 INSERT；入队后不再有 link）', () => {
+    const { workUnits } = makeWuDeps('task_tsk_1_r2');
+    const { deps, enqueued } = makeDeps({ workUnits });
+    new AgentDelivery(deps).deliver(req());
+
+    // 入队参数就是 mailbox INSERT 写进 `mailbox_items.work_unit_ref` 的那个值 ——
+    // 内存与 DB 同源，身份不需要事后再补。
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.options?.['workUnitRef']).toBe('a2a:task:tsk_1');
+
+    // 事后补列的写者已删除：端口不再宣告 `linkMailboxItem`，因此 deliver() 之后
+    // 没有任何第二次写这一列的机会（零回填是结构事实，不是“恰好没调”）。
+    expect('linkMailboxItem' in workUnits).toBe(false);
+    expect(Object.keys(workUnits).sort()).toEqual(['ensure', 'transition', 'turnWorkUnitRef']);
+    // NULL_WORK_UNITS 的形状同步收缩（它是“没有 WU 服务”时的显式替身）。
+    expect(Object.keys(NULL_WORK_UNITS).sort()).toEqual(['ensure', 'transition', 'turnWorkUnitRef']);
   });
 });

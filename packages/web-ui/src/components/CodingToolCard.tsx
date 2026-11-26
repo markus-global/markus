@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { formatDuration } from './execution-utils.ts';
 
 export type CodingToolName = 'claude-code' | 'codex' | 'cursor-agent';
@@ -85,6 +86,7 @@ export interface CodingToolCardProps {
 }
 
 export function CodingToolCard({ session, className }: CodingToolCardProps) {
+  const { t } = useTranslation('common');
   const meta = getToolMeta(session.tool);
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -195,16 +197,16 @@ export function CodingToolCard({ session, className }: CodingToolCardProps) {
           )}
           {session.result.diffStats && (
             <div className="flex items-center gap-3 text-[10px] font-mono">
-              <span className="text-fg-tertiary">{session.result.diffStats.filesChanged} files</span>
+              <span className="text-fg-tertiary">{t('codingTool.files', { n: session.result.diffStats.filesChanged })}</span>
               <span className="text-green-500">+{session.result.diffStats.additions}</span>
               <span className="text-red-500">−{session.result.diffStats.deletions}</span>
             </div>
           )}
           {session.cost && (session.cost.inputTokens != null || session.cost.outputTokens != null) && (
             <div className="text-[10px] text-fg-tertiary">
-              {session.cost.inputTokens != null && <span>{session.cost.inputTokens.toLocaleString()} in</span>}
+              {session.cost.inputTokens != null && <span>{t('codingTool.tokensIn', { n: session.cost.inputTokens.toLocaleString() })}</span>}
               {session.cost.inputTokens != null && session.cost.outputTokens != null && <span className="mx-1">·</span>}
-              {session.cost.outputTokens != null && <span>{session.cost.outputTokens.toLocaleString()} out</span>}
+              {session.cost.outputTokens != null && <span>{t('codingTool.tokensOut', { n: session.cost.outputTokens.toLocaleString() })}</span>}
             </div>
           )}
         </div>
@@ -221,7 +223,7 @@ export function CodingToolCard({ session, className }: CodingToolCardProps) {
             <svg className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
-            <span className="font-medium uppercase tracking-wider">Raw output</span>
+            <span className="font-medium uppercase tracking-wider">{t('rawOutput')}</span>
           </button>
           {expanded && (
             <pre className="mt-2 text-[11px] text-fg-tertiary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">

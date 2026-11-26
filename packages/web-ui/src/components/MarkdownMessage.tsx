@@ -284,6 +284,7 @@ function CopyMenu({ content, contentRef, variant }: {
 // ─── MarkdownMessage ─────────────────────────────────────────────────────────
 
 export const MarkdownMessage = memo(function MarkdownMessage({ content, className = '', onMentionClick, knownNames, basePath, copyVariant = 'inline' }: Props) {
+  const { t } = useTranslation('common');
   const { thinking, rest } = extractThinkBlocks(content);
   const contentRef = useRef<HTMLDivElement>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
@@ -321,9 +322,9 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
       <div ref={contentRef}>
         <ErrorBoundary
           resetKeys={[processedRest]}
-          fallback={<div className={`prose prose-sm max-w-none break-words whitespace-pre-wrap ${contentPadding} text-fg-secondary ${className}`}>{rest}</div>}
+          fallback={<div className={`prose prose-sm max-w-none msg-break-anywhere whitespace-pre-wrap ${contentPadding} text-fg-secondary ${className}`}>{rest}</div>}
         >
-        <div className={`prose prose-sm max-w-none break-words ${contentPadding} text-fg-secondary ${className}`}>
+        <div className={`prose prose-sm max-w-none msg-break-anywhere ${contentPadding} text-fg-secondary ${className}`}>
           {thinking.length > 0 && (() => {
             const full = thinking.join('\n\n');
             const firstLine = full.split('\n')[0] ?? '';
@@ -334,7 +335,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
                   <svg className="w-3 h-3 shrink-0 transition-transform group-open/think:rotate-90" viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
                   </svg>
-                  <span className="shrink-0">Thinking</span>
+                  <span className="shrink-0">{t('execution.thinking')}</span>
                   <span className="truncate text-fg-tertiary ml-1 group-open/think:hidden">{preview}</span>
                 </summary>
                 <div className="px-3 pb-3 border-t border-border-default/50">

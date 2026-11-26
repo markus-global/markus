@@ -9,7 +9,9 @@
     "search": "Web search providers and API keys",
     "integrations": "Connect external messaging platforms",
     "network": "Access scope, proxy and egress routing",
-    "account": "Your account, organization and license"
+    "account": "Your account, organization and license",
+    "external-sources": "Who may reach your agents from outside, and what an outside signal may do",
+    "facts": "The audit trail of conclusions and the evidence behind them"
   },
   "nav": {
     "appearance": "General",
@@ -19,20 +21,29 @@
     "search": "Web Search",
     "codingTools": "Coding Tools",
     "storage": "Data & Storage",
+    "facts": "Facts Audit",
     "users": "User Management",
     "remote": "Remote Access",
     "network": "Network & Access",
     "integrations": "Integrations",
+    "externalSignals": "External Signals",
     "license": "License",
     "organization": "Organization",
     "account": "Account",
+    "orgIdentity": "Organization Identity",
     "group": {
       "general": "Preferences",
       "aiConfig": "AI Configuration",
       "tools": "Tools & Capabilities",
       "connections": "Connections",
-      "account": "Account"
+      "account": "Account",
+      "data": "Data & Audit"
     }
+  },
+  "orgIdentity": {
+    "label": "Organization slug",
+    "unset": "Not set",
+    "synced": "Synced"
   },
   "appearance": {
     "title": "General",
@@ -312,6 +323,10 @@
     "connect": "Connect"
   },
   "accessScope": {
+    "bindHost": "Listen address",
+    "scopeLabel": "Access mode",
+    "remote": "Remote access",
+    "remoteHint": "Reachable from the internet through a tunnel — no need to open the LAN",
     "title": "Access scope",
     "description": "Controls whether the Markus API can be reached from outside this machine. To reach it from the internet use Remote access instead of opening the LAN.",
     "localOnly": "This machine only",
@@ -320,17 +335,16 @@
     "localOnlyHint": "only browsers and the CLI on this computer can connect",
     "lanHint": "other devices on the same network can connect (login still required)",
     "envControlled": "Controlled by the MARKUS_HOST environment variable and read-only here",
-    "save": "Save",
-    "saved": "Saved",
-    "restartRequired": "Saved — restart Markus to apply",
-    "saveFailed": "Save failed",
-    "applyNow": "Apply now",
-    "applying": "Applying…",
-    "applied": "Applied — the listener moved",
-    "applyFailed": "Could not move the listener",
+    "saveFailed": "Switch failed — could not save the setting",
+    "applying": "Switching… (the connection drops for a few seconds)",
+    "applied": "Switched to the new listen address",
+    "applyFailed": "Switch timed out — the address may not have changed; refresh to check",
     "remoteNote": "The remote-access tunnel connects to 127.0.0.1, so enabling remote access does not require opening the LAN."
   },
   "networkProxy": {
+    "active": "Active",
+    "enabledLabel": "Enable proxy",
+    "addressLabel": "Proxy address",
     "title": "Network proxy",
     "description": "Applies to every outbound HTTP request from the server: model providers, Hub, IM, search, update checks and child processes. Leave blank to resolve from the environment and system settings.",
     "noProxyTitle": "Bypass list",
@@ -339,15 +353,18 @@
     "noProxyHint": "Loopback, private ranges and .local are included by default. Exact hosts, .suffix and CIDR are supported.",
     "remove": "Remove",
     "test": "Test route",
+    "testHint": "Verify the whole route against a probe endpoint: exit IP and latency",
     "testing": "Testing…",
     "testResult": "Exit IP {{ip}} · {{ms}}ms · {{route}}",
-    "testFailed": "Test failed: {{error}}",
+    "failRefused": "Proxy refused the connection ({{detail}}). The proxy may not be running, or the port is wrong.",
+    "failDns": "Proxy host could not be resolved ({{detail}}). Check the address for typos.",
+    "failTimeout": "Connection timed out ({{detail}}). The proxy may be unreachable, or the network is restricted.",
+    "failUnreachable": "Could not reach the probe endpoint ({{detail}}). Check that the proxy is running and the address/port are correct.",
+    "failProbeHttp": "The chain works, but the probe endpoint returned {{detail}}. This is usually not a proxy problem.",
+    "failUnknown": "Test failed ({{detail}}).",
+    "failClient": "Could not call the test endpoint ({{detail}}). Check that you are signed in and the backend is running.",
     "viaProxy": "via proxy",
     "direct": "direct",
-    "coverageTitle": "What this covers",
-    "coverageCovered": "Covered: fetch/undici calls in this process and child processes (git, gh, npm, tunnels).",
-    "coverageNotCovered": "Not covered: browser automation — Chrome uses its own proxy settings.",
-    "active": "Active:",
     "noProxy": "No proxy detected",
     "sourceConfig": "markus.json",
     "sourceEnv": "env var",
@@ -579,6 +596,7 @@
   "dataStorage": {
     "title": "Data & Storage",
     "scanning": "Scanning storage...",
+    "scanningHint": "Scanning organization disk usage. The first scan can take a while; other pages stay responsive meanwhile.",
     "openInFinder": "Open in Finder",
     "storageBreakdown": "Storage Breakdown",
     "agentStorage": "Agent Storage ({{count}})",
@@ -750,8 +768,8 @@
   },
   "userManagement": {
     "title": "Local Markus",
-    "sharedInstanceDesc": "Manage user accounts on this machine's Markus instance. All accounts share the same workspace, AI agents, and teams. For example: on a shared Linux server, multiple colleagues each log in with their own account to the same Markus.",
-    "orgHint": "If team members each use their own Markus on separate computers, go to the \"Account\" tab to view your organization and manage it on Hub.",
+    "sharedInstanceDesc": "All accounts on this machine share one workspace, one set of AI agents and one team.",
+    "orgHint": "If members run their own Markus, see \"Markus subscription account\" below for organization details.",
     "orgLink": "",
     "name": "Name",
     "email": "Email",
@@ -788,75 +806,13 @@
       "guest": "Guest"
     }
   },
-  "license": {
-    "title": "License",
-    "currentPlan": "Current Plan",
-    "planFree": "Community",
-    "planEnterprise": "Enterprise",
-    "instanceId": "Instance ID",
-    "username": "Username",
-    "licenseKey": "License Key",
-    "validUntil": "Valid until",
-    "statusActive": "Active",
-    "daysRemaining": "{{count}} days remaining",
-    "daysRemaining_one": "{{count}} day remaining",
-    "daysRemaining_other": "{{count}} days remaining",
-    "expired": "Expired",
-    "expiresOn": "Expires on {{date}}",
-    "expiredWarning": "License has expired. Enterprise features are no longer available.",
-    "renewalWarning": "License expires in {{count}} days",
-    "renewalWarning_one": "License expires in {{count}} day",
-    "renewalWarning_other": "License expires in {{count}} days",
-    "renewalHint": "Contact sales for a new license key and enter it below to renew.",
-    "renew": "Renew",
-    "refresh": "Refresh",
-    "trial": "Trial",
-    "offline": "Offline",
-    "details": "License Details",
-    "manage": "License Management",
-    "upgrade": "Upgrade to Enterprise",
-    "updateKey": "Replace or renew license key",
-    "activateDesc": "Have a license key? Enter it to unlock all Enterprise features.",
-    "keyPlaceholder": "Enter license key…",
-    "activate": "Activate",
-    "activated": "License activated successfully!",
-    "activationFailed": "Failed to activate license.",
-    "tryEnterprise": "Try Enterprise Free for 7 Days",
-    "trialActivated": "7-day Enterprise trial activated!",
-    "trialFailed": "Failed to start trial.",
-    "trialDesc": "Full access to all Enterprise features. No credit card required. Reverts to Community automatically.",
-    "contactSales": "Get Enterprise License",
-    "contactSalesDesc": "Copy the following info and send it to sales ({{email}}) to receive your license key.",
-    "copyInfo": "Copy",
-    "copied": "Copied",
-    "emailSales": "Email Sales",
-    "salesEmail": "business@markus.global",
-    "enterpriseFeatures": "Enterprise Features",
-    "freeFeatures": "Community Plan Includes",
-    "freeFeaturesDesc": "1,000 reward credits, all models, unlimited local usage",
-    "enterpriseFeaturesDesc": "Everything in Community, plus:",
-    "featureMultiUser": "Multi-user collaboration",
-    "featureSso": "SSO / SAML support",
-    "featureAudit": "Enhanced audit logging",
-    "featureMultiInstance": "Multi-instance management",
-    "featureOffline": "Offline license support",
-    "website": "markus.global",
-    "docs": "Documentation",
-    "learnMore": "Learn more about Enterprise",
-    "trialAlreadyUsed": "Trial has already been used for this account.",
-    "licenseNotFound": "License not found or not active.",
-    "instanceLimitReached": "Maximum number of instances reached for this license.",
-    "organization": "Organization",
-    "seats": "Seats",
-    "notOwnedHint": "This license is managed by the organization owner. License details are only visible to the license owner.",
-    "cloudAi": "Cloud AI",
-    "cloudAiDesc": "Manage your Markus Cloud AI subscription, API keys, credits usage, and billing on the Hub website.",
-    "manageSubscription": "Manage Subscription & API Keys",
-    "apiDocs": "API Documentation"
-  },
   "account": {
     "title": "Account",
     "subtitle": "Manage Cloud AI subscription, organization, and local users.",
+    "localTitle": "Local accounts",
+    "localDesc": "Local to this machine. All accounts here share one workspace and one set of agents; organization and subscription details are below.",
+    "subscriptionTitle": "Markus subscription",
+    "subscriptionDesc": "Your organization, plan and credits on markus.global.",
     "cloudAiTitle": "Cloud AI",
     "currentPlan": "Current Plan",
     "credits": "Credits",
@@ -865,7 +821,17 @@
     "manageBilling": "Manage Subscription",
     "manageOrg": "Manage Organization",
     "orgSection": "Organization",
-    "memberCount": "Members"
+    "memberCount": "Members",
+    "noOrg": "Not a member of any organization"
+  },
+  "orgSummary": {
+    "notConnectedTitle": "Markus Hub not connected",
+    "notConnectedDesc": "Connect to read your organization, plan, members and credits. Right now none of it is available — which is not the same as having none.",
+    "connectHub": "Connect Markus Hub",
+    "plan": "Plan",
+    "planUnknown": "No plan",
+    "manageBilling": "Manage plan & billing",
+    "manageMembers": "Manage members"
   },
   "org": {
     "title": "My Organization",
@@ -931,8 +897,10 @@
     "saved": "Saved",
     "saveAndTest": "Save & test",
     "status": {
+      "connected": "Connected",
+      "disconnected": "Not connected",
       "verified": "Connected",
-      "unverified": "Not verified",
+      "unverified": "Unverified",
       "off": "Off",
       "unconfigured": "Not configured"
     },
@@ -965,14 +933,6 @@
     "secretStoredPlaceholder": "•••••••• (stored — leave blank to keep)",
     "loadGroups": "Load groups",
     "configuredTip": "Feishu is configured. Set a default chat above to receive notifications.",
-    "status": {
-      "connected": "Connected",
-      "disconnected": "Not connected",
-      "verified": "Connected",
-      "unverified": "Unverified",
-      "off": "Off",
-      "unconfigured": "Not configured"
-    },
     "capability": {
       "inbound": "Receives",
       "outbound": "Sends"
@@ -1018,118 +978,348 @@
             "title": "Create a Feishu agent app",
             "desc": "For a new bot: click “Scan QR Code to Create App” to generate the code — scanning it sets everything up in one step (bot, permissions and event subscription included). Or create an \"agent app\" on the Feishu Open Platform and enter the credentials manually."
           },
-          "step2": { "title": "Enable the bot", "desc": "App → Features → Bot: turn on bot capability." },
-          "step3": { "title": "Add permissions", "desc": "App → Permissions: enable im:message and im:message.receive_v1." },
-          "step4": { "title": "Subscribe to events", "desc": "App → Events & Callbacks: use long connection mode and subscribe to im.message.receive_v1." },
-          "step5": { "title": "Copy credentials", "desc": "App → Credentials: copy the App ID and App Secret, then paste them below and Test the connection." }
+          "step2": {
+            "title": "Enable the bot",
+            "desc": "App → Features → Bot: turn on bot capability."
+          },
+          "step3": {
+            "title": "Add permissions",
+            "desc": "App → Permissions: enable im:message and im:message.receive_v1."
+          },
+          "step4": {
+            "title": "Subscribe to events",
+            "desc": "App → Events & Callbacks: use long connection mode and subscribe to im.message.receive_v1."
+          },
+          "step5": {
+            "title": "Copy credentials",
+            "desc": "App → Credentials: copy the App ID and App Secret, then paste them below and Test the connection."
+          }
         },
         "fields": {
-          "appId": { "label": "App ID", "placeholder": "cli_xxxxxxxxxxxxxxxx" },
-          "appSecret": { "label": "App Secret" },
-          "domain": { "label": "API Domain", "help": "Override for Lark (international) — e.g. https://open.larksuite.com." },
-          "wsMode": { "label": "WebSocket mode", "help": "Receive events over a WebSocket subscription instead of a webhook server." },
-          "webhookPort": { "label": "Webhook port", "help": "Port for the webhook server when WebSocket mode is off." },
-          "encryptKey": { "label": "Encrypt Key", "help": "AES key for decrypting encrypted webhook payloads." },
-          "verificationToken": { "label": "Verification Token", "help": "Event-subscription verification token." },
-          "notifyEnabled": { "label": "Notifications", "help": "Deliver this bot’s approvals and notifications to the destination below." },
-          "notifyChatId": { "label": "Default chat", "help": "Group chat that receives notifications. Leave blank to use direct messages." },
-          "notifyOpenId": { "label": "Default user", "help": "User open_id for direct (\"send to my Feishu\") messages." },
-          "notifyOnApproval": { "label": "Notify on approvals", "help": "Forward approval requests to the chat / user above." },
-          "notifyOnNotification": { "label": "Notify on events", "help": "Forward agent and task events to the chat / user above." },
+          "appId": {
+            "label": "App ID",
+            "placeholder": "cli_xxxxxxxxxxxxxxxx"
+          },
+          "appSecret": {
+            "label": "App Secret"
+          },
+          "domain": {
+            "label": "API Domain",
+            "help": "Override for Lark (international) — e.g. https://open.larksuite.com."
+          },
+          "wsMode": {
+            "label": "WebSocket mode",
+            "help": "Receive events over a WebSocket subscription instead of a webhook server."
+          },
+          "webhookPort": {
+            "label": "Webhook port",
+            "help": "Port for the webhook server when WebSocket mode is off."
+          },
+          "encryptKey": {
+            "label": "Encrypt Key",
+            "help": "AES key for decrypting encrypted webhook payloads."
+          },
+          "verificationToken": {
+            "label": "Verification Token",
+            "help": "Event-subscription verification token."
+          },
+          "notifyEnabled": {
+            "label": "Notifications",
+            "help": "Deliver this bot’s approvals and notifications to the destination below."
+          },
+          "notifyChatId": {
+            "label": "Default chat",
+            "help": "Group chat that receives notifications. Leave blank to use direct messages."
+          },
+          "notifyOpenId": {
+            "label": "Default user",
+            "help": "User open_id for direct (\"send to my Feishu\") messages."
+          },
+          "notifyOnApproval": {
+            "label": "Notify on approvals",
+            "help": "Forward approval requests to the chat / user above."
+          },
+          "notifyOnNotification": {
+            "label": "Notify on events",
+            "help": "Forward agent and task events to the chat / user above."
+          },
           "notifyPriority": {
             "label": "Notify priority",
             "help": "Only forward events at these priorities.",
-            "options": { "normal": "Normal", "low": "Low", "medium": "Medium", "high": "High", "urgent": "Urgent" }
+            "options": {
+              "normal": "Normal",
+              "low": "Low",
+              "medium": "Medium",
+              "high": "High",
+              "urgent": "Urgent"
+            }
           },
-          "agentId": { "label": "Bound agent", "help": "Agent that answers inbound messages from this platform. Leave blank to require an explicit per-channel binding.", "placeholder": "agt_…" }
+          "agentId": {
+            "label": "Bound agent",
+            "help": "Agent that answers inbound messages from this platform. Leave blank to require an explicit per-channel binding.",
+            "placeholder": "agt_…"
+          }
         }
       },
       "telegram": {
         "label": "Telegram",
         "description": "Connect a Telegram bot to send and receive messages.",
         "guide": {
-          "step1": { "title": "Open @BotFather", "desc": "In Telegram, start a chat with @BotFather and send /newbot." },
-          "step2": { "title": "Create the bot", "desc": "Follow the prompts; BotFather returns a bot token." },
-          "step3": { "title": "Paste the token", "desc": "Paste the token below and Test the connection." },
-          "step4": { "title": "Receive messages", "desc": "Turn on Long polling — no public URL needed." }
+          "step1": {
+            "title": "Open @BotFather",
+            "desc": "In Telegram, start a chat with @BotFather and send /newbot."
+          },
+          "step2": {
+            "title": "Create the bot",
+            "desc": "Follow the prompts; BotFather returns a bot token."
+          },
+          "step3": {
+            "title": "Paste the token",
+            "desc": "Paste the token below and Test the connection."
+          },
+          "step4": {
+            "title": "Receive messages",
+            "desc": "Turn on Long polling — no public URL needed."
+          }
         },
         "fields": {
-          "botToken": { "label": "Bot Token", "placeholder": "123456:ABC-DEF…", "help": "Token from @BotFather. Verified with getMe when the adapter connects." },
-          "agentId": { "label": "Bound agent", "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.", "placeholder": "agt_…" },
-          "apiUrl": { "label": "API URL", "help": "Override for a self-hosted Bot API server.", "placeholder": "https://api.telegram.org" },
-          "notifyEnabled": { "label": "Notifications", "help": "Deliver this bot’s approvals and notifications to the destination below." },
-          "notifyChatId": { "label": "Notification chat ID", "help": "Telegram chat id (group or channel) that approvals and notifications are delivered to." },
-          "pollingEnabled": { "label": "Long polling", "help": "Receive updates by polling instead of a webhook (no public URL needed)." },
-          "webhookPort": { "label": "Webhook port", "help": "Local port for the webhook server. Leave blank to disable inbound webhooks." },
-          "webhookSecret": { "label": "Webhook secret", "help": "Sent to Telegram as the webhook secret token and checked on each update." },
-          "webhookPath": { "label": "Webhook path" },
-          "webhookUrl": { "label": "Public webhook URL", "help": "Telegram requires a publicly reachable HTTPS URL to call. Only needed when long polling is off.", "placeholder": "https://example.com/webhook/telegram" }
+          "botToken": {
+            "label": "Bot Token",
+            "placeholder": "123456:ABC-DEF…",
+            "help": "Token from @BotFather. Verified with getMe when the adapter connects."
+          },
+          "agentId": {
+            "label": "Bound agent",
+            "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.",
+            "placeholder": "agt_…"
+          },
+          "apiUrl": {
+            "label": "API URL",
+            "help": "Override for a self-hosted Bot API server.",
+            "placeholder": "https://api.telegram.org"
+          },
+          "notifyEnabled": {
+            "label": "Notifications",
+            "help": "Deliver this bot’s approvals and notifications to the destination below."
+          },
+          "notifyChatId": {
+            "label": "Notification chat ID",
+            "help": "Telegram chat id (group or channel) that approvals and notifications are delivered to."
+          },
+          "pollingEnabled": {
+            "label": "Long polling",
+            "help": "Receive updates by polling instead of a webhook (no public URL needed)."
+          },
+          "webhookPort": {
+            "label": "Webhook port",
+            "help": "Local port for the webhook server. Leave blank to disable inbound webhooks."
+          },
+          "webhookSecret": {
+            "label": "Webhook secret",
+            "help": "Sent to Telegram as the webhook secret token and checked on each update."
+          },
+          "webhookPath": {
+            "label": "Webhook path"
+          },
+          "webhookUrl": {
+            "label": "Public webhook URL",
+            "help": "Telegram requires a publicly reachable HTTPS URL to call. Only needed when long polling is off.",
+            "placeholder": "https://example.com/webhook/telegram"
+          }
         }
       },
       "slack": {
         "label": "Slack",
         "description": "Connect a Slack app to send and receive messages.",
         "guide": {
-          "step1": { "title": "Create a Slack app", "desc": "Open api.slack.com/apps → Create New App → \"From scratch\"." },
-          "step2": { "title": "Add bot scopes", "desc": "OAuth & Permissions → Bot Token Scopes: add chat:write (plus im:history and channels:history to read), then Install to Workspace." },
-          "step3": { "title": "Enable Socket Mode", "desc": "Settings → Socket Mode: turn it on, then generate an app-level token (xapp-…) with the connections:write scope." },
-          "step4": { "title": "Subscribe to events", "desc": "Event Subscriptions → Subscribe to bot events: add message.im and message.channels. With Socket Mode no public URL is needed." },
-          "step5": { "title": "Fill in the credentials", "desc": "Paste the Bot Token (xoxb-…) and App Token (xapp-…), turn Socket Mode on, then Save and test." }
+          "step1": {
+            "title": "Create a Slack app",
+            "desc": "Open api.slack.com/apps → Create New App → \"From scratch\"."
+          },
+          "step2": {
+            "title": "Add bot scopes",
+            "desc": "OAuth & Permissions → Bot Token Scopes: add chat:write (plus im:history and channels:history to read), then Install to Workspace."
+          },
+          "step3": {
+            "title": "Enable Socket Mode",
+            "desc": "Settings → Socket Mode: turn it on, then generate an app-level token (xapp-…) with the connections:write scope."
+          },
+          "step4": {
+            "title": "Subscribe to events",
+            "desc": "Event Subscriptions → Subscribe to bot events: add message.im and message.channels. With Socket Mode no public URL is needed."
+          },
+          "step5": {
+            "title": "Fill in the credentials",
+            "desc": "Paste the Bot Token (xoxb-…) and App Token (xapp-…), turn Socket Mode on, then Save and test."
+          }
         },
         "fields": {
-          "botToken": { "label": "Bot Token", "placeholder": "xoxb-…", "help": "Verified with auth.test when the adapter connects." },
-          "agentId": { "label": "Bound agent", "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.", "placeholder": "agt_…" },
-          "signingSecret": { "label": "Signing Secret", "help": "Verifies inbound webhook requests. Required for the webhook inbound path." },
-          "appToken": { "label": "App Token", "placeholder": "xapp-…", "help": "App-level token (xapp-…) for Socket Mode. Needs the connections:write scope; no public URL required." },
-          "socketMode": { "label": "Socket Mode" },
-          "webhookPort": { "label": "Webhook port", "help": "Local port for the webhook server. Leave blank to disable inbound webhooks." },
-          "webhookPath": { "label": "Webhook path" },
-          "apiUrl": { "label": "API URL", "placeholder": "https://slack.com/api" },
-          "notifyEnabled": { "label": "Notifications", "help": "Deliver this bot’s approvals and notifications to the destination below." },
-          "notifyChannelId": { "label": "Notification channel", "help": "Slack channel id (e.g. C0123456789) that approvals and notifications are delivered to." }
+          "botToken": {
+            "label": "Bot Token",
+            "placeholder": "xoxb-…",
+            "help": "Verified with auth.test when the adapter connects."
+          },
+          "agentId": {
+            "label": "Bound agent",
+            "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.",
+            "placeholder": "agt_…"
+          },
+          "signingSecret": {
+            "label": "Signing Secret",
+            "help": "Verifies inbound webhook requests. Required for the webhook inbound path."
+          },
+          "appToken": {
+            "label": "App Token",
+            "placeholder": "xapp-…",
+            "help": "App-level token (xapp-…) for Socket Mode. Needs the connections:write scope; no public URL required."
+          },
+          "socketMode": {
+            "label": "Socket Mode"
+          },
+          "webhookPort": {
+            "label": "Webhook port",
+            "help": "Local port for the webhook server. Leave blank to disable inbound webhooks."
+          },
+          "webhookPath": {
+            "label": "Webhook path"
+          },
+          "apiUrl": {
+            "label": "API URL",
+            "placeholder": "https://slack.com/api"
+          },
+          "notifyEnabled": {
+            "label": "Notifications",
+            "help": "Deliver this bot’s approvals and notifications to the destination below."
+          },
+          "notifyChannelId": {
+            "label": "Notification channel",
+            "help": "Slack channel id (e.g. C0123456789) that approvals and notifications are delivered to."
+          }
         }
       },
       "whatsapp": {
         "label": "WhatsApp",
         "description": "Connect WhatsApp through the Meta Cloud API.",
         "guide": {
-          "step1": { "title": "Create a Meta app", "desc": "Open developers.facebook.com/apps → Create App → Business, then add the WhatsApp product. Completing Get Started auto-creates a free test number." },
-          "step2": { "title": "Copy the phone number ID", "desc": "WhatsApp → API Setup: copy the Phone number ID (not the phone number itself)." },
-          "step3": { "title": "Create an access token", "desc": "The API Setup token expires in ~24h — fine for testing. For production, create a permanent System User token in Business Settings." },
-          "step4": { "title": "Configure the webhook (required)", "desc": "WhatsApp has no polling: point Meta's callback URL at a publicly reachable HTTPS endpoint, set the verify token, and subscribe to the messages field. Meta Business verification is required to message real users." }
+          "step1": {
+            "title": "Create a Meta app",
+            "desc": "Open developers.facebook.com/apps → Create App → Business, then add the WhatsApp product. Completing Get Started auto-creates a free test number."
+          },
+          "step2": {
+            "title": "Copy the phone number ID",
+            "desc": "WhatsApp → API Setup: copy the Phone number ID (not the phone number itself)."
+          },
+          "step3": {
+            "title": "Create an access token",
+            "desc": "The API Setup token expires in ~24h — fine for testing. For production, create a permanent System User token in Business Settings."
+          },
+          "step4": {
+            "title": "Configure the webhook (required)",
+            "desc": "WhatsApp has no polling: point Meta's callback URL at a publicly reachable HTTPS endpoint, set the verify token, and subscribe to the messages field. Meta Business verification is required to message real users."
+          }
         },
         "fields": {
-          "phoneNumberId": { "label": "Phone Number ID", "help": "Meta Cloud API phone number id used as the sender.", "placeholder": "123456789012345" },
-          "notifyEnabled": { "label": "Notifications", "help": "Deliver this bot’s approvals and notifications to the destination below." },
-          "notifyWaId": { "label": "Notification WhatsApp ID", "help": "Recipient wa_id (phone number in international format) for approvals and notifications." },
-          "accessToken": { "label": "Access Token", "help": "Cloud API access token. The API Setup temporary token (~24h) is fine for testing; use a permanent system-user token in production." },
-          "agentId": { "label": "Bound agent", "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.", "placeholder": "agt_…" },
-          "businessAccountId": { "label": "Business Account ID" },
-          "apiVersion": { "label": "API version", "help": "Graph API version segment appended to the base URL." },
-          "baseUrl": { "label": "Base URL", "placeholder": "https://graph.facebook.com" },
-          "webhookPort": { "label": "Webhook port", "help": "Local port for the webhook server. Leave blank to disable inbound webhooks." },
-          "webhookPath": { "label": "Webhook path" },
-          "webhookVerifyToken": { "label": "Webhook verify token", "help": "Echoed back during Meta's GET webhook verification handshake." },
-          "appSecret": { "label": "App Secret", "help": "Verifies the X-Hub-Signature-256 header on inbound webhooks." }
+          "phoneNumberId": {
+            "label": "Phone Number ID",
+            "help": "Meta Cloud API phone number id used as the sender.",
+            "placeholder": "123456789012345"
+          },
+          "notifyEnabled": {
+            "label": "Notifications",
+            "help": "Deliver this bot’s approvals and notifications to the destination below."
+          },
+          "notifyWaId": {
+            "label": "Notification WhatsApp ID",
+            "help": "Recipient wa_id (phone number in international format) for approvals and notifications."
+          },
+          "accessToken": {
+            "label": "Access Token",
+            "help": "Cloud API access token. The API Setup temporary token (~24h) is fine for testing; use a permanent system-user token in production."
+          },
+          "agentId": {
+            "label": "Bound agent",
+            "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.",
+            "placeholder": "agt_…"
+          },
+          "businessAccountId": {
+            "label": "Business Account ID"
+          },
+          "apiVersion": {
+            "label": "API version",
+            "help": "Graph API version segment appended to the base URL."
+          },
+          "baseUrl": {
+            "label": "Base URL",
+            "placeholder": "https://graph.facebook.com"
+          },
+          "webhookPort": {
+            "label": "Webhook port",
+            "help": "Local port for the webhook server. Leave blank to disable inbound webhooks."
+          },
+          "webhookPath": {
+            "label": "Webhook path"
+          },
+          "webhookVerifyToken": {
+            "label": "Webhook verify token",
+            "help": "Echoed back during Meta's GET webhook verification handshake."
+          },
+          "appSecret": {
+            "label": "App Secret",
+            "help": "Verifies the X-Hub-Signature-256 header on inbound webhooks."
+          }
         }
       },
       "discord": {
         "label": "Discord",
         "description": "Connect a Discord bot to send and receive messages.",
         "guide": {
-          "step1": { "title": "Create an application", "desc": "Open discord.com/developers/applications and create a new application." },
-          "step2": { "title": "Add a bot", "desc": "Bot → Add Bot, then copy the bot token." },
-          "step3": { "title": "Enable intents", "desc": "Bot → Privileged Gateway Intents: enable MESSAGE CONTENT so the bot can read messages." },
-          "step4": { "title": "Invite the bot", "desc": "OAuth2 → URL Generator: pick the bot scope and invite it to your server." },
-          "step5": { "title": "Paste the token", "desc": "Paste the bot token below and Test the connection." }
+          "step1": {
+            "title": "Create an application",
+            "desc": "Open discord.com/developers/applications and create a new application."
+          },
+          "step2": {
+            "title": "Add a bot",
+            "desc": "Bot → Add Bot, then copy the bot token."
+          },
+          "step3": {
+            "title": "Enable intents",
+            "desc": "Bot → Privileged Gateway Intents: enable MESSAGE CONTENT so the bot can read messages."
+          },
+          "step4": {
+            "title": "Invite the bot",
+            "desc": "OAuth2 → URL Generator: pick the bot scope and invite it to your server."
+          },
+          "step5": {
+            "title": "Paste the token",
+            "desc": "Paste the bot token below and Test the connection."
+          }
         },
         "fields": {
-          "botToken": { "label": "Bot Token", "help": "Bot token from the Discord developer portal." },
-          "agentId": { "label": "Bound agent", "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.", "placeholder": "agt_…" },
-          "apiUrl": { "label": "API URL", "placeholder": "https://discord.com/api/v10" },
-          "gatewayUrl": { "label": "Gateway URL", "placeholder": "wss://gateway.discord.gg" },
-          "notifyEnabled": { "label": "Notifications", "help": "Deliver this bot’s approvals and notifications to the destination below." },
-          "notifyChannelId": { "label": "Notification channel", "help": "Discord channel id that approvals and notifications are delivered to." }
+          "botToken": {
+            "label": "Bot Token",
+            "help": "Bot token from the Discord developer portal."
+          },
+          "agentId": {
+            "label": "Bound agent",
+            "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.",
+            "placeholder": "agt_…"
+          },
+          "apiUrl": {
+            "label": "API URL",
+            "placeholder": "https://discord.com/api/v10"
+          },
+          "gatewayUrl": {
+            "label": "Gateway URL",
+            "placeholder": "wss://gateway.discord.gg"
+          },
+          "notifyEnabled": {
+            "label": "Notifications",
+            "help": "Deliver this bot’s approvals and notifications to the destination below."
+          },
+          "notifyChannelId": {
+            "label": "Notification channel",
+            "help": "Discord channel id that approvals and notifications are delivered to."
+          }
         }
       }
     }
@@ -1198,7 +1388,8 @@
     "testSuccess": "Connection successful",
     "testFailed": "Connection failed",
     "disconnected": "Disconnected from Feishu",
-    "disconnect": "Disconnect"
+    "disconnect": "Disconnect",
+    "qrAlt": "Feishu QR Code"
   },
   "codingTools": {
     "title": "Coding Tools",
@@ -1348,5 +1539,53 @@
         "whatsapp": "WhatsApp doesn’t let us list your chats — enter the destination number or group ID here."
       }
     }
+  },
+  "modelCatalog": {
+    "subject": "Model catalog",
+    "noModels": "This provider has no models",
+    "retryHint": "Select the provider again later to retry"
+  },
+  "externalSignals": {
+    "title": "External signals",
+    "intro": "Decide whether this organization accepts input from outside — webhooks, RSS feeds, other systems — and what an accepted signal is allowed to do. The switch and the source list are one screen on purpose: a door nobody can see is not a managed door.",
+    "policy": {
+      "off": {
+        "label": "Off — refuse everything",
+        "detail": "Inbound requests are rejected at the door. Nothing is stored, and no agent is woken."
+      },
+      "observe": {
+        "label": "Observe — record only",
+        "detail": "Signals are accepted and recorded, but do not owe a turn: an agent sees them the next time it runs. Nothing reacts on its own."
+      },
+      "accept": {
+        "label": "Accept — signals owe a turn",
+        "detail": "An accepted signal owes the receiving agent a turn, so it can react right away. Most permissive state."
+      },
+      "current": "current"
+    },
+    "saving": "saving…",
+    "agentCaveat": "Agents may register sources for themselves (it is their own tool), but only an owner or admin can change this switch — an agent cannot open the organization’s door.",
+    "sourcesTitle": "Sources per agent",
+    "sourcesIntro": "Every inbound path an agent has registered, with the address it delivers to. Pause one source without touching the switch.",
+    "agentFilter": "Agent",
+    "agentFilterHint": "Pick an agent to see the inbound paths registered for it.",
+    "noTunnel": "No tunnel is configured, so the URLs below are local-only paths. Start remote access (Settings → Account → Remote access) before an outside system tries to deliver.",
+    "tunnelUnknown": "The tunnel status could not be read, so the URLs below may be local-only. Confirm in Settings → Account → Remote access before handing one to an outside system.",
+    "empty": "This agent has no external sources yet. It can create one itself in chat (webhook or RSS) and it will appear here.",
+    "state": {
+      "delivering": "delivering",
+      "paused": "paused",
+      "blocked_by_policy": "blocked by switch"
+    },
+    "toggleSource": "Pause or resume this source",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Could not copy — select the text manually.",
+    "secretSet": "Shared secret {{preview}}",
+    "secretMissing": "No shared secret — this source rejects input until it has one.",
+    "rotate": "Rotate secret",
+    "secretOnce": "New secret — copy it now, it is not shown again.",
+    "lastEvent": "Last event: {{at}}",
+    "noEventYet": "No event received yet."
   }
 }

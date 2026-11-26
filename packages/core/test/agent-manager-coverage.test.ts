@@ -135,7 +135,7 @@ describe('AgentManager task and deliverable tool execution', () => {
       tools: [],
     });
 
-    const execPromise = agent.executeTask('task_live', 'Implement feature', () => {});
+    const execPromise = agent.executeTask('task_live', 'Implement feature', () => {}, undefined, undefined, 1);
     await vi.waitFor(() => agent.getActiveTasks().length > 0, { timeout: 2000 });
 
     const submitTool = agent.getTools().get('task_submit_review');

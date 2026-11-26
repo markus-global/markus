@@ -67,7 +67,8 @@ import {
   type ScrollIntentPriority,
 } from '../lib/chatScrollRestore.ts';
 import { chatDraftMemory } from '../lib/chatDraftMemory.ts';
-import { sessionHasLiveStream, shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
+import { onAgentModelChanged } from '../lib/agentModelSignals.ts';
+import { shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
 import {
   sessionStreamState,
   useAgentSessionStreaming,
@@ -113,6 +114,10 @@ import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStr
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+// 实体图标唯一权威：EntityCard 导出的 ENTITY_TYPE_ICON。
+// 本文件曾自己又写一份（requirement: '📋' / task: '✅'），与统一后的 🎯/☑️ 墨守不一致 ——
+// 同一个概念两地不同图，就是「一个事实多个写者」的图形版。
+import { ENTITY_TYPE_ICON } from '../components/EntityCard.tsx';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
@@ -122,6 +127,7 @@ import {
   resolveTeamChatShortcut, cycleSessionTabId,
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
   resolveMobileTeamLayerState,
+  resumeRecoveryTarget,
 } from './ChatHelpers.ts';
 import { timeAgo, formatExactTime } from '../lib/timeAgo.ts';
 import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
@@ -726,7 +732,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     messages, setMessages,
     sending, setSending,
     activities, setActivities,
-    activeSessionBuffer, actBuffers, sessionTabsBuffer, readConvMsgs, writeConvMsgs,
+    activeSessionBuffer, actBuffers, sessionTabsBuffer, readConvMsgs, readSessionMsgs, writeConvMsgs,
     setActiveSession,
     currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
@@ -847,13 +853,32 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
    * stale model name.
    */
   const [agentBoundModel, setAgentBoundModel] = useState<ChatModelSelection | null>(null);
+  /**
+   * Bumped whenever the binding may have changed under us, so the hydration
+   * effect below re-reads it. Switching agents is not the only way the value
+   * changes: Settings > 模型配置 writes the same field while this page stays
+   * mounted, and an agent can rebind its own model with a tool.
+   */
+  const [modelRevision, setModelRevision] = useState(0);
+
+  // Another surface (settings section, composer menu) announced a write.
+  useEffect(() => onAgentModelChanged(id => {
+    if (id === selectedAgent) setModelRevision(n => n + 1);
+  }), [selectedAgent]);
+
+  // Writes made outside the renderer cannot announce themselves, so re-read the
+  // authority when the user comes back to the window.
+  useEffect(() => {
+    const onFocus = () => setModelRevision(n => n + 1);
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
 
   // Hydrate the composer's model label from the backend's authoritative
-  // `effectiveModel`. This is the ONLY writer besides the composer's own
-  // onSelect — no per-session/per-turn state is involved, so the label cannot
-  // lag behind the agent it belongs to (the old code re-read a per-session
-  // override *after* an awaited history fetch, which is why the name only
-  // refreshed on a second visit / full reload).
+  // `effectiveModel`. No per-session/per-turn state is involved, so the label
+  // cannot lag behind the agent it belongs to (the old code re-read a
+  // per-session override *after* an awaited history fetch, which is why the name
+  // only refreshed on a second visit / full reload).
   useEffect(() => {
     if (!selectedAgent) { setAgentBoundModel(null); return; }
     let cancelled = false;
@@ -867,7 +892,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       })
       .catch(() => { if (!cancelled) setAgentBoundModel(null); });
     return () => { cancelled = true; };
-  }, [selectedAgent]);
+  }, [selectedAgent, modelRevision]);
 
   /** Compact (1-line) composer vs taller empty-chat starter. Synced before render. */
   const compactComposerRef = useRef(false);
@@ -1262,6 +1287,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
    * 该停在哪」的意图，和 pendingRestoreRef 属于同一族。
    */
   const pendingFocusRef = useRef<NavigationFocus | null>(null);
+  /**
+   * 预填文本 + 「落地要等会话切完」的排队区。
+   *
+   * 【为什么需要它】会话切换会**重载该会话自己的草稿**（渲染期 derive 那段），
+   * 所以「跳转 + 预填」如果同时要求切会话（`preferMain` / `sessionId`），
+   * 立刻 `setInput` 会在切完之后被旧草稿盖掉 —— 用户看到的是一个空输入框。
+   * 这里把文本挂起，等 `pendingFocusRef` 的握手真的切完会话再落（单一写者）。
+   */
+  const pendingPrefillRef = useRef<string | null>(null);
 
   /** 正在执行的 focus 导航（防止 effect 重入、重复切会话）。 */
   const focusNavRef = useRef<typeof pendingFocusRef.current>(null);
@@ -1698,6 +1732,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           if (detail.params?.autoSend === 'true') {
             setTimeout(() => sendRef.current?.(msg), 300);
           } else {
+            // 同时要求切会话（主会话 / 指定会话）时，文本要等切完再落，否则会被
+            // 目标会话的旧草稿覆盖。仍然先 setInput 一次：即便握手没发生（例如
+            // session 列表还没回来），也已经退化成「预填但没切会话」，不会丢内容。
+            if (detail.params?.preferMain === '1' || detail.params?.sessionId) {
+              pendingPrefillRef.current = msg;
+            }
             setInput(msg);
             setTimeout(() => {
               const el = textareaRef.current;
@@ -2818,7 +2858,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   };
   const chatStream = useChatStream({
     stateRef: streamVolatileRef,
-    actBuffers, activeSessionBuffer, readConvMsgs, currentConvKeyRef,
+    actBuffers, activeSessionBuffer, readConvMsgs, readSessionMsgs, currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginStream, endStream, abortStream, clearStreamSession, setStreamSession, getStreamSession,
     setActiveSession,
@@ -2877,6 +2917,45 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (!sessionStreamState.isStreaming(sid)) return;
     void reattachRef.current(selectedAgent, sid, currentConvKeyRef.current);
   }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, streamRevision]);
+
+  // ── Content recovery on visibility resume (P1: mobile sleep / app switch) ──
+  // The reattach effect above only takes over while the session is STILL
+  // streaming. When the browser sleeps mid-turn and the agent FINISHES while
+  // away, the authority flips to streaming:false on wake — reattach's gate
+  // skips, and nothing pulls the now-persisted reply from the DB into the
+  // display (during streaming, DB loads write to cache only). The user then
+  // sees only their own sent message until they manually leave and re-enter
+  // the conversation (switchSession → loadSessionMessages). Close that gap
+  // with the same phase-aware recovery a session switch uses: a DB soft-refresh
+  // (never clobbers a live bubble — cache-only while streaming) then an
+  // authoritative reattach (cooldown-throttled, idempotent). The listener is
+  // registered once; the ref carries the freshest closure so resume always
+  // reads the current session/agent, not a stale render snapshot.
+  const resumeRecoveryRef = useRef<() => void>(() => {});
+  resumeRecoveryRef.current = () => {
+    const sid = resumeRecoveryTarget({
+      isActive, previewMode, chatMode, selectedAgent, activeSessionId,
+      placeholderId: NEW_CHAT_PLACEHOLDER_ID,
+    });
+    if (!sid || !selectedAgent) return;
+    const key = currentConvKeyRef.current;
+    void loadSessionMessages(sid, key).then(() => {
+      void tryReattachActiveStream(selectedAgent, sid, key);
+    });
+  };
+  useEffect(() => {
+    const onResume = () => {
+      if (document.visibilityState === 'visible') resumeRecoveryRef.current();
+    };
+    document.addEventListener('visibilitychange', onResume);
+    // pageshow also covers bfcache restoration (mobile Safari back/forward
+    // cache), where visibilitychange alone may not fire.
+    window.addEventListener('pageshow', onResume);
+    return () => {
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('pageshow', onResume);
+    };
+  }, []);
 
   // Load older sessions (append to the list) — History panel "load more"
   const loadMoreSessions = useCallback(async () => {
@@ -3103,12 +3182,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // For direct mode, sending state is only relevant if the stream belongs
     // to the session we're switching TO. Otherwise a stream in session A
     // would incorrectly cause session B to appear as "streaming".
-    const streamingSessions = getStreamSession(newKey);
+    //
+    // 判据只认**权威**（服务端镜像）：membership 登记簿回答的是「我这条传输还连着吗」，
+    // 不是「这一轮结束了没有」（传输结束 ≠ 回合结束）。拿登记簿回答存活性，切 tab 时
+    // 就会把正在输出的会话画成已结束、把已结束的画成在跑 —— 与 send 路径同一个误用。
     const targetSession = savedActiveSession ?? activeSessionId;
-    // 同 switchSession：在途与否只由会话自身的登记决定。
     const isSendingNow = chatMode !== 'direct'
       ? isSendingFor(newKey)
-      : sessionHasLiveStream(streamingSessions, targetSession);
+      : sessionStreamState.isStreaming(targetSession);
 
     // Activities are keyed by session, not convKey
     const actBufKey = targetSession ?? newKey;
@@ -3695,10 +3776,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setOpenSessionTabs(prev => prev.some(t => t.id === childSession.id) ? prev : [...prev, childSession]);
       setActiveSessionId(childSession.id);
       const key = makeConvKey('direct', selectedAgent, activeChannel, activeDmUserId);
-      // reset + re-pin atomically: resetConv deletes the manager's activeSession
-      // for this key, then re-pins to the child session — so a stream from the
-      // PARENT session still running on the backend is routed to its own cache,
-      // never mixed into this new conversation's buffer.
+      // View-only reset + re-pin: the PARENT session's buffer and any live
+      // stream stay intact (writes route by sessionId, never by the view), so
+      // a still-running parent stream keeps landing in its own buffer while
+      // this child conversation starts empty.
       resetConv(key, childSession.id);
       setStoredActiveSession(selectedAgent, childSession.id);
       setMessages([]);
@@ -3734,14 +3815,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     newMsgCountRef.current = 0;
     setNewMsgCount(0);
     // Sync sending visual with the target session:
-    // - If stream belongs to THIS session → show spinner
-    // - If stream belongs to a DIFFERENT session → suppress spinner
-    const streamingSessions = getStreamSession(key);
-    const streamForThis = sessionHasLiveStream(streamingSessions, s.id);
-    // 只由「本会话是否真有在途流」决定，不再叠加 Agent 级 sendCount：
-    // 那个计数器是会话级事实的重复副本，会被别的 tab 的发送/中断清零，
-    // 于是正在输出的 tab 会瞬间显示为“已结束”。
-    const isStreaming = streamForThis;
+    // - If the target session is really streaming → show spinner
+    // - Otherwise → suppress spinner
+    //
+    // 判据只读权威（服务端镜像）。旧写法读 membership 登记簿：它是「传输附着」账，
+    // 漏销一次就永久为真，于是“已结束的 tab 永远转圈”或“正在输出的 tab 不转圈”。
+    const isStreaming = sessionStreamState.isStreaming(s.id);
     setSending(isStreaming);
     if (isStreaming) {
       setActivities(actBuffers.get(s.id) ?? []);
@@ -3905,12 +3984,22 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // nothing and silently did nothing (「消息都没加载出来」).
   useEffect(() => {
     const p = pendingFocusRef.current;
-    if (!p) return;
+    if (!p) {
+      // 没有待办导航时，挂起的预填不应该无限期活着（否则会污染下一次切会话）。
+      pendingPrefillRef.current = null;
+      return;
+    }
 
     const finish = () => {
       focusNavRef.current = null;
       if (pendingFocusRef.current !== p) return; // superseded by a newer navigation
       pendingFocusRef.current = null;
+      // 会话已切完：这时落预填文本才是最终值（切换途中的旧草稿已重载过）。
+      const queuedPrefill = pendingPrefillRef.current;
+      if (queuedPrefill != null) {
+        pendingPrefillRef.current = null;
+        setInput(queuedPrefill);
+      }
       if (p.messageId) void jumpToMessage(p.messageId, p.createdAt);
     };
 
@@ -3968,12 +4057,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // bound model, else global routing), never the session — so a fresh chat
     // cannot inherit a foreign pick.
     const key = currentConvKeyRef.current;
-    // reset + re-pin atomically: resetConv deletes the manager's activeSession
-    // for this key, then re-pins it to the new-chat placeholder so a
-    // still-running stream from a PREVIOUS session is routed to its own session
-    // cache (isSameSession=false) instead of being written into the fresh
-    // new-chat buffer — this is what mixed concurrent streams together and made
-    // content land in the wrong bubbles.
+    // View-only reset + re-pin to the new-chat placeholder. A still-running
+    // stream from a PREVIOUS session keeps its buffer and keeps consuming its
+    // SSE (writes route by sessionId, never by the view) — the fresh tab starts
+    // empty without destroying anyone else's in-flight transcript. (The old
+    // reset deleted the viewed buffer here, which silently ate the live stream
+    // of whichever tab the user was on — concurrent-session bubble loss.)
     resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
     setMessages([]);
     setShowSessions(false);
@@ -4338,7 +4427,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     .filter(a => channelTeamMemberIds ? channelTeamMemberIds.has(a.id) : true)
     .filter(a => a.name.toLowerCase().includes(mentionFilter));
   const filteredEntityItems = entityMentionItems.filter(e => e.name.toLowerCase().includes(mentionFilter));
-  const ENTITY_TYPE_ICON: Record<string, string> = { workflow: '⚙️', project: '📁', requirement: '📋', task: '✅', deliverable: '📦' };
   type MentionDropdownItem = { kind: 'agent'; agent: AgentInfo } | { kind: 'entity'; entity: EntityMentionItem };
   const allMentionItems: MentionDropdownItem[] = useMemo(() => [
     ...filteredAgents.map(a => ({ kind: 'agent' as const, agent: a })),
@@ -5079,7 +5167,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 ${
                       l2Floating ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                     }`}
-                    title="Toggle team panel"
+                    title={t('chat.toggleTeamPanel')}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -5150,7 +5238,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         <span
                           className="text-sm font-semibold truncate cursor-pointer hover:text-brand-500 transition-colors"
                           onClick={() => { setHeaderNameDraft(headerName ?? ''); setEditingHeaderName(true); }}
-                          title="Click to edit name"
+                          title={t('chat.clickToEditName')}
                         >
                           {headerName}
                         </span>
@@ -5168,14 +5256,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                           onBlur={handleSaveHeaderDesc}
                           onKeyDown={e => { if (e.key === 'Enter') handleSaveHeaderDesc(); if (e.key === 'Escape') setEditingHeaderDesc(false); }}
                           className="text-[11px] text-fg-tertiary bg-transparent border-b border-brand-500/50 outline-none py-0 px-0 w-full max-w-[400px] mt-0.5"
-                          placeholder="Add title..."
+                          placeholder={t('chat.addTitle')}
                           autoFocus
                         />
                       ) : (
                         <div
                           className="text-[11px] text-fg-tertiary truncate cursor-pointer hover:text-fg-secondary transition-colors mt-0.5"
                           onClick={() => { setHeaderDescDraft(headerDesc); setEditingHeaderDesc(true); }}
-                          title="Click to edit title"
+                          title={t('chat.clickToEditTitle')}
                         >
                           {headerDesc || 'No title'}
                         </div>
@@ -5314,8 +5402,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   onClick={() => {
                     if (s.id === NEW_CHAT_PLACEHOLDER_ID) {
                       setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
-                      // Same atomic reset + re-pin as newConversation(): keeps a
-                      // concurrently-streaming PREVIOUS session out of this tab.
+                      // Same view-only reset + re-pin as newConversation(): the
+                      // previous session's live stream keeps its own buffer.
                       const key = currentConvKeyRef.current;
                       resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
                       setMessages([]);
@@ -5758,7 +5846,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         </span>
                       )}
                       {msg.sender === 'user'
-                        ? <div className="text-sm text-fg-secondary whitespace-pre-wrap">
+                        ? <div className="text-sm text-fg-secondary whitespace-pre-wrap msg-break-anywhere">
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
                                 {msg.images.map((src, idx) => (
@@ -5793,13 +5881,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                             ? <ActivityIndicator activities={activities} isActive />
                             : <ErrorBoundary
                                 resetKeys={[msg.text]}
-                                fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
+                                fallback={<div className="whitespace-pre-wrap break-words msg-break-anywhere text-sm text-fg-secondary">{msg.text}</div>}
                               >
                                 <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
                               </ErrorBoundary>)
                           : <ErrorBoundary
                               resetKeys={[msg.id, msg.text, msg.segments?.length, isStreamingMsg]}
-                              fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
+                              fallback={<div className="whitespace-pre-wrap break-words msg-break-anywhere text-sm text-fg-secondary">{msg.text}</div>}
                             >
                               <AgentMessageBody
                                 msg={msg}
@@ -6076,7 +6164,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     i === mentionSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
                   }`}
                 >
-                  <span className="w-6 h-6 flex items-center justify-center text-sm shrink-0">{ENTITY_TYPE_ICON[item.entity.entityType] ?? '📄'}</span>
+                  <span className="w-6 h-6 flex items-center justify-center text-sm shrink-0">{ (ENTITY_TYPE_ICON as Record<string, string>)[item.entity.entityType] ?? '📄' }</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay text-fg-tertiary shrink-0">{t(`page.mentionType.${item.entity.entityType}`, { defaultValue: item.entity.entityType })}</span>
                   <span className="flex-1 min-w-0 truncate">{item.entity.name}</span>
                   <span className="text-xs text-fg-tertiary ml-auto shrink-0">{item.entity.role}</span>

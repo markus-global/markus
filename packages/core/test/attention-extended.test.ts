@@ -36,7 +36,6 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
     onTriageCompleted: vi.fn(),
-    performDeliberation: vi.fn().mockResolvedValue(null),
     onDeliberationCompleted: vi.fn(),
     ...delegateOverrides,
   };
@@ -105,47 +104,6 @@ describe('AttentionController extended yield and deliberation', () => {
     expect(controller['lastYieldDecision']).toBe('cancel');
   });
 
-  it('checkYieldPoint allows user interrupt during deliberation', async () => {
-    const { controller } = makeController({
-      evaluateInterrupt: vi.fn(async () => 'preempt'),
-    });
-    const current = makeItem({ sourceType: 'a2a_message' });
-    const incoming = makeItem({ sourceType: 'human_chat', priority: 0 as MailboxPriority });
-
-    controller['isDeliberating'] = true;
-    controller['interruptSignal'] = true;
-    controller['pendingInterruptItem'] = incoming;
-    controller['currentFocus'] = current;
-    controller['state'] = 'deciding';
-
-    const result = await controller.checkYieldPoint();
-    expect(result.decision).toBe('preempt');
-  });
-
-  it('shouldAbortDeliberation reflects deliberationAbortSignal', () => {
-    const { controller } = makeController();
-    expect(controller.shouldAbortDeliberation).toBe(false);
-    controller['deliberationAbortSignal'] = true;
-    expect(controller.shouldAbortDeliberation).toBe(true);
-  });
-
-  it('applyDeliberationResult processes inline and deferred items', () => {
-    const { controller, mailbox } = makeController();
-    const a = mailbox.enqueue('a2a_message', { summary: 'A', content: 'a' });
-    const b = mailbox.enqueue('a2a_message', { summary: 'B', content: 'b' });
-    const c = mailbox.enqueue('heartbeat', { summary: 'C', content: 'c' });
-
-    const next = controller['applyDeliberationResult'](a, {
-      processItemId: a.id,
-      inlineCompletedIds: [b.id],
-      deferItemIds: [c.id],
-      dropItemIds: [],
-      reasoning: 'Prioritize A, ack B, defer C',
-    });
-
-    expect(next.id).toBe(a.id);
-    expect(mailbox.depth).toBeGreaterThanOrEqual(0);
-  });
 });
 
 describe('AttentionController heuristic edge cases', () => {
@@ -154,13 +112,5 @@ describe('AttentionController heuristic edge cases', () => {
     const current = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
     const incoming = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
     expect(controller['heuristicDecision'](current, incoming)).toBe('continue');
-  });
-
-  it('needsLLMTriage returns true for ambiguous backlog', () => {
-    const { controller, mailbox } = makeController();
-    const head = mailbox.enqueue('a2a_message', { summary: '1', content: '1' });
-    mailbox.enqueue('a2a_message', { summary: '2', content: '2' });
-    mailbox.enqueue('a2a_message', { summary: '3', content: '3' });
-    expect(controller['needsLLMTriage'](head)).toBe(true);
   });
 });

@@ -1,3 +1,4 @@
+import type { WorkUnitService } from './work-unit-service.js';
 import {
   createLogger,
   taskId,
@@ -18,6 +19,7 @@ import {
   type TaskQueryResult,
   type TaskSortField,
   isValidTaskTransition,
+  WORK_UNIT_REF,
   TERMINAL_STATUSES,
   PROMPT_TASK_NOTES_MAX,
   PROMPT_TASK_NOTE_CHARS,
@@ -51,10 +53,12 @@ import {
   shouldDistillTask,
   getDistillationAllowlist,
   buildDistillationPrompt,
+  pendingCallbackRegistry,
   type AgentManager,
   type TaskProjectContext,
   type ReviewService,
   type ReviewReport,
+  type FactService,
 } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
 import { assertValidProjectReference } from './project-reference.js';
@@ -171,14 +175,14 @@ const DEFERRABLE_DISPATCH_INTENTS: ReadonlySet<TaskDispatchIntent> = new Set<Tas
 ]);
 
 /**
- * 单个执行纪元的在飞登记记录。**键 = 执行身份** `task_${taskId}_r${round}`（不是 taskId）。
+ * 单个执行纪元的在飞登记记录。**键 = 执行身份** `task_<taskId>_r<round>`（不是 taskId）。
  *
  * `settled` 是单飞闸的**唯一权威判据**（CAS）：执行实际收口时由 settle 信号首次置位，
  * 同身份后续信号一律 no-op。`{cancelled:boolean}` 结构上无法表达「已实际停止」，
  * 故 token 不再参与闸判定。
  */
 interface TaskExecutionRecord {
-  /** 执行身份 `task_${taskId}_r${round}`（在飞登记表的键） */
+  /** 执行身份 `task_<taskId>_r<round>`（在飞登记表的键，由 `WORK_UNIT_REF.task()` 构造） */
   identity: string;
   taskId: string;
   round: number;
@@ -285,7 +289,7 @@ export class TaskService implements ApprovalTargetPort {
   private taskLogRepo?: TaskLogRepo;
   /** The platform-wide single execution point for approval outcomes. */
   private approvalApplier?: ApprovalApplier;
-  private executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown; executionRound?: number }): unknown };
+  private executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown; executionRound?: number; workUnitRef?: string | null }): unknown };
   private hitlService?: HITLService;
   /**
    * Cancel tokens for active task executions — keyed by taskId。
@@ -300,7 +304,7 @@ export class TaskService implements ApprovalTargetPort {
   private taskCancelTokens = new Map<string, { cancelled: boolean }>();
   /**
    * T2 · 修订轮：**在飞执行登记表（settle 语义 SSOT）**，键 = **执行身份**
-   * `task_${taskId}_r${round}`（不是 taskId —— 差距 3；每笔 pending 的上下文按身份寻址）。
+   * `task_<taskId>_r<round>`（不是 taskId —— 差距 3；每笔 pending 的上下文按身份寻址）。
    *
    * - 记录生命周期：派发时登记 → 执行**实际收口**时由 settle CAS 置 `settled` 并移除；
    * - 闸判定：`getLiveExecution()` 只看「存在且未 settled」的记录（不看 token、不看 TTL）；
@@ -575,6 +579,7 @@ export class TaskService implements ApprovalTargetPort {
     if (input.intent === 'approve') {
       this.markReviewSettled(current, 'approved', reviewerId);
       this.updateTaskStatus(current.id, 'completed', reviewerId, false, false, 'human', 'Review approved');
+      // 反思不在这里触发：由 `updateTaskStatus()` 在 `review → completed` 迁移处统一发。
       return;
     }
 
@@ -794,6 +799,12 @@ export class TaskService implements ApprovalTargetPort {
           }, {
             ...(isHuman ? { priority: 0 as const } : {}),
             metadata: { senderName: authorName, senderRole: isHuman ? 'user' : 'agent', taskId },
+            // 身份精到**该任务**（不是“当前回合”）：实体是 task，所以用
+            // `task_<id>_r<round>`。若接收方正在执行别的任务，这条 ref 自然
+            // 匹配不到任何 running 回合 → 老老实实排队，不会被错误注入。
+            // 修正前：全库 `mention` 5558 条 / `task_comment` 1733 条 ref 全为 NULL，
+            // 于是「有人在评论我正在做的任务」永远不可能在轮内生效。
+            workUnitRef: WORK_UNIT_REF.task(taskId, this.tasks.get(taskId)?.executionRound ?? 1),
           });
           notifiedAgentIds.push(agentId);
         } catch { /* agent not found */ }
@@ -944,6 +955,9 @@ export class TaskService implements ApprovalTargetPort {
           }, {
             ...(isHumanReq ? { priority: 0 as const } : {}),
             metadata: { senderName: authorName, senderRole: isHumanReq ? 'user' : 'agent' },
+            // C10-0A：需求评论/提及的身份是**需求实体**（与 task_comment 同口径：
+            // 精到实体，不挂接收方当前回合，避免错误注入；回合外不再落 NULL）。
+            workUnitRef: WORK_UNIT_REF.requirement(requirementId),
           });
           notifiedAgentIds.push(agentId);
         } catch { /* agent not found */ }
@@ -1027,6 +1041,92 @@ export class TaskService implements ApprovalTargetPort {
 
   setStatusTransitionRepo(repo: typeof this.statusTransitionRepo): void {
     this.statusTransitionRepo = repo;
+  }
+
+  /**
+   * 第七刀 C7-A：接上 WorkUnit 作者。未接线 ⇒ 任务照常，只是不建 WU。
+   *
+   * 为什么只 import **type**：TaskService 不应在编译期依赖 `WorkUnitService`
+   * 的实现（它由 `start.ts` 装配），只依赖形状。
+   */
+  private workUnitService?: WorkUnitService;
+  setWorkUnitService(service: WorkUnitService | undefined): void {
+    this.workUnitService = service;
+  }
+
+  /**
+   * 第九刀 C9-E：facts 端口 —— 两个终态钩子（提交评审 / 打回）在这里**唯一一次**判定。
+   *
+   * 为什么只在 TaskService 里：它是 agent 工具与 REST 两条入口的**唯一执行点**。
+   * 放在工具层会让 REST 调用绕过它（同一个不变量两个执行点 = R2），
+   * 而 `architecture-guard` 的 `terminal-hook-single-point` 就是钉这一条的。
+   *
+   * 未注入 facts 端口时两个钩子完全惰性。
+   */
+  private factService?: FactService | null;
+  setFactService(service: FactService | null | undefined): void {
+    this.factService = service ?? null;
+  }
+
+  /** facts 层是否真的在管（端口接了）。 */
+  private factsActive(): boolean {
+    return !!this.factService;
+  }
+
+  /**
+   * 终态钩子 1（C9-E）：提交评审前必须有 active 的 `task.completion_evidence` 事实。
+   *
+   * 拒绝文案必须是**可行动的**：告诉模型到底该调什么、填什么字段，而不是只说“缺事实”。
+   * 历史事故（自我宣布完成）的根因不是模型不诚实，而是“完成”从来没有被要求留下证据指针。
+   */
+  private assertCompletionEvidence(task: Task): void {
+    if (!this.factsActive()) return;
+    const facts = this.factService!.queryActive({
+      subjectKind: 'task',
+      subjectId: task.id,
+      predicate: 'task.completion_evidence',
+      activeOnly: true,
+      limit: 1,
+    });
+    if (facts.length > 0) return;
+    throw new Error(
+      `Cannot submit for review: task ${task.id} has no active "task.completion_evidence" fact. ` +
+      'Submission must point at evidence, not only prose. Assert it first:\n' +
+      `  fact_assert({ subject_kind: "task", subject_id: "${task.id}", ` +
+      'predicate: "task.completion_evidence", ' +
+      'value: { summary: "<what this work proved, 2-5 sentences>", ' +
+      'evidence_refs: ["<deliverable/comment/branch id or absolute path>", ...] }, ' +
+      'source_refs: ["<the same ids>"] })\n' +
+      'If a fact already exists but is out of date, use fact_supersede with a reason instead.',
+    );
+  }
+
+  /**
+   * 终态钩子 2（C9-E）：agent 打回时必须断言 `task.rejection_reason`。
+   *
+   * 仅对 **agent** 执行者生效：人类从 UI 打回没有回合身份，无法断言事实，
+   * 强求它只会阻止决定而不是记录决定（口径写在 facts.md §9）。
+   */
+  private assertRejectionReason(task: Task, author: string | undefined): void {
+    if (!this.factsActive()) return;
+    if (!author || !author.startsWith('agt_')) return;
+    const facts = this.factService!.queryActive({
+      subjectKind: 'task',
+      subjectId: task.id,
+      predicate: 'task.rejection_reason',
+      activeOnly: true,
+      limit: 1,
+    });
+    if (facts.length > 0) return;
+    throw new Error(
+      `Cannot send task ${task.id} back: it has no active "task.rejection_reason" fact. ` +
+      'A rejection must say what is wrong in a form the next round can act on, not only in a note. ' +
+      'Assert it first:\n' +
+      `  fact_assert({ subject_kind: "task", subject_id: "${task.id}", ` +
+      'predicate: "task.rejection_reason", ' +
+      'value: { reason: "<the specific defect>", blocking_refs: ["<file:line / test name / claim>"] }, ' +
+      'source_refs: ["<the comment or evidence you judged>"] })',
+    );
   }
 
   private isHumanUser(userId: string): boolean {
@@ -1612,14 +1712,14 @@ export class TaskService implements ApprovalTargetPort {
   // ─── T2：task 级单飞（派发侧实体独占 · 修订轮 settle 语义）─────────────────
 
   /**
-   * T2：登记一个执行纪元（键 = 执行身份 `task_${taskId}_r${round}`）。
+   * T2：登记一个执行纪元（键 = 执行身份 `task_<taskId>_r<round>`）。
    * settle 由 `settleTaskExecution` 收口；闸判定由 `getLiveExecution` 读取。
    */
   private registerTaskExecution(
     taskId: string, round: number, initiatedBy: TaskDispatchIntent, cancelToken: { cancelled: boolean },
   ): TaskExecutionRecord {
     const record: TaskExecutionRecord = {
-      identity: `task_${taskId}_r${round}`,
+      identity: WORK_UNIT_REF.task(taskId, round),
       taskId,
       round,
       startedAt: Date.now(),
@@ -1897,7 +1997,7 @@ export class TaskService implements ApprovalTargetPort {
 
     const cancelToken = { cancelled: false };
     this.taskCancelTokens.set(taskId, cancelToken);
-    // T2：登记在飞执行纪元（**键 = 执行身份** `task_${taskId}_r${round}`）。
+    // T2：登记在飞执行纪元（**键 = 执行身份** `task_<taskId>_r<round>`）。
     // 此后同一 task 的重复派发由 getLiveExecution 判定（拒绝 / 延后重放）。
     const executionRecord = this.registerTaskExecution(
       taskId, task.executionRound ?? 1, intent, cancelToken,
@@ -2126,6 +2226,9 @@ export class TaskService implements ApprovalTargetPort {
     const agentId = task.assignedAgentId;
     const taskLogRepo = this.taskLogRepo;
     const ws = this.ws;
+    // 定义性缺省（从未执行过 = 第 1 轮）：`task.executionRound` 是库里的 SSOT，
+    // **只有派发侧**（本处，即构造 task_execution mailbox item 的地方）可以补这个缺省。
+    // core 侧与其它消费者不设默认：看不到权威轮次时不得代替它表态。
     const executionRound = task.executionRound ?? 1;
     const isRetry = _retryAttempt > 0;
 
@@ -2182,7 +2285,8 @@ export class TaskService implements ApprovalTargetPort {
         c.authorType === 'human' || c.authorType === 'owner'
       );
       if (humanComments.length > 0) {
-        const sessionId = `task_${taskId}_r${executionRound}`;
+        // 会话 id 就是执行身份，只有一个建造者。
+        const sessionId = WORK_UNIT_REF.task(taskId, executionRound);
         const recentFeedback = humanComments.slice(-PROMPT_HUMAN_COMMENTS_MAX);
         const feedbackLines = recentFeedback.map(c => {
           const ts = c.createdAt instanceof Date
@@ -2196,9 +2300,14 @@ export class TaskService implements ApprovalTargetPort {
           ...feedbackLines,
           '',
           'Read the feedback above carefully. Adjust your approach and work based on this feedback.',
-        ].join('\n'));
+        ].join('\n'), taskId);
       }
     }
+
+    // C10-0B §3.1：身份在**入队前**确定（先建实体、再建引用）。
+    // 与 A2A 投递同一个纪律（agent-delivery.ts）：顺序反过来就只能“先入队、
+    // 事后补 DB 列”，而补写不碰内存 —— 台账（读内存）与库分成两套真相。
+    const executionWorkUnitRef = this.ensureExecutionEpoch(taskId, executionRound);
 
     // Fire and forget — routed through agent mailbox for single-threaded attention
     void agent
@@ -2242,7 +2351,7 @@ export class TaskService implements ApprovalTargetPort {
           let savedId: string | undefined;
           if (taskLogRepo) {
             try {
-              const row = await taskLogRepo.append(logEntry);
+              const row = await taskLogRepo.append({ ...logEntry, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound) });
               savedId = row.id;
             } catch (err) {
               log.warn('Failed to persist task log', { taskId, error: String(err) });
@@ -2250,7 +2359,7 @@ export class TaskService implements ApprovalTargetPort {
           }
           if (this.executionStreamRepo) {
             try {
-              this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound });
+              this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound) });
             } catch (err) {
               log.warn('Failed to persist execution stream log', { taskId, error: String(err) });
             }
@@ -2399,7 +2508,7 @@ export class TaskService implements ApprovalTargetPort {
               };
               taskLogRepo?.append(noticeEntry).catch(() => {});
               if (this.executionStreamRepo) {
-                try { this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: noticeSeq, type: 'error', content: retryMsg, executionRound }); } catch { /* best effort */ }
+                try { this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: noticeSeq, type: 'error', content: retryMsg, executionRound, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound) }); } catch { /* best effort */ }
               }
               ws?.broadcast({
                 type: 'task:log',
@@ -2445,6 +2554,9 @@ export class TaskService implements ApprovalTargetPort {
         task.title,
         task.requirementId,
         retryNotice,
+        // C10-0B §3.1：本纪元的身份（已 ensure 到 running），由 mailbox 在入队时写进
+        // 内存 item 与 DB 行 —— 同一个值、同一个时刻、同一个写者。
+        executionWorkUnitRef,
       )
       .catch(err => {
         log.error('Task execution promise rejected', { taskId, error: String(err) });
@@ -2636,6 +2748,40 @@ export class TaskService implements ApprovalTargetPort {
     }
   }
 
+  /**
+   * C7 尾巴（2026-11-14）：一个执行纪元 = 一个 WorkUnit，**实体先于引用**。
+   *
+   * 缺陷：`createTask()` 只给 round 1 建实体，而两个执行入口无条件写
+   * `task_<id>_r<round>` 引用。`mailbox_items.work_unit_ref` 是纯 TEXT 列（无 FK），
+   * 所以 round ≥2（打回返工 / fresh retry）的 mailbox 行指向不存在的实体也没人报错 ——
+   * `resolve(ref)` 返 null → 锁键退化、该回合发起的委派 `parent_id` 落 NULL。
+   *
+   * 规则只在这里实现一次：**先 ensure 实体，再交出引用**。两个调用点共用它，
+   * 不各补一次（同一事实两个执行点 = 必然漂移）。
+   *
+   * C10-0B §3.1：本方法只**回答**「这一纪元的身份是什么」，不再碰 mailbox 行。
+   * 旧实现末尾会再调一次“只写 DB 列”的补写方法 —— 内存里的 item 仍是 null，
+   * 而决策台账读的是内存。现在 ref 由调用方在
+   * `sendTaskExecution` **之前**拿到并作为必填参数传入，入队即带身份（内存 + DB 同源）。
+   */
+  private ensureExecutionEpoch(taskId: string, round: number): string {
+    const ref = WORK_UNIT_REF.task(taskId, round);
+    const units = this.workUnitService;
+    // 没装配 WU 服务 = 本实例不记账，但**身份本身仍然存在**（它是任务的执行纪元，
+    // 不是台账的产物）。返回它，让 mailbox 行照常带身份（观测设施不能成为业务故障点）。
+    if (!units) return ref;
+    // 取不到 assignee 时传空串：`ensure()` 会把它记成结构化的 ensure_failed 事件，
+    // 而不是静默跳过 —— 静默跳过就是下一个“引用悬空”。
+    const agentId = this.tasks.get(taskId)?.assignedAgentId ?? '';
+    const row = units.ensure({ ref, agentId, taskId, status: 'running', contextRef: ref });
+    // C10-0A：通知可能已在入队时把这条 WU 预建为 idle（ensure 是 insert-or-nothing）。
+    // 执行开始必须把它迁移到 running —— 否则回合跑在一条 idle WU 上。
+    if (row && row.status !== 'running') {
+      units.transition(ref, 'running', { changedByType: 'system', reason: 'execution_started' });
+    }
+    return ref;
+  }
+
   createTask(request: CreateTaskRequest): Task {
     // ── Validate assignedAgentId / reviewerId exist ──
     if (!request.assignedAgentId) {
@@ -2781,6 +2927,23 @@ export class TaskService implements ApprovalTargetPort {
     };
 
     this.tasks.set(task.id, task);
+
+    // ── 第七刀 C7-A：一个执行纪元 = 一个 WorkUnit ──────────────────────────
+    // `ref` 复用既有身份 `task_<id>_r<round>`（执行会话 id、在飞登记表用的是
+    // 同一个字符串）：不新造第二套命名，否则同一个纪元会有两张身份证。
+    //
+    // 状态只表达「现在在不在跑」：`pending` 还没开始执行 → `idle`。
+    // **本卡不做 task.status → WU.status 的镜像**：WU 有自己的状态机，镜像会制造
+    // 第二个执行点（R2）。真正驱动它的是执行本身，那是 C7-B 的事。
+    if (this.workUnitService) {
+      this.workUnitService.ensure({
+        ref: WORK_UNIT_REF.task(task.id, task.executionRound),
+        agentId: task.assignedAgentId,
+        taskId: task.id,
+        status: task.status === 'in_progress' ? 'running' : 'idle',
+        contextRef: WORK_UNIT_REF.task(task.id, task.executionRound),
+      });
+    }
 
     if (this.taskRepo) {
       this.taskRepo
@@ -3204,6 +3367,19 @@ export class TaskService implements ApprovalTargetPort {
       result.task, result.prevStatus, status, updatedBy, _skipAutoStart, resolvedBlockedReason,
     );
 
+    // 任务后反思的**唯一触发点**：`review → completed`（不区分谁签的字）。
+    //
+    // 【为什么下沉到这里，而不是各收口入口各接一次】“任务收口”至少有三个写者：
+    //   ① 评审 accept 接口（`acceptTask`）
+    //   ② 审批闸门 approve（`applyReviewGateDecision`，人类在 UI 点“通过”）
+    //   ③ **评审 agent 直接用 `task_update` 工具把状态写成 completed** ← 生产里最常见
+    // 前两处各接一次 = 同一契约两处实现（必漂），第三处根本没人接 —— 实测近 14 天
+    // 28 个完成任务只产生 2 条反思（Owner 2026-11-18 连续两次追问的就是这件事）。
+    // 落在唯一状态写入点后，新增收口入口不需要有人“记得接”，迁移本身即判据。
+    if (status === 'completed' && result.prevStatus === 'review' && result.task.assignedAgentId) {
+      this.triggerPostTaskReflection(result.task);
+    }
+
     log.info(`Task status updated: ${result.task.title}`, { id, status, prevStatus: result.prevStatus });
     return result.task;
   }
@@ -3219,7 +3395,11 @@ export class TaskService implements ApprovalTargetPort {
    * collaborator happened to be wired. It wasn't, and the guard silently passed.
    */
   private resolveActorTypeForGuard(updatedBy?: string): 'human' | 'agent' | 'system' {
-    if (!updatedBy) return 'system';
+    // 解析不出身份时按 agent 处理（拒绝），不按 system 放行。
+    // 真正的系统路径本来就显式传 actorType='system'，走不到这里；
+    // 而「没传 updatedBy」是调用方漏传，不是系统特权的证据 —— 让它默认拿到
+    // 最高权限，等于把守卫的最后一道门留成 fail-open。
+    if (!updatedBy) return 'agent';
     if (this.agentManager?.hasAgent(updatedBy)) return 'agent';
     if (this.userNameLookup) {
       try {
@@ -3366,7 +3546,7 @@ export class TaskService implements ApprovalTargetPort {
     // 重新打开（terminal → in_progress）= **新的一轮**，不是在上一轮里接着跑。
     //
     // 轮次不是显示号：它决定执行日志的分组（`getLogs(taskId, round)`）与执行会话 id
-    // （`task_${taskId}_r${round}`）。不 bump 的后果：重开后的新执行会写回旧轮次，
+    // （`task_<taskId>_r<round>`）。不 bump 的后果：重开后的新执行会写回旧轮次，
     // 与上一轮混在一起，也给不出一个干净的上下文。
     //
     // 这里的判据是「从 terminal 回到 in_progress」：
@@ -3658,10 +3838,38 @@ export class TaskService implements ApprovalTargetPort {
     'in_progress->blocked',
   ]);
 
+  /**
+   * Transitions that **overturn the premise** of a running turn.
+   *
+   * `turn-delta` already knows how to react to a contradiction (drop the work
+   * and stop early instead of burning the rest of the turn), but until now no
+   * producer ever set `invalidatesPremise` — the classifier's contradiction
+   * branch was structurally unreachable in production. These are the four
+   * transitions where "keep going" is provably wrong: the task this turn is
+   * executing no longer exists, has already been finished, or has failed.
+   *
+   * Deliberately absent: `rejected` (the reviewer wants a redo — the premise
+   * still stands) and `review` (the assignee itself submitted it).
+   */
+  private static readonly PREMISE_INVALIDATING: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+    'cancelled', 'failed', 'completed', 'archived',
+  ]);
+
   private maybeNotifyAssignee(
     task: Task, from: TaskStatus, to: TaskStatus,
     executionTriggered: boolean, updatedBy?: string,
   ): void {
+    // 前提已终结（取消 / 失败）⇒ 它派出的后台活在回来时不该再唤醒任何人。
+    // 第一性原理：回调是一个答案，前提没了，答案就没有读者。
+    // 丢弃登记即可；后台进程本身照旧跑完，只是不再唤醒回合。
+    if (to === 'cancelled' || to === 'failed') {
+      try {
+        const dropped = pendingCallbackRegistry.discardByCorrelation(task.id, `task_${to}`);
+        if (dropped > 0) {
+          log.info('Terminal task discarded its pending callbacks', { taskId: task.id, status: to, dropped });
+        }
+      } catch { /* registry not wired — 不影响任务状态推进 */ }
+    }
     // Skip when auto-start fires — runTask sends its own execution-mode item.
     if (executionTriggered) return;
     // Skip self-initiated review submission — assignee already knows.
@@ -3685,6 +3893,16 @@ export class TaskService implements ApprovalTargetPort {
           taskId: task.id,
         }, {
           metadata: { taskId: task.id },
+          // 投递必须带**任务级身份**：`turn-delta` 按 ref 匹配「正在执行的那一回合」，
+          // 没有 ref 的事实永远匹配不到 —— 矛盾分支就永远不可达。
+          // 2026-11-14 真机实测：取消投递行 `work_unit_ref = NULL`，而触发执行那行是
+          // `task_<id>_r1`，于是「取消在当轮生效」只靠协作式 cancel token（stopReason
+          // = lifecycle）实现，delta 通道形同虚设。
+          workUnitRef: WORK_UNIT_REF.task(task.id, task.executionRound ?? 1),
+          // The single place that turns "this task is over" into a fact the
+          // running turn can act on. Without it the turn keeps spending tokens
+          // on work whose premise just vanished.
+          ...(TaskService.PREMISE_INVALIDATING.has(to) ? { invalidatesPremise: true } : {}),
         });
       }
     } catch { /* agent not found — skip */ }
@@ -4917,6 +5135,11 @@ export class TaskService implements ApprovalTargetPort {
       );
     }
 
+    // 第九刀 C9-E · 终态钩子 1：提交评审必须有**结构化的完成证据**（C9-A 的
+    // `task.completion_evidence` 事实）。判据不在工具层而在本方法：REST 与 agent 两条入口
+    // 都经过这里，否则同一个不变量就有两个执行点（R2）。
+    this.assertCompletionEvidence(task);
+
     // Run automated review checks if ReviewService is available
     let reviewReport: ReviewReport | undefined;
     if (this.reviewService) {
@@ -5185,7 +5408,14 @@ export class TaskService implements ApprovalTargetPort {
         reviewMessage,
         task.assignedAgentId ?? 'system',
         { name: assigneeName, role: 'worker' },
-        { sourceType: 'review_request', taskId: task.id, round: reviewRound },
+        {
+          sourceType: 'review_request',
+          // 评审回合的形状由信号类型决定（mailboxScenario('review_request') = 'review'）。
+          scenario: 'review',
+          taskId: task.id,
+          round: reviewRound,
+          workUnitRef: WORK_UNIT_REF.task(task.id, reviewRound),
+        },
       ).then(() => {
         // 成功：**保留**去重键（本轮重复 / 迟到投递应继续被抑制）；
         // 键在任务离开 review 时统一清理（见 cleanupOnLeaveStatus）。
@@ -5466,9 +5696,8 @@ export class TaskService implements ApprovalTargetPort {
       metadata: { workerAgentId: task.assignedAgentId, notes: notes?.trim() },
     });
 
-    if (task.assignedAgentId && this.agentManager) {
-      this.triggerPostTaskReflection(task);
-    }
+    // 反思不在这里触发：由 `updateTaskStatus()` 在 `review → completed` 迁移处统一发
+    // （含“评审 agent 用 task_update 工具直接写 completed”这条主路径）。
 
     log.info(`Task accepted and completed: ${task.title}`, { id: task.id, withNotes: !!notes?.trim() });
     return task;
@@ -5489,7 +5718,20 @@ export class TaskService implements ApprovalTargetPort {
   }
 
   private triggerPostTaskReflection(task: Task): void {
-    const agent = this.agentManager?.getAgent(task.assignedAgentId);
+    // 【为什么必须 try/catch】`getAgent()` 对**未加载**的 agent 是 throw（`Agent not found`），
+    // 而不是返回 undefined。调用点在 `acceptTask()` 的收尾，没有 catch —— 于是 worker 被
+    // 停掉的卡一旦被验收，反思既不发生、也没有任何日志（“反思最近没触发”的头号假象）。
+    // 反思是可选的增值动作：拿不到 agent 就跳过并留一条可查的日志，绝不把验收搞挂。
+    const agent = (() => {
+      try {
+        return this.agentManager ? this.agentManager.getAgent(task.assignedAgentId) : null;
+      } catch {
+        log.info('Skipping post-task reflection — worker agent is not loaded', {
+          taskId: task.id, agentId: task.assignedAgentId,
+        });
+        return null;
+      }
+    })();
     if (!agent) return;
 
     if (this.isReflectionRateLimited(task.assignedAgentId)) {
@@ -5553,6 +5795,12 @@ export class TaskService implements ApprovalTargetPort {
       sourceType: 'system_event',
       sessionId: `sys_${agent.id}_${Date.now()}`,
       scenario: 'distillation',
+      // 【归属必须由生产者给】这条反思「关于哪个任务」在发起的这一刻就是结构事实
+      // （`task.id`），所以直接交给 `options.taskId` → `payload.taskId`。
+      // 之前不传，工作记录的路由器只能把它当成「无实体」→ 落进「历史记录」，
+      // 而标题里明明写着 `Task "…" (ID: tsk_…)`。从正文里再抠 id 是 in-band 推断，
+      // 一旦抠错没人发现 —— 结构只能由生产者给。
+      taskId: task.id,
       allowedTools: getDistillationAllowlist(isManager),
     }).catch(err => {
       log.warn('Post-task reflection failed', { taskId: task.id, error: String(err) });
@@ -5583,6 +5831,9 @@ export class TaskService implements ApprovalTargetPort {
     if (task.status !== 'review') {
       throw new Error(`Task ${taskId} is in ${task.status} status, cannot request revision`);
     }
+
+    // 第九刀 C9-E · 终态钩子 2：agent 打回必须有结构化的 `task.rejection_reason`。
+    this.assertRejectionReason(task, author);
 
     // ── 身份：`author` 是**动作发起者的 id**，不是显示名 ──────────────────────
     // 历史 bug（2026-10-24）：这个参数被直接当名字写进 notes（`by ${author}`），
@@ -6012,6 +6263,7 @@ export class TaskService implements ApprovalTargetPort {
     }
 
     const agent = this.agentManager.getAgent(task.assignedAgentId);
+    // 定义性缺省（从未执行过 = 第 1 轮）：同 `runTask` —— 派发侧是唯一合法缺省点。
     const executionRound = task.executionRound ?? 1;
 
     const cancelToken = { cancelled: false };
@@ -6162,6 +6414,9 @@ export class TaskService implements ApprovalTargetPort {
       } catch { /* start from 0 */ }
     }
 
+    // C10-0B §3.1：fresh retry 是**新纪元**，身份同样在入队前确定（自己那条实体）。
+    const freshRetryWorkUnitRef = this.ensureExecutionEpoch(taskId, executionRound);
+
     void agent
       .sendTaskExecution(
         taskId,
@@ -6178,13 +6433,13 @@ export class TaskService implements ApprovalTargetPort {
           let savedId: string | undefined;
           if (taskLogRepo) {
             try {
-              const saved = await taskLogRepo.append({ taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type as TaskLogType, content: entry.content, metadata: entry.metadata, executionRound });
+              const saved = await taskLogRepo.append({ taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type as TaskLogType, content: entry.content, metadata: entry.metadata, executionRound, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound) });
               savedId = saved.id;
             } catch (err) { log.warn('Failed to persist task log', { taskId, error: String(err) }); }
           }
           if (this.executionStreamRepo) {
             try {
-              this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound });
+              this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound) });
             } catch (err) { log.warn('Failed to persist execution stream log', { taskId, error: String(err) }); }
           }
           if (ws) {
@@ -6249,6 +6504,9 @@ export class TaskService implements ApprovalTargetPort {
         executionRound,
         task.title,
         task.requirementId,
+        undefined,
+        // C10-0B §3.1：同主执行路径 —— 身份在入队前确定，入队即带身份。
+        freshRetryWorkUnitRef,
       )
       .catch(err => {
         log.error('Fresh retry execution rejected', { taskId, error: String(err) });
@@ -6298,7 +6556,7 @@ export class TaskService implements ApprovalTargetPort {
     try {
       const agent = this.agentManager.getAgent(task.assignedAgentId);
       const round = task.executionRound ?? 1;
-      const sessionId = `task_${taskId}_r${round}`;
+      const sessionId = WORK_UNIT_REF.task(taskId, round);
       const injectedMessage = [
         `**${authorName} (human) commented on this task while you are working:**`,
         '',
@@ -6306,7 +6564,7 @@ export class TaskService implements ApprovalTargetPort {
         '',
         'A person is speaking to you directly — take it into account in what you are doing. If it changes the task, follow it; if it is only an observation, note it and continue.',
       ].join('\n');
-      agent.injectUserMessage(sessionId, injectedMessage);
+      agent.injectUserMessage(sessionId, injectedMessage, taskId);
       log.info('Injected human comment into agent session', { taskId, sessionId, authorName });
     } catch (err) {
       log.warn('Failed to inject comment into agent session', { taskId, error: String(err) });
@@ -6340,7 +6598,7 @@ export class TaskService implements ApprovalTargetPort {
 
     const agentId = task.assignedAgentId;
     const round = task.executionRound ?? 1;
-    const taskSessionId = `task_${taskId}_r${round}`;
+    const taskSessionId = WORK_UNIT_REF.task(taskId, round);
     const taskLogRepo = this.taskLogRepo;
     const ws = this.ws;
 
@@ -6384,7 +6642,7 @@ export class TaskService implements ApprovalTargetPort {
         );
         if (this.executionStreamRepo) {
           try {
-            this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound: round });
+            this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound: round, workUnitRef: WORK_UNIT_REF.task(taskId, round) });
           } catch { /* best effort */ }
         }
 

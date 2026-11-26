@@ -23,6 +23,17 @@ function readMacOSProxy(): string | undefined {
   const output = run('scutil --proxy');
   if (!output) return undefined;
 
+  // SOCKS first. When it is enabled it is a whole-machine, all-protocol route, and the
+  // built-in browser — which reads the system stack through Chromium — will use it.
+  // Reading only HTTP/HTTPS here left the agent going direct while the right panel went
+  // through SOCKS: precisely the half-on state the "either both or neither" setting is
+  // supposed to make impossible. A user who turns on SOCKS and sees half their traffic
+  // proxied has no way to tell that from a broken proxy.
+  if (/SOCKSEnable\s*:\s*1/.test(output)) {
+    const host = output.match(/SOCKSProxy\s*:\s*(\S+)/)?.[1];
+    const port = output.match(/SOCKSPort\s*:\s*(\d+)/)?.[1];
+    if (host && port) return `socks5://${host}:${port}`;
+  }
   if (/HTTPSEnable\s*:\s*1/.test(output)) {
     const host = output.match(/HTTPSProxy\s*:\s*(\S+)/)?.[1];
     const port = output.match(/HTTPSPort\s*:\s*(\d+)/)?.[1];

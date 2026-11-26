@@ -20,25 +20,31 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 |----------|-------------------------------|
 | [architecture.md](./architecture.md) *(this file)* | System overview, package structure, core concepts, channels, deployment, observability |
 | [architecture-fragility.md](./architecture-fragility.md) | Why this system keeps producing fragile bugs, and the structural rules that prevent it |
-| [agent-runtime.md](./agent-runtime.md) | Agent lifecycle, execution model, workspace isolation |
+| [agent-runtime.md](./agent-runtime.md) | Agent lifecycle, execution model, workspace isolation; state-ownership contract (Appendix A) |
 | [cognitive-architecture.md](./cognitive-architecture.md) | Unified cognitive cycle, deterministic context assembly, heartbeat integration |
 | [memory-system.md](./memory-system.md) | Memory layers (ROLE / knowledge / session / notebook / activity), storage compaction, memory flush |
-| [prompt-engineering.md](./prompt-engineering.md) | Prompt & context assembly, LLM call taxonomy, context packing, prompt caching |
+| [prompt-engineering.md](./prompt-engineering.md) | System prompt architecture, LLM call taxonomy, prompt caching, output token resolution |
+| [context-assembly.md](./context-assembly.md) | Message assembly & context compression — token budget, compaction pipeline, ContextOS fixed/variable split |
+| [tool-loop-harness.md](./tool-loop-harness.md) | Tool loop harness + scenario-specific prompt assembly (scenario × context, scenario × tool face) |
 | [mailbox-system.md](./mailbox-system.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
+| [a2a-communication.md](./a2a-communication.md) | Agent-to-agent communication over the mailbox — channels, delivery facts, reply sink, entry points |
+| [remote-access.md](./remote-access.md) | Remote access — frozen contract v1.0.0 (user-supplied tunnel, Hub as entry/registry/auth gate) |
+| [notification-delivery.md](./notification-delivery.md) | Notification delivery to humans — user/IM notifications and agent→user messages |
 | [state-machines.md](./state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
-| [state-ownership.md](./state-ownership.md) | State-ownership contract: who owns which state, who may read it, in which execution context |
+| [derived-views.md](./derived-views.md) | The four observation tables (`agent_activities`, `agent_activity_logs`, `execution_stream_logs`, `task_logs`) with their nullable `work_unit_ref`, the single source of "running" (`work_units`), plus thread-stage and inbox derivation |
 | [concurrent-processing.md](./concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
 | [tool-system.md](./tool-system.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
-| [streaming-and-reattach.md](./streaming-and-reattach.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience |
-| [llm-provider-timeouts.md](./llm-provider-timeouts.md) | Per-provider LLM timeout/retry governance matrix, known risk inventory, target design |
+| [streaming-and-reattach.md](./streaming-and-reattach.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience; LLM provider timeout/retry governance lives in [prompt-engineering.md §1.3](./prompt-engineering.md) |
 | [learning-loop.md](./learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
-| [frontend/team-chat.md](./frontend/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
+| [messaging-gateway.md](./messaging-gateway.md) | Messaging gateway — bot instances, channel refs, bindings, conversation keys; outbound notification fan-out |
+| [configuration-model.md](./configuration-model.md) | Configuration & file locations — single reference for where each value lives |
+| [team-chat.md](./team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
 | [../api/api.md](../api/api.md) | REST / WebSocket API reference |
 | [../guides/guide.md](../guides/guide.md) | Setup, deployment, and usage guide |
 | [../guides/coding-tools.md](../guides/coding-tools.md) | External coding CLI integration (Claude Code / Codex / Cursor Agent) |
 | [../guides/remote-access.md](../guides/remote-access.md) | Remote access configuration |
 | [../guides/release-and-distribution.md](../guides/release-and-distribution.md) | Release process and distribution |
-| [../design/deliverable-sharing.md](../design/deliverable-sharing.md) | Sharing deliverables to Markus Hub |
+| [../records/deliverable-sharing-2026-08-12.md](../records/deliverable-sharing-2026-08-12.md) | Sharing deliverables to Markus Hub — design + as-built (implemented both ends) |
 | [agent-liveness-redesign.md](../../packages/org-manager/docs/agent-liveness-redesign.md) | Liveness / self-healing audit record (heartbeat-storm root cause + completion state of refactors 1–4); the current design lives in §3.10 below |
 
 ### 0.2 Relationship Graph
@@ -205,7 +211,7 @@ Agents now have tools to actively manage their mailbox queue and cognitive works
 
 This shifts from system-driven to agent-driven cognition. The deliberation threshold is lowered to 2 items, making agent-driven triage the norm.
 
-**PendingCallbackRegistry** tracks async operations (A2A messages, `background_exec`, etc.). Completions route back through the mailbox as `callback_result` items rather than being injected directly into active sessions.
+**PendingCallbackRegistry** tracks async operations (A2A messages, `background_exec`, etc.). Completions route back through the mailbox as `callback_result` items. If the launching turn is still running, `injectTurnDelta` delivers the full result in-turn and consumes the row; otherwise the row drives a lineage continuation. A result already consumed in-turn (or via `process poll/log`) suppresses the redundant completion turn. Lineage (origin session + scenario + work-unit) is persisted in the registry row itself.
 
 External callers use the mailbox API exclusively:
 - `agent.sendMessage()` — Awaitable chat/notification
@@ -461,7 +467,9 @@ converged the mechanism as follows:
    timestamp (`recordHeartbeatSkip()`, which never calls the LLM); LLM inspection happens only when
    state actually changed — fingerprinted by `heartbeatStateFingerprint()` (queue-content signature
    + activeTaskIds signature). Every heartbeat trigger funnels through `heartbeat:trigger` → the
-   single handler in `agent.ts` → `mailbox.enqueue('heartbeat')` → single-item coalesced processing.
+   single handler in `agent.ts`, which runs the patrol directly (`runHeartbeatPatrol()`); the
+   `mailbox.enqueue('heartbeat')` queue-row path is gone — cut 9 made `rest` the only sleep
+   entry, so there is no rollback channel back to queue rows.
 3. **Single safety-net arbiter (Conservator)**: `packages/org-manager/src/agent-conservator.ts`
    **collapses the dirty / stale / stall verdicts into one component** (as of refactor 4 the
    decision primitives are inlined and the component is fully self-contained):
@@ -812,7 +820,13 @@ Markus supports multiple human users and agents communicating through various ch
 
 ## 9. Heartbeat Tasks
 
-After Agent startup, HeartbeatScheduler triggers periodic tasks at configured intervals:
+A patrol is **not** on a timer. `AgentClock` owns the process's only timers — two sources,
+`mailbox-maintenance` (defer release / lease reclaim / stale cleanup) and `trigger-expiry`
+(`rest(wakeOn)` expiry and scheduled wakeups) — and no heartbeat source is registered on it.
+A patrol runs when the liveness fallback asks for one (`agent.triggerHeartbeat()`, reached
+from the manager / API server dirty-state check); the default resting behaviour is
+`rest(wakeOn)`, and the wake it waits for is delivered as a mailbox `system_event`. When a
+patrol does run:
 
 - Each run executes checks with `[HEARTBEAT CHECK-IN]` prompt under the "Patrol, Don't Build" principle
 - **Active goals check**: injects standing objectives from requirements with `GoalConfig.loopEnabled`
@@ -821,7 +835,7 @@ After Agent startup, HeartbeatScheduler triggers periodic tasks at configured in
 - **Lightweight actions allowed**: check status, send messages, create tasks, retry failed tasks, quick reviews, save insights
 - **Complex work goes into tasks**: if something needs heavy implementation, heartbeat creates a task and notifies the user
 - Infinite loop protection via a configurable tool-iteration safety cap (default 200, `maxToolIterations`), not artificial per-heartbeat limits
-- **Background process completions**: `background_exec` results route through `PendingCallbackRegistry` → mailbox `callback_result` items (heartbeat also surfaces timed-out callbacks)
+- **Background process completions**: `background_exec` results route through `PendingCallbackRegistry` → mailbox `callback_result` items (heartbeat also surfaces timed-out callbacks). If the launching turn is still running, `injectTurnDelta` delivers the full result in-turn and consumes the row (no separate completion turn); otherwise the row drives a lineage continuation, and same-origin queued completions coalesce into one turn
 - **Governance mode**: in_progress tasks are not auto-resumed on service start; requires manual trigger
 
 ---
@@ -844,6 +858,11 @@ Agents understand the workflow and governance rules through three layers:
 ---
 
 ## 11. Observability
+
+> Persisted observation rows (activity / activity logs / execution stream / task logs)
+> are **history, not state**. "Is this agent working right now" is answered only from
+> `work_units` (`status='running'` + `claimed_by` + `lease_until`). See
+> [derived-views.md](./derived-views.md).
 
 `AgentMetricsCollector` ([`packages/core/src/agent-metrics.ts`](../../packages/core/src/agent-metrics.ts))
 aggregates per-agent counters (tokens, cost, CU, requests, tool calls, errors, heartbeat

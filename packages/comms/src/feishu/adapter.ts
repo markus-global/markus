@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { createLogger, msgId, type Message } from '@markus/shared';
+import { createFeishuHttpInstance, createLogger, msgId, type Message } from '@markus/shared';
 import type {
   CommAdapter,
   CommAdapterConfig,
@@ -326,6 +326,10 @@ export class FeishuAdapter implements CommAdapter {
    */
   private async setupLongConnection(): Promise<void> {
     if (!this.config) return;
+    // Enforce the invariant at the single entry point: never open a second
+    // socket while one is still live. Feishu delivers a card callback to ONE
+    // connection per app, so a leaked predecessor silently steals approvals.
+    this.teardownLongConnection();
     const eventDispatcher = new Lark.EventDispatcher({
       loggerLevel: Lark.LoggerLevel.info,
     }).register({
@@ -355,6 +359,17 @@ export class FeishuAdapter implements CommAdapter {
       appId: this.config.appId,
       appSecret: this.config.appSecret,
       domain: this.config.domain,
+      // The handshake is an HTTP POST to `<domain>/callback/ws/endpoint`
+      // (SDK `pullConnectConfig`), and it goes through `httpInstance`. Left
+      // unset, the SDK uses `axios.create()`, which reads the HTTP(S)_PROXY
+      // env vars that our own egress layer exports for child processes and
+      // then mis-tunnels HTTPS to Feishu's gateway. The handshake fails, no
+      // socket is ever opened, and Feishu answers every card button with
+      // "target callback service is offline" — while the log still prints
+      // "long connection established", because `start()` resolves before the
+      // pull succeeds. Ride the platform's single egress path instead, so
+      // this works with or without a proxy and needs no NO_PROXY bypass.
+      httpInstance: createFeishuHttpInstance() as unknown as Lark.HttpInstance,
       loggerLevel: Lark.LoggerLevel.info,
       onError: (err: Error) => log.error('Feishu long connection error', { error: err.message }),
     });
@@ -363,9 +378,30 @@ export class FeishuAdapter implements CommAdapter {
   }
 
   private teardownLongConnection(): void {
-    // The SDK's WSClient exposes no clean stop(); nulling the ref lets a later
-    // connect() recreate it, and the socket is reclaimed by the SDK/GC.
-    this.wsClient = undefined;
+    // Close the socket, do not just drop the reference.
+    //
+    // This used to only null `wsClient`, on the assumption that the SDK had no
+    // stop() and GC would reclaim the socket. Both halves were wrong: the SDK
+    // exposes `WSClient.close({ force })`, and a live socket is kept reachable
+    // by its own ping/reconnect timers, so GC never collects it.
+    //
+    // The consequence was user-visible: every reconnect left the previous
+    // socket open, so one Feishu app ended up holding several long connections.
+    // Feishu routes `card.action.trigger` to ONE of them; when it picked an
+    // orphaned socket nobody dispatches for, the approval button failed with
+    // "目标回调服务当前未在线" even though a healthy connection existed.
+    //
+    // Invariant: at most one live long connection per adapter.
+    if (this.wsClient) {
+      try {
+        // force: terminate instead of waiting for the closing handshake — on
+        // shutdown/reconnect we must not linger on a peer that may be gone.
+        this.wsClient.close({ force: true });
+      } catch (err) {
+        log.warn('Failed to close Feishu long connection', { error: String(err) });
+      }
+      this.wsClient = undefined;
+    }
   }
 
   /**
@@ -473,6 +509,17 @@ export class FeishuAdapter implements CommAdapter {
     // Skip messages from bots
     if (sender.sender_type === 'bot') return;
 
+    // C10-B2 fail-closed: without the platform-native message_id no stable
+    // envelope idempotency key can be formed (V5 could never dedupe a
+    // redelivery), so the dispatch point refuses the event instead of
+    // enqueueing it under a fresh random surrogate id.
+    if (!msgEvent.message_id) {
+      log.warn('Feishu inbound without native message_id — dropped (fail-closed, no stable idempotency key)', {
+        chatId: msgEvent.chat_id,
+      });
+      return;
+    }
+
     let text = '';
     try {
       const content = JSON.parse(msgEvent.content) as { text?: string };
@@ -501,6 +548,10 @@ export class FeishuAdapter implements CommAdapter {
       content: { type: 'text', text },
       replyToId: undefined,
       threadId: msgEvent.message_id,
+      // C10-B2 (seam S1): the envelope idempotency key is the NATIVE message id,
+      // surfaced here at the single dispatch point. `id` stays the random
+      // platform item id (semantics unchanged; the golden lock keeps idKind).
+      nativeMessageId: msgEvent.message_id,
       timestamp: new Date().toISOString(),
       // Only the *platform-derived* context lives here: a p2p chat is a `dm`,
       // everything else a `group` (isolation stays the default). The bot

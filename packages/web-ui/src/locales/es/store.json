@@ -29,7 +29,11 @@
     "topCreators": "Principales creadores",
     "topCreatorsSub": "Dirección de la contribución de los ecosistemas",
     "empty": "El ecosistema está creciendo",
-    "emptyHint": "Ser uno de los primeros creadores — compartir su primer activo"
+    "emptyHint": "Ser uno de los primeros creadores — compartir su primer activo",
+    "featured": "★ Destacado · {{type}}",
+    "free": "Gratis",
+    "worksCount": "{{count}} obras",
+    "worksCount_one": "{{count}} obra"
   },
   "connectorStore": {
     "searchPlaceholder": "Conectadores de búsqueda (MCP))...",
@@ -131,7 +135,9 @@
     "integration": "Integración",
     "instructions": "Instrucciones",
     "permissions": "Permisos",
-    "tags": "Etiquetas"
+    "tags": "Etiquetas",
+    "installsCount": "{{count}} instalaciones",
+    "installsCount_one": "{{count}} instalación"
   },
   "card": {
     "install": "Instala",
@@ -215,5 +221,15 @@
     "cancel": "Cancelar",
     "create": "Crear agente",
     "creating_progress": "Creando..."
+  },
+  "catalog": {
+    "hubAssets": "Activos de Hub",
+    "localTemplates": "Plantillas locales"
+  },
+  "teamsStore": {
+    "nothingHere": "Aquí no hay plantillas de equipo ni activos de Hub"
+  },
+  "templates": {
+    "nothingHere": "Aquí no hay plantillas ni activos de Hub"
   }
 }

@@ -36,5 +36,6 @@
     "teams": "Teams",
     "skills": "Skills",
     "installed": "Installed"
-  }
+  },
+  "externalSignals": "External signals"
 }

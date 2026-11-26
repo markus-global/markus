@@ -63,9 +63,32 @@ async function fire(event: Event): Promise<void> {
   });
 }
 
+/**
+ * 文件级确定性 localStorage。
+ *
+ * 为什么必须是文件级：hook 会拿 `markus:hub:credits` 缓存当初始值（「冷启动先显示
+ * 上次读数」）。只要某个用例成功跑完一次 plan，它就会把 `summary(0)` 写进缓存；
+ * 下一个用例再挂载就**读到上一个用例的余额** —— 「plan 失败时 credits 必须为 null」
+ * 于是变成依赖执行顺序与微任务时序的断言：本机绿、CI 红（CI 实测收到 summary(0)）。
+ *
+ * happy-dom 自带的 localStorage 不可信（连 removeItem 都没有），所以自建 stub；
+ * 每个用例前清空 —— 让「缓存为空」是**显式前提**，而不是运气。
+ */
+const cacheStore = new Map<string, string>();
+const storageStub: Storage = {
+  getItem: (k: string) => cacheStore.get(k) ?? null,
+  setItem: (k: string, v: string) => { cacheStore.set(k, String(v)); },
+  removeItem: (k: string) => { cacheStore.delete(k); },
+  clear: () => { cacheStore.clear(); },
+  key: (i: number) => [...cacheStore.keys()][i] ?? null,
+  get length() { return cacheStore.size; },
+};
+
 beforeEach(() => {
   vi.resetAllMocks();
   // 默认：未登录、无缓存、探测失败、无 planned 余额。
+  cacheStore.clear();
+  vi.stubGlobal('localStorage', storageStub);
   mockIsAuth.mockReturnValue(false);
   mockGetUser.mockReturnValue(null);
   mockValidate.mockResolvedValue(false);
@@ -74,6 +97,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -149,6 +173,25 @@ describe('useHubAccount — credits 取值', () => {
     expect(mockResolveSummary).not.toHaveBeenCalled();
   });
 
+  it('缓存属于同一账号时，plan 失败保留上次读数（既不造假 0，也不抹成 null）', async () => {
+    // 钉住 hook 的既有契约（useHubAccount.ts 的 catch 注释）：一次失败的刷新不该把
+    // 「仍然是最好的答案」抹掉。与上一条的区别**只在缓存**，两条一起把这条边界说清楚：
+    // 空缓存 → null（不渲染假 0）；有同账号缓存 → 保留（不用空白替换可信旧值）。
+    cacheStore.set('markus:hub:credits', JSON.stringify({
+      userId: 'A',
+      credits: { total: 42, used: 0, remaining: 42, pct: 0, personalLimit: false },
+    }));
+    mockIsAuth.mockReturnValue(true);
+    mockGetUser.mockReturnValue(user('A'));
+    mockValidate.mockResolvedValue(true);
+    mockPlan.mockRejectedValue(new Error('boom'));
+
+    const { result } = renderHook(() => useHubAccount(true));
+    await flush();
+
+    expect(result.current.credits?.remaining).toBe(42);
+  });
+
   it('plan 成功时 credits 来自 resolveCreditSummary（唯一真源）', async () => {
     mockIsAuth.mockReturnValue(true);
     mockGetUser.mockReturnValue(user('A'));
@@ -204,7 +247,7 @@ describe('useHubAccount — 多用户切换隔离（核心安全断言）', () =
 });
 
 describe('useHubAccount — active 开关', () => {
-  it('active=false 不请求 plan；active=true 才请求', async () => {
+  it('挂载即请求 plan（徽章不等弹窗）；active=true 时再刷新一次', async () => {
     mockIsAuth.mockReturnValue(true);
     mockGetUser.mockReturnValue(user('A'));
     mockValidate.mockResolvedValue(true);
@@ -213,11 +256,22 @@ describe('useHubAccount — active 开关', () => {
       initialProps: { active: false },
     });
     await flush();
-    expect(mockPlan).not.toHaveBeenCalled();
+    // The balance is shown in the sidebar, so it must exist before any interaction.
+    // Gating this on `active` left the badge blank until the menu had been opened once.
+    expect(mockPlan).toHaveBeenCalledTimes(1);
 
     rerender({ active: true });
     await flush();
-    expect(mockPlan).toHaveBeenCalledTimes(1);
+    // Opening the popover re-checks the number.
+    expect(mockPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it('未认证时不请求 plan（无 token 拉不到，白跑一次请求）', async () => {
+    mockIsAuth.mockReturnValue(false);
+
+    renderHook(() => useHubAccount(false));
+    await flush();
+    expect(mockPlan).not.toHaveBeenCalled();
   });
 });
 
@@ -275,5 +329,84 @@ describe('useHubAccount — 卸载清理', () => {
     window.dispatchEvent(new Event('focus'));
     expect(mockValidate.mock.calls.length).toBe(vBefore);
     expect(mockGetUser.mock.calls.length).toBe(gBefore);
+  });
+});
+
+/**
+ * 冷启动的「先给旧值、后台刷新」契约。
+ *
+ * 曾经的症状：打开侧栏账号弹窗，可用积分先显示 `—`，过一会才变成数字。请求早已
+ * 提到挂载时发起（上一轮修过），但 `credits` 初始恒为 null —— 冷启动永远没有旧值
+ * 可显示，只能干等网络。这组断言钉住：有缓存就能立刻出数，且缓存绝不跨账号。
+ *
+ * 关键手法：`plan` 返回一个永不 resolve 的 Promise。这样屏幕上出现的任何数字都
+ * 只可能来自缓存 —— 若把初始值改回 null，这些用例必红。
+ */
+describe('useHubAccount — 冷启动先显示上次读数', () => {
+  // 存储桩是**文件级**的（见上方 cacheStore）：这里不再自建第二份，
+  // 只负责把想要的上次读数种进去。
+  const CACHE_KEY = 'markus:hub:credits';
+
+  const seed = (userId: string, total: number) =>
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ userId, credits: summary(total) }));
+
+  it('有缓存且账号匹配时，plan 尚未返回就先给出余额', () => {
+    mockIsAuth.mockReturnValue(true);
+    mockGetUser.mockReturnValue(user('u1'));
+    seed('u1', 500);
+    mockPlan.mockImplementation(() => new Promise(() => {}));
+
+    const { result } = renderHook(() => useHubAccount(false));
+
+    expect(result.current.credits?.remaining).toBe(500);
+  });
+
+  it('缓存属于另一个账号时不显示（宁可空，也不给错数）', () => {
+    mockIsAuth.mockReturnValue(true);
+    mockGetUser.mockReturnValue(user('u2'));
+    seed('u1', 500);
+    mockPlan.mockImplementation(() => new Promise(() => {}));
+
+    const { result } = renderHook(() => useHubAccount(false));
+
+    expect(result.current.credits).toBeNull();
+  });
+
+  it('plan 成功后把读数写回缓存，供下次冷启动直接显示', async () => {
+    mockIsAuth.mockReturnValue(true);
+    mockGetUser.mockReturnValue(user('u1'));
+    mockPlan.mockResolvedValue({ total: 42 });
+    mockResolveSummary.mockReturnValue(summary(42));
+
+    renderHook(() => useHubAccount(false));
+    await flush();
+
+    const raw = localStorage.getItem(CACHE_KEY);
+    expect(raw).toBeTruthy();
+    expect(JSON.parse(raw as string).userId).toBe('u1');
+    expect(JSON.parse(raw as string).credits.remaining).toBe(42);
+  });
+
+  it('刷新失败不抹掉缓存里的数字（旧值仍是最优答案）', async () => {
+    mockIsAuth.mockReturnValue(true);
+    mockGetUser.mockReturnValue(user('u1'));
+    seed('u1', 500);
+    mockPlan.mockRejectedValue(new Error('network down'));
+
+    const { result } = renderHook(() => useHubAccount(false));
+    await flush();
+
+    expect(result.current.credits?.remaining).toBe(500);
+  });
+
+  it('登出后清掉缓存，下一个账号不会看到它', async () => {
+    seed('u1', 500);
+    mockIsAuth.mockReturnValue(false);
+    mockGetUser.mockReturnValue(null);
+
+    renderHook(() => useHubAccount(false));
+    await flush();
+
+    expect(localStorage.getItem(CACHE_KEY)).toBeNull();
   });
 });

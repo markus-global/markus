@@ -16,6 +16,23 @@ export interface MailboxToolContext {
   updateWorkingMemory: (key: string, content: string) => { status: string; key: string; evicted?: string; expired?: string[] };
   clearWorkingMemory: (key?: string) => { status: string; cleared: number };
   getWorkingMemorySnapshot: () => Array<{ key: string; text: string; updatedAt: number }>;
+  /**
+   * 第六刀 C3（§2.4）：`message_route(messageId)` 的只读端口。未接线 ⇒ 工具不注册。
+   *
+   * 返回的是**路由事实**（信封 / 状态 / `drop_reason` / `bounce_target`），不是内容：
+   * Agent 看不到日志，问「我这条消息到底投到哪了」必须能从工具返回里建模。
+   */
+  routeOfMessage?: (messageId: string) => unknown[];
+  /** 第六刀 C3：catch-all 概览（只读）。未接线 ⇒ 工具不注册。 */
+  catchAll?: () => unknown;
+  /**
+   * 第七刀 C7-A：`work_status()` 的只读端口。未接线 ⇒ 工具不注册。
+   *
+   * 答案必须来自 `work_units` 对象查询，**不得**从 payload / 会话文本推断 ——
+   * 这正是需求 §10.1 缺口 A 的关闭点：今天「我有几个 worker 在跑」是每轮开头
+   * 注入的一段文本，是快照、会漂移；这里给出的是可复查的对象。
+   */
+  workStatus?: (opts: { limit?: number }) => unknown;
 }
 
 export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] {
@@ -107,7 +124,7 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
       name: 'notebook_read',
       description:
         'Read your Notebook (working memory) — all entries, or a single key. Read-only. ' +
-        'Entries are agent-written (your priorities/context) and machine-written (triage/deliberation), each with a TTL.',
+        'Entries are agent-written (your priorities/context) and machine-written (consolidation), each with a TTL.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -195,10 +212,12 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
           return JSON.stringify({ status: 'error', error: 'Item is a protected human_chat item or not droppable while processing' });
         }
         return JSON.stringify({
-          status: before ? 'dropped' : 'already_resolved',
+          // C3：discard 的终态是 bounced(stale_signal) → 归集到 catch-all，不再是 dropped。
+          status: before ? 'bounced' : 'already_resolved',
+          drop_reason: before ? 'stale_signal' : undefined,
           item_id: itemId,
           note: before
-            ? undefined
+            ? 'Recorded as a bounce (stale_signal) and collected into your catch-all overview; it is no longer a silent drop.'
             : 'Item was not in the live queue (already handled or orphaned); marked resolved.',
         });
       },
@@ -232,5 +251,92 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
         return JSON.stringify({ status: 'reprioritized', item_id: itemId, priority });
       },
     },
+
+    // ─── 第六刀 C3：路由取证 + catch-all 概览（只读）────────────────────
+    //
+    // 这两个工具回答同一个问题：「我（或别人）发来的东西到底去哪了」。
+    // 旧世界里这个问题只能看日志（Agent 看不到日志），而 `dropped` 终态又没有原因——
+    // 于是「消息消失」在 Agent 视角是不可观测的。现在两者都是从结构列直接读回。
+    ...(ctx.routeOfMessage ? [{
+      name: 'message_route',
+      description:
+        'Trace one signal by its messageId (the platform-unique id in the delivery envelope). ' +
+        'Returns routing facts only — status, drop_reason, bounce_target, signal_class, intent, ' +
+        'and the envelope — newest first (a retried message can have several rows). ' +
+        'Read-only. Use it to answer "did my message arrive, and if not, why?".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          message_id: { type: 'string', description: 'The envelope messageId to trace.' },
+        },
+        required: ['message_id'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const messageId = args['message_id'];
+        if (typeof messageId !== 'string' || messageId.trim().length === 0) {
+          return JSON.stringify({
+            status: 'error',
+            error: 'message_id is required (the envelope messageId, not a mailbox item id)',
+          });
+        }
+        const rows = ctx.routeOfMessage!(messageId.trim());
+        return JSON.stringify({
+          status: rows.length === 0 ? 'not_found' : 'ok',
+          messageId: messageId.trim(),
+          count: rows.length,
+          routes: rows,
+          hint: rows.length === 0
+            ? 'No mailbox row carries this messageId. It may predate delivery envelopes, or the sender used a different id.'
+            : undefined,
+        });
+      },
+    } as AgentToolHandler] : []),
+
+    ...(ctx.catchAll ? [{
+      name: 'catch_all',
+      description:
+        'Read your catch-all overview: every signal that could NOT be delivered to you, exactly once, ' +
+        'with its drop_reason (unresolved_address / no_active_target / lease_expired / ' +
+        'duplicate_message_id / stale_signal) and bounce_target. Read-only. ' +
+        'Legacy rows archived before the reason column existed are counted separately as ' +
+        '`legacyDropped` instead of being passed off as reason-bearing rows.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Max entries (default 100).' },
+        },
+      },
+      async execute(): Promise<string> {
+        return JSON.stringify({ status: 'ok', ...(ctx.catchAll!() as Record<string, unknown>) });
+      },
+    } as AgentToolHandler] : []),
+  // ─── 第七刀 C7-A：自省（只读）────────────────────────────────────────
+    //
+    // 这个工具关闭的是需求 §10.1 缺口 A：今天「我有几个 worker、分别在处理什么」
+    // 是每轮开头注入的一段**文本**（从会话注册表现算），没有可查询实体。
+    // 现在答案来自 `work_units` 对象：父子关系、认领者、租约、预算都是列，不是推断。
+    ...(ctx.workStatus ? [{
+      name: 'work_status',
+      description:
+        'Read the WorkUnit ledger for this agent: one row per unit of work (a chat turn, a task ' +
+        'execution epoch, or one A2A delivery), answered from the work_units object — NOT from ' +
+        'mailbox payload text — so the rows cannot drift from execution. ' +
+        'Each row carries ref / status / parentId / claimedBy / leaseUntil / budget / used. Read-only. ' +
+        'IMPORTANT — `status: "running"` means a turn is executing now; stale rows whose triggering ' +
+        'mailbox item already reached a terminal state are reconciled to `idle` within a minute ' +
+        '(periodic backstop), so a `running` row is never a permanent phantom. For "who is working ' +
+        'on what right this second" also read the Concurrency Context block — that one comes from live ' +
+        'worker state, not from history.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Max units to return (default 50).' },
+        },
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const limit = typeof args['limit'] === 'number' ? (args['limit'] as number) : undefined;
+        return JSON.stringify({ status: 'ok', ...(ctx.workStatus!({ limit }) as Record<string, unknown>) });
+      },
+    } as AgentToolHandler] : []),
   ];
 }

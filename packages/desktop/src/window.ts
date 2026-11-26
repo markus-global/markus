@@ -98,10 +98,15 @@ export function createMainWindow(show = true): BrowserWindow {
 
   // Close = hide to tray (keep backend). Explicit Quit sets isAppQuitting.
   mainWindow.on('close', (event) => {
-    if (mainWindow) saveWindowState(mainWindow);
+    // Narrow once: the module-level binding can be nulled by 'closed', so TS
+    // cannot carry the outer non-null into this callback. If the window is
+    // already gone there is nothing to save or hide.
+    const win = mainWindow;
+    if (!win) return;
+    saveWindowState(win);
     if (!isAppQuitting()) {
       event.preventDefault();
-      mainWindow.hide();
+      win.hide();
     }
   });
 

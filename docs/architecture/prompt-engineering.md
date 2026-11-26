@@ -1,6 +1,12 @@
-# Prompt Engineering & Context Assembly
+# Prompt Engineering & Cache Layout
 
-This document specifies how Markus constructs prompts, manages context, and orchestrates LLM interactions across all scenarios. It complements [state-machines.md](./state-machines.md) (task lifecycle), [memory-system.md](./memory-system.md) (storage layers), and [cognitive-architecture.md](./cognitive-architecture.md) (deterministic context assembly).
+> **Scope (this file)**: how a request is *built and cached* — LLM call taxonomy, the cache-scope layout principle, system-prompt architecture, prefix-cache invariants, ContextOS v2 volatile delivery, prompt profiles, fail-closed packing, and output-token resolution.
+> **Split**: §3 (message assembly & compression) and §4–§5 (tool loop harness, scenario assembly) were split out of this document on **2026-11-15**. Section numbers were kept, so the gap at §3–§5 marks exactly the material that moved.
+> **Siblings**: [context-assembly.md](./context-assembly.md) — how history is packed into the request and compressed; [tool-loop-harness.md](./tool-loop-harness.md) — how one call runs (tool loop) and how each scenario is assembled.
+
+> **2026-11-15 重排章节编号** — §2 sub-sections were renumbered to be unique and monotonic (old duplicated `### 2.2 Section Details` → `2.3`, `2.3 Spec: Prompt profiles` → `2.4`, `2.4 Spec: Afford fail-closed packing` → `2.5`, the out-of-order `2.3 Skill Filtering` → `2.6`), and the `####` section-detail entries that had drifted below §2.4 (`Identity`, `Skills`, `Task Board`, `Mailbox`, `Concurrency`, `Scenario`, `Referencing`, `Async Work`, `Behavioral Policies`) were moved back under their parent §2.3 Section Details. No wording, table, threshold, date annotation, or invariant was changed.
+
+This document specifies how Markus constructs prompts and keeps them cacheable, and how it orchestrates LLM interactions across all scenarios. It complements [state-machines.md](./state-machines.md) (task lifecycle), [memory-system.md](./memory-system.md) (storage layers), and [cognitive-architecture.md](./cognitive-architecture.md) (deterministic context assembly).
 
 ---
 
@@ -28,7 +34,7 @@ P2 (Directed Retrieval) and P4 (Assembly) are code-only phases with no LLM call.
 | 2 | **Human Chat** (stream/SSE) | API `/api/agents/:id/chat?stream=1` | `handleMessageStream()` | Yes | Yes | Yes | 200 (safety net) |
 | 3 | **Task Execution** | `TaskService.runTask()` → `_executeTaskInternal()` | `llmRouter.chatStream()` | Yes | Yes | Yes | **None** |
 | 4 | **Respond-in-Session** | API `/api/agents/:id/sessions/:sid/messages` | `respondInSession()` | Yes | Yes | Yes | 200 (safety net) |
-| 5 | **Heartbeat** | `HeartbeatScheduler` → `handleHeartbeat()` | `handleMessage(scenario:'heartbeat')` | No | Subset | Yes (via handleMessage) | 200 + 3 retries |
+| 5 | **Heartbeat / liveness patrol** | `agent.triggerHeartbeat()` (manager / API-server dirty-state fallback) → `runHeartbeatPatrol()` → `handleHeartbeat()` | `handleMessage(scenario:'heartbeat')` | No | Subset | Yes (via handleMessage) | 200 + 3 retries |
 | 6 | **A2A Chat** | API `/api/agents/:id/a2a` / channel routing | `handleMessage(scenario:'a2a')` | No | Yes | Yes (via handleMessage) | 200 |
 | 7 | **Comment Response** | Mailbox `task_comment` / `requirement_update` | `handleMessage(scenario:'comment_response')` | No | Yes | Yes (via handleMessage) | 200 |
 | 8 | **Internal (Lightweight)** | Various | `handleMessage(scenario:'heartbeat')` | No | Varies | Yes (via handleMessage) | 200 |
@@ -44,9 +50,70 @@ These are `handleMessage()` calls with `scenario: 'heartbeat'` and typed session
 | Sub-scenario | Trigger | Session ID Pattern | Purpose |
 |-------------|---------|-------------------|---------|
 | **Daily Report** | `consolidateMemory()` (once/day) | `sys_<agentId>_<ts>` | Generate brief status report → `daily-logs/` |
-| **Memory Flush** | turn-level preflight when context usage is high (see §5.7) | `sys_<agentId>_<ts>` | Prompt agent to `memory_save` important info before the context window fills |
+| **Memory Flush** | turn-level preflight when context usage is high (see [tool-loop-harness.md](./tool-loop-harness.md) §5.7) | `sys_<agentId>_<ts>` | Prompt agent to `memory_save` important info before the context window fills |
 | **LLM Summarizer** | `contextEngine.smartSummarizeAndTruncate()` | N/A (internal) | Compress older conversation messages into a summary (no tools) |
 | **Dream Consolidation** | `consolidateMemory()` (once/day, ≥50 entries) | `sys_<agentId>_<ts>` | LLM reviews memory entries, outputs prune/merge plan (no tools) |
+
+### 1.3 Provider timeout & retry governance
+
+> **Status: risk inventory / target design (2026-09).** Rows resolved since are marked **RESOLVED**
+> in place rather than deleted, so the reasoning stays available.
+
+> Last updated: 2026-09. Distilled from the provider timeout audits (set A + set B).
+> This is the **current-state design reference** for how each LLM provider adapter
+> handles timeouts / hangs / retries — what is bounded, what is not, and the agreed
+> target design. Do not add per-file line references here (they drift); describe
+> behavior, not line numbers.
+
+#### 1.3.1 Governing matrix (current state)
+
+| Provider adapter | Non-stream timeout | Stream idle timeout | Hard cap | External abort | Retry | Notes |
+|------------------|--------------------|---------------------|----------|----------------|-------|-------|
+| **openai** | ✅ configurable | ✅ idle (per-chunk reset) + hard | ✅ | ✅ shared AbortController | — | Reference implementation; fails loudly |
+| **markus-provider** | ✅ | ✅ idle (per-chunk reset) + hard | ✅ | ✅ external abort | ✅ budget shared across retries (not reset) | Aligned baseline with openai |
+| **anthropic** | ✅ configurable (default 90 s) | ✅ idle (per-chunk reset) + hard | ✅ | ✅ | — | ~~Most severe gap (set A)~~ **RESOLVED** |
+| **google** | ✅ (60 s) | ✅ idle (per-chunk reset) + hard | ✅ | ✅ (stream) | — | ~~Needs hardening (set A)~~ **RESOLVED** |
+| **dashscope** | ✅ via OpenAIProvider (chat) | ✅ via OpenAIProvider | ✅ | ✅ | — | ~~Needs timeout coverage (set A)~~ **RESOLVED** (chat inherits openai; media paths self-timed) |
+| **ollama** | ✅ (120 s) | ✅ idle (per-chunk reset) + hard | ✅ | ✅ (stream) | — | ~~Needs timeout coverage (set A)~~ **RESOLVED** |
+| **openai-codex** | — | — | ✅ single 180 s | — | — | Single coarse root timer |
+| **proxy-fetch** | ❌ **no built-in timeout** | — | — | relies on caller-passed signal | — | Caller must pass `signal`, else unbounded |
+| **minimax** | ✅ | ✅ | — | — | — | **Video polling can hang ~30 min, not externally cancellable; silent `max_tokens` downgrade + empty-array fallbacks** |
+
+#### 1.3.2 Known risk inventory (priority order)
+
+1. **RESOLVED** — **anthropic non-streaming chat: no timeout at all** — a hung model call blocks the
+   turn indefinitely. Must get an idle timeout + hard cap (openai semantics).
+   *(Now: `chatTimeoutMs` default 90 s + idle/hard stream caps.)*
+2. **minimax video polling: ~30 min without external cancel** — plus silent degradation
+   (downgraded `max_tokens`, empty-array response accepted as success). Needs a real poll
+   timeout + fail-loud on degradation.
+3. **proxy-fetch: no own timeout** — unbounded unless the caller threads a signal.
+   Should default to a sane timeout and still honor an external signal.
+4. **RESOLVED** — **google / dashscope / ollama**: partial coverage — streaming idle semantics and hard
+   caps not consistently implemented. *(Now: google/ollama implement idle + hard caps; dashscope inherits openai.)*
+5. **Streaming errors thrown as bare `AbortError`** in several adapters — callers cannot
+   distinguish user-cancel from provider failure; wrap with intent.
+6. **Timer leaks** where timers are not cleared on completion paths.
+7. **Hardcoded durations** in several adapters — should be configurable (openai-style).
+
+#### 1.3.3 Target design (agreed direction)
+
+- **Idle semantics**: per-chunk timer reset on every received chunk (stream stays alive
+  while tokens flow), plus a **hard cap** as the outer bound.
+- **Configurable durations** with sane defaults; no hardcoded magic numbers.
+- **External abort**: all adapters accept a caller-provided `AbortController`/signal and
+  cooperate with it (used by streaming cancel — see streaming-and-reattach.md §4.2).
+- **Fail-loud**: timeouts and degradations surface as structured errors, never as silent
+  success (see mailbox-system.md §27.3 fail-loud chain).
+- **Single-timer consolidation**: one timer mechanism per adapter (roadmap item from the
+  frontend resilience audit §5.5).
+- **Reference baseline**: `openai` and `markus-provider` are the alignment targets.
+
+#### 1.3.4 Rule of thumb for new adapters
+
+Every new provider adapter MUST implement: non-stream timeout, stream idle timeout,
+hard cap, external abort, and fail-loud error wrapping — before being merged. A provider
+call that can hang without bound is a scheduling-chain violation (mailbox-system.md §27).
 
 ---
 
@@ -97,7 +164,7 @@ miss. Two live leaks of this kind were measured on 2026-09-16 across 30 agents /
 **Corollary 5 — measure, or the invariant rots.** The only reason these survived four
 audit rounds is that no cache-hit telemetry existed to falsify the "cache-friendly"
 comments in the code. Every rule in §2.1.1 therefore ships with a guard test, and cache
-hit rate is recorded per session (§3.9, RC4).
+hit rate is recorded per session ([context-assembly.md](./context-assembly.md) §3.9, RC4).
 
 ---
 
@@ -140,7 +207,6 @@ dynamic content is moved **out of the system prompt entirely** into a volatile t
 ║   Channel History (recent msgs) · Date/locale · Mailbox  ║
 ║   & attention · Team Status · Working Memory ·           ║
 ║   Cognitive/Notebook context · task board · deliverables ║
-║   · deferred-tool catalog (Afford.S2)                    ║
 ║   · Your Knowledge (knowledge.md) · Working State        ║
 ║     (notebook)  ← agent-written, see §2.1.1 inv. 5       ║
 ╚══════════════════════════════════════════════════════════╝
@@ -150,11 +216,11 @@ dynamic content is moved **out of the system prompt entirely** into a volatile t
 
 `buildSystemPrompt()` returns `{ text, segments, volatile }` under **Scheme A**: `text` is a byte-stable, two-tier system (Tier 1 STABLE + Tier 2 SEMI-STABLE); all per-call dynamic content lives in `volatile`, assembled by `prepareMessages()` into a single `[SYSTEM] [Live context]` message (role `user`) appended as the **last message of the request** (after all history). Details:
 
-1. **Tier 1 (Stable)**: Role, policies, tool usage rules, communication rules, collaboration rules. Scenario-free — stay cached across ALL mode switches (chat ↔ heartbeat ↔ a2a ↔ deliberation). A cache breakpoint after this tier caches this prefix across all calls.
+1. **Tier 1 (Stable)**: Role, policies, tool usage rules, communication rules, collaboration rules. Scenario-free — stay cached across ALL mode switches (chat ↔ heartbeat ↔ a2a ↔ task_execution). A cache breakpoint after this tier caches this prefix across all calls.
 
 2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, scenario instructions last. Change on org/config events (days–weeks), but stay stable within a session. Scenario placed last keeps the identity/org prefix stable across mode switches (OpenAI benefit). A breakpoint here caches the combined Tier 1+2 prefix. These two tiers together form the byte-stable system `text`. **Agent-written memory (knowledge.md, NOTEBOOK.md) is deliberately NOT in this tier** — see §2.1.1 invariant 5.
 
-3. **Volatile tail (Scheme A)** — replaces the old Tier 3: Project/task board, system announcements, feedback, available skills (query-filtered), `## Notebook` (cognitive), relevant memories, team status, channel history, mailbox state, working memory, timestamps, deferred-tool catalog. These change per call and live **outside the system**: `prepareMessages()` assembles them (plus `contextHint`) into one `[SYSTEM] [Live context]` message appended as the **LAST message of the request**. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn. Sitting in the **history tail** rather than in the system message means changing it never invalidates the byte-stable system + history prefix (implicit prefix-cache on OpenAI-compatible providers).
+3. **Volatile tail (Scheme A)** — replaces the old Tier 3: Project/task board, system announcements, feedback, available skills (query-filtered), `## Notebook` (cognitive), relevant memories, team status, channel history, mailbox state, working memory, timestamps. These change per call and live **outside the system**: `prepareMessages()` assembles them (plus `contextHint`) into one `[SYSTEM] [Live context]` message appended as the **LAST message of the request**. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn. Sitting in the **history tail** rather than in the system message means changing it never invalidates the byte-stable system + history prefix (implicit prefix-cache on OpenAI-compatible providers).
 
    > **Placement is load-bearing — it must be the LAST message.** Do NOT "insert it just before the current query": inside an agent tool loop the last user message is the ORIGINAL task instruction (index 1) — every later turn is assistant/tool — so that insertion point is actually the *front* of the history. Rewriting `messages[1]` every turn broke the byte-identical prefix right after `system` and re-billed the entire replayed history on every LLM call (measured on real logs: 46% prefix reuse instead of 79%, ~90k tokens re-sent per call).
 
@@ -186,7 +252,7 @@ guard test; break one and long sessions silently re-bill their whole history on 
 |---|-----------|-------|-----------|
 | 1 | The volatile `[Live context]` block is the **last message** — never inserted at `messages[1]` | `context-engine.prepareMessages` | `context-engine.test.ts` → `C-cache-volatile-tail`, `C-cache-volatile-stable-head` |
 | 2 | The request-history window **slides in blocks**, not per message | `history-window.ts` (`requestHistoryStart`), used by every `Agent.requestHistory()` call | `history-window.test.ts` |
-| 3 | The deferred-tool catalog (Afford.S2) rides the **volatile tail**, never the system prompt | `Agent.consumeDeferredToolCatalog()` + `mergeVolatile()` | `agent-deep.test.ts` → `deferred-tool catalog placement` |
+| 3 | The tool face is never shrunk for size — no budget eviction exists (PR #471); context pressure compresses history, never the face | `ToolSelector.selectTools` (no evictor) | `action-tool-reachability.test.ts`, `capability-packs.test.ts` |
 | 4 | ContextOS `[SLOTS]` + `[CONTEXT SUMMARY]` are **derived in the engine**, so every prepare path carries them | `context-engine.prepareMessages` defaults from `(memory, sessionId)` | `context-engine.test.ts` → `ContextOS slots + summary ride EVERY prepare path` |
 | 5 | Agent-written knowledge / state (`## Your Knowledge`, `## Notebook`) ride the **volatile tail**, never Tier 2 | write-frequency tier boundary, below | `cache-optimization.test.ts` → `C-cache-knowledge-body`, `C-cache-knowledge-write` |
 | 6 | The `tools` array is **byte-stable per session** — no per-turn counts, dynamic lists, or selection-derived content in any tool `description` / `inputSchema` | `tool-selector.ts` `buildDiscoverTool` (registry-derived, sorted) | `tool-selector.test.ts` → `CACHE: discover_tools description is byte-stable …` |
@@ -324,7 +390,7 @@ this call's tail:
   (last-write-wins) and are folded away by the normal compaction path.
 - **Single choke point** — written inside `prepareMessages`, not at the ~8 call
   sites, so a new call site cannot forget it (same rationale as the
-  slots/summary derivation in §3.7).
+  slots/summary derivation in [context-assembly.md](./context-assembly.md) §3.7).
 - **Best-effort** — a persistence failure logs a warning; that call's tail still
   carries the state verbatim, so the agent is never blind.
 - Recognised by `isSyntheticMessage()`, so a checkpoint never counts as a user turn.
@@ -357,7 +423,7 @@ prefix is unaffected.
 
 **Regression guard**: `packages/core/test/context-volatile-gating.test.ts`.
 
-**Resolved in v2.1** — see §3.8. A single turn issuing 60+ LLM calls is now
+**Resolved in v2.1** — see [context-assembly.md](./context-assembly.md) §3.8. A single turn issuing 60+ LLM calls is now
 folded in place: when the absolute history ceiling trips, the fold boundary is
 the END of history instead of the current turn start, so the same block-wise fold
 reaches inside the current turn. No separate intra-turn code path was needed.
@@ -413,7 +479,7 @@ injection point cannot silently land in a stable tier and bust the cache prefix.
 - **Status**: implemented (Scheme A — volatile tail; adds the enforcing guard tests, the
   byte-stability regression, and the `usage.compressed`-driven cache/compression metrics).
 
-### 2.2 Section Details
+### 2.3 Section Details
 
 #### Role System Prompt (§1)
 Source: `role.systemPrompt` parsed from the agent's `ROLE.md`.  
@@ -458,93 +524,9 @@ The legacy notebook aliases `update_working_memory` / `clear_working_memory` wer
 | **L0** | Role, tool rules, search, **Learning Habits** (≤1600 chars; look-back / encode-where / skill impact — [learning-loop.md](./learning-loop.md) §8), autonomy, security, resource refs, user language, shortest task workflow | Always (non-dream) |
 | **L1** | Identity (capped roster), org/workspace, knowledge, active tasks | Identity always; tasks when present |
 | **L2** | Skill catalog metadata (name + one-line description) | Always via identity / discover_tools |
-| **L3+** | Skill full bodies, Error Recovery, Quality Gates, full Task Workflow, deliverable format | `discover_tools` activate, or scenarios: `task_execution` / `review` / `deliberation` / `comment_response` |
+| **L3+** | Skill full bodies, Error Recovery, Quality Gates, full Task Workflow, deliverable format | `discover_tools` activate, or scenarios: `task_execution` / `review` / `comment_response` |
 
 > **SSOT**: Budgets, packs, and afford fail-closed rules live in [agent-runtime.md](./agent-runtime.md). The sections below are normative Spec supplements.
-
-### 2.3 Spec: Prompt profiles (`promptProfile`)
-
-MUST: `buildSystemPrompt()` MUST accept `promptProfile: 'reflex' | 'converse' | 'execute' | 'govern'` derived from the scenario pack ([agent-runtime.md](./agent-runtime.md) §2 / §4).
-
-| Section | reflex | converse | execute/govern |
-|---------|--------|----------|----------------|
-| ROLE | full (soft warn metric) | full | full |
-| Collaboration Rules (L0) | yes | yes | yes |
-| knowledge.md as `## Your Knowledge` | omitted | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE`) | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS`) |
-| ~~state.md~~ | — | retired 2026-09-16 → notebook `system` tier | — |
-| L3 quality/git/error-recovery | omitted | omitted (incl. comments) | included |
-| Search Strategy | complete, concise | complete, concise | complete, concise |
-| Team announcements / norms | capped | 400 chars | 2000 chars |
-| Channel history / shared deliverables | omitted | optional short | as needed |
-| Full roster | manager + ≤3 active | existing caps | existing caps |
-| Date / locale / Interaction Mode | yes | always retained | yes |
-
-MUST: ROLE.md is always injected in full (persona only). `ROLE_PROMPT_MAX_TOKENS` is warn-only.
-MUST NOT: Append `HANDBOOK.md` into ROLE. Distill collaboration hard rules into L0
-`## Markus Collaboration Rules`; HANDBOOK.md is a depth handbook via `file_read`.
-Long-tail API/reference content belongs in skills, not ROLE/HANDBOOK always-on.
-MUST: knowledge injection MUST exclude observations buffer; converse uses a short
-digest cap (full text via `memory_search` / files). Knowledge body headings `##`
-MUST be demoted to `###` under `## Your Knowledge` so they do not collide with
-system sections; stale fault/transcript sections are deprioritized when truncating.
-MUST NOT: Inject full history into reflex (the retired `state.md` block is gone — situational state rides `## Notebook`).
-MUST: Converse size is controlled by progressive disclosure + afford guard, **not**
-by post-assemble truncation of ROLE/L0/Collaboration Rules/mode/date.
-MUST NOT: Emit `_[ROLE truncated]_` / `_[system trimmed]_` markers.
-
-#### Conversation-first vs Task-when-needed (L0 + chat scenario)
-
-MUST: Human chat defaults to **conversation-first** — agents MAY advance real work
-(edit files, run commands, multi-step debugging) in the live conversation without
-forcing `task_create`.
-MUST: Task workflow is for async work, delegation, multi-agent parallel delivery,
-formal review/audit trail, or when the human explicitly asks for a task.
-MUST: **STOP** means only: after `task_create` for a piece of work, do not continue
-**that task** in chat. Work never placed on a task may continue conversationally.
-MUST: Requirements gate applies to **tasks** (`gate all tasks`), not to conversational chat work.
-MUST: Conflict priority:
-`Owner explicit instruction > conversation-first default > Protocol (once a task exists) > ROLE persona > Position (manager)`.
-MUST: Managers are **player-coach** — Position does not forbid hands-on building when ROLE is a builder/founder.
-
-MUST: L0 includes **How Your Prompt Is Composed** — ROLE.md is persona; L0 is always-on
-platform rules; HANDBOOK/skills are on demand. ROLE line count ≠ full constraints.
-
-MUST (`task_submit_review`): Auto-fill `task_id` from execution ALS/`activeTasks` when
-present; otherwise `task_id` is required. MUST NOT guess from the TaskService board.
-Work-context-bound tools MUST NOT sticky into free chat — but MUST remain available in
-entity-bound sessions (task_execution, review, comment_response, requirement_action,
-workflow_action) (`S-execute-only-no-sticky-converse`).
-
-Test IDs: `A-profile-reflex-omits`, `A-profile-role-full`, `A-collab-rules-always-on`,
-`A-conversation-first-chat`, `A-knowledge-heading-demote`, `A-role-no-shared-append`,
-`A-knowledge-cap`, `A-profile-converse-no-l3`, `S-execute-only-no-sticky-converse`.
-
-### 2.4 Spec: Afford fail-closed packing
-
-MUST: After assembling system + tools, compute `fixed = systemTokens + toolDefTokens`.
-MUST: If `promptAffordTokens != null` and
-`fixed + PROMPT_AFFORD_OUTPUT_RESERVE + safetyMargin > promptAffordTokens`:
-1. Downgrade once to `reflex` pack + profile and re-assemble.
-2. If still over, MUST NOT call the provider; return actionable error (`prompt_pack_rejected`).
-MUST: Heartbeat paths that hit reject MUST end activity with `success: false`.
-MUST NOT: Only shrink `messageBudget` while shipping an over-afford fixed prefix.
-
-MUST (§Afford.S1): `handleMessageStream` MUST use the same `ensureAffordablePromptPack`
-gate as `handleMessage` before any provider call.
-
-MUST (§Afford.S3): `SYSTEM_PROMPT_BUDGET_CONVERSE` is a soft observe/warn metric for
-converse system size. MUST NOT truncate ROLE/L0/mode/date to meet it. Hard limits
-are enforced by the provider afford guard (downgrade/reject).
-
-MUST (§Afford.S4): Provider MUST clamp `max_tokens` to remaining afford (proactive when
-`lastPromptAffordTokens` known; reactive on reservation 402).
-
-Test IDs: `A-afford-downgrade`, `A-afford-heartbeat-fail`, `S-stream-afford-reject`,
-`S-stream-afford-downgrade`, `S-converse-system-budget`, `S-converse-keeps-date`,
-`S-max-tokens-clamp-remaining`.
-
-Cold-start acceptance: converse fixed ≤ 28_000; reflex fixed ≤ 8_000
-(`A-budget-contract-converse`, `A-budget-contract-reflex`).
 
 #### Identity Section (§7)
 Source: `buildIdentitySection()`.  
@@ -604,7 +586,7 @@ by `HANDOFF_CONTEXT_LIMIT` (8).
 
 #### Scenario Section (§15)
 Source: `buildScenarioSection()`.  
-Placed at the **end of Tier 2** so the identity/org prefix remains stable across mode switches (chat ↔ heartbeat ↔ a2a). Twelve distinct instruction sets depending on `scenario` parameter (see §5.9 for the full matrix). Each scenario is slim and references the global Task Workflow and Tool Usage Rules rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
+Placed at the **end of Tier 2** so the identity/org prefix remains stable across mode switches (chat ↔ heartbeat ↔ a2a). Twelve distinct instruction sets depending on `scenario` parameter (see [tool-loop-harness.md](./tool-loop-harness.md) §5.9 for the full matrix). Each scenario is slim and references the global Task Workflow and Tool Usage Rules rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
 
 | Scenario | Key Instructions | Output Visibility | Communication Tools |
 |----------|-----------------|-------------------|-------------------|
@@ -616,9 +598,18 @@ Placed at the **end of Tier 2** so the identity/org prefix remains stable across
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
 | `group_chat` | Team group chat channel. Silence by default, @mention routing, processing checklist, reply-in-group rules. | Visible to **all team members** | `agent_send_group_message` for replies; `notify_user` for private escalation |
 | `comment_response` | Context-first protocol. Batch awareness (handle bundled comments as one). Use `reply_to_comment_id` for structural quoting. Convergence check before replying. | **Not directly visible** | `task_comment` / `requirement_comment` for thread (with `reply_to_comment_id`); `notify_user` if urgent |
-| `deliberation` | Multiple mailbox items — assess before committing. Use `check_mailbox` for full queue inspection; `defer_mailbox_item` / `drop_mailbox_item` for queue management; `notebook_upsert` to record situational assessment; finish with `complete_deliberation`. Goal tools (`goal_create`, `goal_update`, `goal_status`) available. | **Not visible** | Inline handling via deliberation whitelist (`notify_user`, `task_comment`, `agent_send_message`, etc.) |
 | `review` | Evaluate deliverable quality against acceptance criteria. | **Not directly visible** | `task_update` for verdict; `notify_user` optionally |
 | `memory_consolidation` | Internal memory management. Purely private. | **Not visible**; internal only | No communication tools needed |
+
+There is **no `deliberation` scenario**. The batch "assess the whole queue, then commit" turn
+and its whole-queue completion tool were **deleted** in the Forever Loop refactor (M1–M7): no
+`## Current Interaction Mode` block is rendered for it and no such turn is ever started.
+Pick-order and interruption are decided **before** any turn starts, by the pure rule table
+`heuristicDecision()` in `attention.ts` (R0–R9, first match wins: same-user/same-session `merge`,
+new human chat `preempt`, same-task comment `merge`, higher priority `preempt`, otherwise
+`continue`): no model call, no triage, no deliberation turn. Queue inspection and queue management
+(`check_mailbox`, `defer_mailbox_item`, `drop_mailbox_item`, `notebook_upsert`) and the goal tools
+(`goal_create`, `goal_update`, `goal_status`) stay available inside *whichever* scenario is running.
 
 #### Referencing Markus Resources
 
@@ -653,621 +644,99 @@ Placed in **Tier 1 (Stable)** (`## Error Recovery` + `## Autonomy & Escalation`)
 - **Self-contained delegation contract**: delegations must carry goal, context, constraints, expected return format, and preserve `conversation_id` — recipients have no access to the sender's session.
 - **Decision-ready return contract**: async results and delegation replies are summarized for immediate action, not raw stdout/log dumps.
 
-### 2.3 Skill Filtering
+### 2.4 Spec: Prompt profiles (`promptProfile`)
 
-**removed (2026-09-16)** — `filterSkillsByRelevance()` (query-keyword scoring, "top 30") was deleted as dead code; it was never called. The every-turn skill catalog is ORG context (scope O) — byte-stable for the whole org — so ranking it per query would convert a shared cached block into a per-call one. See §3.9.1 O4.
+MUST: `buildSystemPrompt()` MUST accept `promptProfile: 'reflex' | 'converse' | 'execute' | 'govern'` derived from the scenario pack ([agent-runtime.md](./agent-runtime.md) §2 / §4).
 
----
+| Section | reflex | converse | execute/govern |
+|---------|--------|----------|----------------|
+| ROLE | full (soft warn metric) | full | full |
+| Collaboration Rules (L0) | yes | yes | yes |
+| knowledge.md as `## Your Knowledge` | omitted | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE`) | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS`) |
+| ~~state.md~~ | — | retired 2026-09-16 → notebook `system` tier | — |
+| L3 quality/git/error-recovery | omitted | omitted (incl. comments) | included |
+| Search Strategy | complete, concise | complete, concise | complete, concise |
+| Team announcements / norms | capped | 400 chars | 2000 chars |
+| Channel history / shared deliverables | omitted | optional short | as needed |
+| Full roster | manager + ≤3 active | existing caps | existing caps |
+| Date / locale / Interaction Mode | yes | always retained | yes |
 
-## 3. Message Assembly & Context Compression
+MUST: ROLE.md is always injected in full (persona only). `ROLE_PROMPT_MAX_TOKENS` is warn-only.
+MUST NOT: Append `HANDBOOK.md` into ROLE. Distill collaboration hard rules into L0
+`## Markus Collaboration Rules`; HANDBOOK.md is a depth handbook via `file_read`.
+Long-tail API/reference content belongs in skills, not ROLE/HANDBOOK always-on.
+MUST: knowledge injection MUST exclude observations buffer; converse uses a short
+digest cap (full text via `memory_search` / files). Knowledge body headings `##`
+MUST be demoted to `###` under `## Your Knowledge` so they do not collide with
+system sections; stale fault/transcript sections are deprioritized when truncating.
+MUST NOT: Inject full history into reflex (the retired `state.md` block is gone — situational state rides `## Notebook`).
+MUST: Converse size is controlled by progressive disclosure + afford guard, **not**
+by post-assemble truncation of ROLE/L0/Collaboration Rules/mode/date.
+MUST NOT: Emit `_[ROLE truncated]_` / `_[system trimmed]_` markers.
 
-`ContextEngine.prepareMessages()` assembles the final message array sent to the LLM. It operates in four stages.
+#### Conversation-first vs Task-when-needed (L0 + chat scenario)
 
-### 3.1 Token Budget Calculation
+MUST: Human chat defaults to **conversation-first** — agents MAY advance real work
+(edit files, run commands, multi-step debugging) in the live conversation without
+forcing `task_create`.
+MUST: Task workflow is for async work, delegation, multi-agent parallel delivery,
+formal review/audit trail, or when the human explicitly asks for a task.
+MUST: **STOP** means only: after `task_create` for a piece of work, do not continue
+**that task** in chat. Work never placed on a task may continue conversationally.
+MUST: Requirements gate applies to **tasks** (`gate all tasks`), not to conversational chat work.
+MUST: Conflict priority:
+`Owner explicit instruction > conversation-first default > Protocol (once a task exists) > ROLE persona > Position (manager)`.
+MUST: Managers are **player-coach** — Position does not forbid hands-on building when ROLE is a builder/founder.
 
-```
-contextWindow        = model's context window (e.g. 200K for Claude Sonnet 4)
-maxOutput            = min(model.maxOutputTokens, contextWindow × 40%)
-safetyMargin         = ceil(min(contextWindow × 8%, 16000))
-messageBudget        = contextWindow − systemTokens − toolDefTokens − maxOutput − safetyMargin
-```
+MUST: L0 includes **How Your Prompt Is Composed** — ROLE.md is persona; L0 is always-on
+platform rules; HANDBOOK/skills are on demand. ROLE line count ≠ full constraints.
 
-**maxOutput reservation**: Uses the model's actual `maxOutputTokens` from the model catalog (e.g. 64K for Claude Sonnet 4, 128K for Claude Opus 4.6), capped at 40% of the context window. This ensures the budget reserves enough space for the model's full output capability without over-compressing messages.
+MUST (`task_submit_review`): Auto-fill `task_id` from execution ALS/`activeTasks` when
+present; otherwise `task_id` is required. MUST NOT guess from the TaskService board.
+Work-context-bound tools MUST NOT sticky into free chat — but MUST remain available in
+entity-bound sessions (task_execution, review, comment_response, requirement_action,
+workflow_action) (`S-execute-only-no-sticky-converse`).
 
-Token estimates use tiktoken when available (model-specific encoding), falling back to `chars / 3.5` heuristic.
+Test IDs: `A-profile-reflex-omits`, `A-profile-role-full`, `A-collab-rules-always-on`,
+`A-conversation-first-chat`, `A-knowledge-heading-demote`, `A-role-no-shared-append`,
+`A-knowledge-cap`, `A-profile-converse-no-l3`, `S-execute-only-no-sticky-converse`.
 
-### 3.2 Compression Pipeline
+### 2.5 Spec: Afford fail-closed packing
 
-**Policy: budget-first (model window AND provider afford).** Markus packs against the
-real model window, then further clamps by any OpenRouter prompt-afford hint (from a prior
-`Prompt tokens limit exceeded: X > Y` 402). Compression runs when history exceeds
-`CONTEXT_PROACTIVE_COMPACT_RATIO` (75% — the history-occupancy water level, i.e. the history's
-share of `messageBudget`) — not only when the hard window overflows. Session restore also trims before the first LLM call
-(`SESSION_RESTORE_MAX_MESSAGES` / `SESSION_RESTORE_MAX_MESSAGE_TOKENS`).
+MUST: After assembling system + tools, compute `fixed = systemTokens + toolDefTokens`.
+MUST: If `promptAffordTokens != null` and
+`fixed + PROMPT_AFFORD_OUTPUT_RESERVE + safetyMargin > promptAffordTokens`:
+1. Downgrade once to `reflex` pack + profile and re-assemble.
+2. If still over, MUST NOT call the provider; return actionable error (`prompt_pack_rejected`).
+MUST: Heartbeat paths that hit reject MUST end activity with `success: false`.
+MUST NOT: Only shrink `messageBudget` while shipping an over-afford fixed prefix.
 
-```
-Session Messages
-       │
-       ▼
- Stage 0: Clamp messageBudget by promptAffordTokens − PROMPT_AFFORD_OUTPUT_RESERVE
-       │
-       ▼
- Stage 1: Pathological single-message shrink ONLY
-   └─ shrinkOversizedMessages(cap: CONTEXT_ABSURD_MESSAGE_CHARS = 200k)
-   └─ sanitizeMessageSequence()
-       │
-       ▼
- (runs if totalTokens > messageBudget OR > proactive 75% threshold)
-       │
-       ▼
- Stage 2: Token-budget-driven compression (progressive)
-   ├─ 2a: shrinkOversizedMessages(cap: max(8000, budget/4)) + compactOldTurns()
-   ├─ 2b: smartSummarizeAndTruncate(keep: max(24, 55%))
-   └─ 2c: stronger summarize(keep: max(16, 40%)) + re-shrink
-       │
-       ▼
- Stage 3: Last-resort trimming
-   └─ trimToFitBudget() — drop oldest, protect index 0 (task prompt)
-       │
-       ▼
- Final: [system prompt, ...compressed messages]
- Metrics: systemTokens / historyTokens / toolDefTokens / totalPromptTokens / compactStage
-```
+MUST (§Afford.S1): `handleMessageStream` MUST use the same `ensureAffordablePromptPack`
+gate as `handleMessage` before any provider call.
 
-- **Safety margin**: `min(contextWindow * 0.08, 16000)` — modest, to prefer packing
-  history over reserving unused slack.
-- **Channel history**: `CHANNEL_CONTEXT_MESSAGES = 15` (load, inject, and prompt copy aligned).
-- **Tool result offload**: `TOOL_RESULT_OFFLOAD_CHARS = 12_000` (preview kept in context).
-- **Storage-side compaction** is a separate, high-volume safety net (not a per-call token
-  saver): on-disk sessions are compacted only at
-  `SESSION_STORAGE_COMPACT_TRIGGER = 2000` messages, keeping
-  `SESSION_STORAGE_COMPACT_KEEP = 1000`; oversized on-disk tool results are shrunk at
-  `SESSION_STORAGE_TOOL_SHRINK_CHARS = 100k`. See [memory-system.md](./memory-system.md).
+MUST (§Afford.S3): `SYSTEM_PROMPT_BUDGET_CONVERSE` is a soft observe/warn metric for
+converse system size. MUST NOT truncate ROLE/L0/mode/date to meet it. Hard limits
+are enforced by the provider afford guard (downgrade/reject).
 
-**Design rationale (Hermes progressive disclosure + afford-aware packing)**: keep cold-start
-system+tools lean (~10k target), activate skill bodies on demand, and never fill a 128k/1M
-window when the provider key can only afford ~37k prompt tokens.
+MUST (§Afford.S4): Provider MUST clamp `max_tokens` to remaining afford (proactive when
+`lastPromptAffordTokens` known; reactive on reservation 402).
 
-**Lightweight sessions**: All interactions (heartbeat, A2A, memory flush, comments) use the same `prepareMessages()` pipeline. Sessions are persisted to JSON files for full traceability. The `scenario` parameter controls what context is included in the system prompt — lightweight scenarios (`heartbeat`, `a2a`, `comment_response`) skip heavy context like assigned tasks, deliverables, and chat session lists.
+Test IDs: `A-afford-downgrade`, `A-afford-heartbeat-fail`, `S-stream-afford-reject`,
+`S-stream-afford-downgrade`, `S-converse-system-budget`, `S-converse-keeps-date`,
+`S-max-tokens-clamp-remaining`.
 
-### 3.3 Task Prompt Protection
+Cold-start acceptance: converse fixed ≤ 28_000; reflex fixed ≤ 8_000
+(`A-budget-contract-converse`, `A-budget-contract-reflex`).
 
-The first user message in a task session often contains the task description and the `task_submit_review` instruction. This message is **protected** throughout all compression stages:
-- `smartSummarizeAndTruncate()` detects `TASK EXECUTION` or `task_submit_review` markers and preserves the first message verbatim.
-- `compactOldTurns()` skips compaction of block 0 if it matches the task prompt pattern.
-- `trimToFitBudget()` preserves index 0 and only compacts it as a last resort.
+### 2.6 Skill Filtering
 
-### 3.4 Tool Block Compaction
-
-`summarizeToolBlock()` compresses an `[assistant+toolCalls, tool, tool, ...]` block into a single assistant message:
-- Preserves tool names and truncated arguments.
-- **Error results** are preserved in full (up to 200 chars) — errors in context help the model self-correct.
-- Research tool results (`web_search`, `file_read`, etc.) retain up to 500 chars of findings.
-- **Serialization diversity**: Uses 4 rotating summary templates to prevent the model from mimicking uniform compaction patterns.
-
-### 3.5 LLM-Powered Summarization
-
-When available, `smartSummarizeAndTruncate()` uses an LLM call to summarize older messages:
-- The summarizer LLM call is cheap: truncates each message to 300 chars, total input capped at 8000 chars.
-- No `maxTokens` cap — the router fills in the model's real output limit (the prompt itself bounds output to "under 1500 characters"). Temperature 0.2.
-- Fallback: `buildHeuristicSummary()` extracts key sentences from assistant messages.
-- The summary is **not** persisted to disk — `prepareMessages()` must stay pure (no `writeDailyLog`).
-  It is instead carried in-history as a `[SYSTEM] [Conversation history summary …]` message, and the
-  durable compaction summary lives in the fixed `[CONTEXT SUMMARY]` segment (the session's `summary` field).
-
-### 3.6 Message Sanitization
-
-`sanitizeMessageSequence()` ensures structural correctness before LLM submission:
-- Every `assistant(toolCalls)` must be followed by ALL corresponding `tool` result messages.
-- Orphaned tool messages are dropped.
-- Incomplete assistant+tool blocks are dropped entirely.
-- Consecutive user messages are merged (unless either is a system injection like `[SYSTEM]` or `[Conversation history summary`).
-
-### 3.7 Fixed/Variable Split & Session Anchors (ContextOS)
-
-A complement to the compression pipeline above: separate the prompt into a **fixed segment**
-(system + tools + SLOT anchors) that is **never business-compacted**, and a **variable segment**
-(history) that is the only thing compression/truncation touches. Motivation: long-session "loop"
-bugs where compaction discarded the agent's work anchors, so the agent lost its "position" and
-re-read the same files forever (diagnosed on 8/20; deliverable notes are archived in git history).
-Scope: `packages/core/src/context-slot.ts` + `tools/session.ts` + the `prepareMessages` slot
-plumbing.
-
-**Fixed vs variable:**
-
-- **Fixed (never compacted)**: system prompt, tool definitions, and the **SLOT segment**.
-- **Variable**: conversation history — the only thing shaved/compressed/truncated.
-
-**SLOT fixed segment (`[SLOTS]`)** — `context-slot.ts`:
-- Slots are agent-managed named anchors (`goal` / `done` / `next`, or any agent-chosen key)
-  persisted on the session (`ConversationSession.slots`).
-- At send time, `prepareMessages` accepts `slotsSegment` (= `serializeSlots(sessionId)`), subtracts
-  `slotsTokens` from the budget, and appends it to the system message (`[SLOTS] (agent-managed, not
-  compacted)\n· key: text…`). It is **excluded from the compaction/truncation chain** — so after any
-  compress or truncate, the agent still sees its current goal/done/next and can continue **without
-  re-reading files**.
-- Runtime caps: `CONTEXT_SLOT_MAX_CHARS` (1200).
-
-**Session tools (agent-driven compaction + anchors)** — `tools/session.ts` exposes 10 operations so
-the agent can actively manage long sessions instead of relying only on passive auto-compaction:
-`list | get | compact(keepLast, goal?, done?, next?) | pin | unpin | retrieve | include | purge | status | rename`.
-- `compact` folds expired history into structured anchors (`compactWithAnchor`: pin goal/done/next
-  into SLOTs, then compress), keeping recent N; raw history is archived to `conversation_fragment`
-  (never deleted) and recoverable via `include`.
-- `pin`/`unpin`: write/remove named slot anchors (survive compression + truncation).
-- `include`: place archived fragment back into context precisely.
-- All read/write ops are guarded by `checkOwnership(sessionId, agentId)` — an agent may only manage
-  its own session.
-
-**Context watermark (`[CONTEXT X% used …]`)** — the agent can observe its own pressure (no more
-silent truncation) and act:
-- `usedPct = (fixedTokens + variableTokens) / effectiveBudget`.
-- `[CONTEXT WARN]` at ≥80%: nudge to `session_compact` or `session_pin` an anchor.
-- `[CONTEXT CRIT]` at ≥95%: warn that the system will hard-truncate oldest turns; instruct to
-  immediately `session_compact` + `session_pin`.
-- Injected via the volatile `[SYSTEM] [Live context]` tail (see §2.1), never into the system prefix.
-
-**Why this fixes the loop**: previously compaction dropped anchors → the agent lost position → it
-re-read the same files to re-orient → that re-reading itself grew context → re-truncated → loop.
-With SLOT anchors locked in the fixed segment, a compressed/truncated history still carries
-goal/done/next every turn, so the agent resumes without re-reading — the trigger for the loop is gone.
+**removed (2026-09-16)** — `filterSkillsByRelevance()` (query-keyword scoring, "top 30") was deleted as dead code; it was never called. The every-turn skill catalog is ORG context (scope O) — byte-stable for the whole org — so ranking it per query would convert a shared cached block into a per-call one. See [context-assembly.md](./context-assembly.md) §3.9.1 O4.
 
 ---
 
-### 3.8 Compaction defects fixed in v2.1 (2026-09-16)
-
-Four defects were found by auditing the pipeline against the published designs
-(Anthropic compaction, DeepSeek V3.2 context management, fast-agent).
-
-**(a) Fold direction was inverted — `compactOldTurns()`.** It walked blocks
-oldest→newest, kept each verbatim while the budget allowed, then summarised *or
-dropped* the remainder. That preserves the **oldest** conversation and
-summarises/discards the **most recent** past turns — the opposite of "keep the
-recent window verbatim, summarise the distant past" — and it discarded exactly
-the context the model still needed. Now the recency walk accumulates from the END
-and keeps the newest blocks verbatim. Order is preserved, and folding is
-block-wise via `parseIntoBlocks()`, so an assistant tool-call is never separated
-from its tool results. Task prompts (`TASK EXECUTION` / `task_submit_review`) stay
-protected verbatim even though they are the oldest block.
-
-**(b) The watermarks could never fire on a large window.**
-`CONTEXT_PROACTIVE_COMPACT_RATIO` / `CONTEXT_WARN_RATIO` are relative to the model
-window, so on the 1311k window Markus runs, proactive compaction sits around
-~500k tokens. The observed session finished a single turn at 269k input tokens —
-~12 % of the window — with `compactStage === 'none'` throughout: **no maintenance
-compression ever ran.** Added an absolute ceiling:
-
-| Constant | Value | Meaning |
-|---|---|---|
-| `CONTEXT_ABS_HISTORY_TOKENS` | 120 000 | above this, maintenance compression fires regardless of window % |
-| `CONTEXT_ABS_HISTORY_TARGET_TOKENS` | 72 000 | what a fold compresses down to (hysteresis: grow to 120k, fold to 72k) |
-
-When the ceiling trips, `historyTarget` replaces the window-derived
-`messageBudget` (which would otherwise authorise keeping everything — a silent
-no-op) and the fold boundary becomes `messages.length`, which is what also covers
-the single-gigantic-turn case.
-
-**(c) `smartSummarizeAndTruncate()` reordered history.** Eligible messages were
-sorted by **priority**, and `retained` was then built straight from that sorted
-array — so the summariser received a priority-shuffled transcript and the kept
-older messages were replayed in importance order instead of time order. Both
-`older` and `promoted` are now re-sorted by original index. (Chronological input
-also produces a better summary, and restores determinism, which the prefix cache
-relies on.)
-
-**(d) `findCurrentTurnStart()` counted synthetic messages as user turns.**
-Engine-synthesised blocks — the compaction summary, the `[SYSTEM] [Live context]`
-tail, `[Continue from where you left off …]` and `[SYSTEM] Loop detected: …` —
-are `role: 'user'` but are not user turns. Since `findCurrentTurnStart()` decides
-both the turn boundary and the prefix-cache breakpoint, they were placed against
-the wrong boundary. `isSyntheticMessage()` now skips them.
-
-> **Why the synthetic blocks cannot simply become `role: 'system'`:** the
-> Anthropic adapter does `find(m => m.role === 'system')` and then
-> `filter(m => m.role !== 'system')`, so any non-first system message is silently
-> dropped there (the summary would vanish). Skipping them during accounting is the
-> provider-safe fix. Revisit only if every adapter is switched to multi-system
-> handling.
-
-**Regression guard**: `packages/core/test/context-compaction-v21.test.ts`.
-
-### 3.9 Root cause analysis: why these defects keep returning (2026-09-16)
-
-Three rounds of auditing found six defect classes. They are **not six independent
-bugs** — they are six surfaces of four design gaps, which is why fixing one kept
-exposing the next. This section records the gaps so the next fix is aimed at the
-cause rather than the symptom.
-
-| # | Root cause | Design or implementation debt | Surfaces it produced |
-|---|---|---|---|
-| RC1 | **The fixed/variable split has no third tier.** Context was modelled as *fixed* (system + tools + slots) vs *variable* (history + volatile tail). Stable-but-large session state — knowledge, notebook, skills catalog, deferred tools, task board — has neither a home nor a delivery contract, so it was dumped into the *per-call* tail. | **Design** | Tail re-sent 66× in one turn; every "make the tail smaller" fix then risked losing the state outright (§2.1.2) |
-| RC2 | **No harness channel.** Providers accept only system/user/assistant/tool, so the engine synthesises `role:'user'` for state, `[Continue …]` and loop warnings. There is no explicit framing that marks a block as *telemetry, not instruction*. | **Design** | Turn accounting corrupted (`findCurrentTurnStart`); negative priming from stacked \"do not repeat\" prompts; state read as the newest user message and re-announced |
-| RC3 | **No context budget owner.** Each feature pushes into the dynamic array with its own cap; nobody owns the total, the priority order, or eviction. | **Design** | Byte-constant noise lines survive forever (`_(66 completed/closed tasks)_`); knowledge truncated by *document order* mid-sentence; `## Notebook` reached 41 % of the tail |
-| RC4 | **Cache-friendliness was a patch, not an invariant — and was unmeasurable.** Registration-order emission was fixed case-by-case; `discover_tools.description` still embedded per-turn counts *directly under a comment claiming cache-safety*; the documented MUST-NOT in `tool-system.md` was violated by the code. No cache-hit telemetry and a 0.7 heuristic polluting the denominator meant regressions were **invisible**. | **Design (missing guard) + implementation** | Tool prefix silently busted every turn; the same class of bug reappeared across rounds |
-| RC5 | **The toolset is recomputed per turn, not accumulated per session.** `recentToolNames` is an instance-level LRU(10); `activatedExtraTools` is instance-level and never reset. Both drift within a turn **and leak across sessions**. | **Implementation** | Capability surface changes every turn (cache break); one session inherits tools activated in another |
-| RC6 | **Estimated vs reported usage is a dual rail.** Budget and `[CONTEXT x%]` come from the local `TokenCounter`; server-reported `inputTokens` is used only for the audit log, only calibrates the estimator, and is wired on *one* code path (`agent.ts:4373`). | **Implementation** | The displayed water level is an estimate; the cache-hit denominator was back-filled with `totalTokens*0.7` |
-
-#### What was fixed in this round
-
-| Root cause | Fix | Where |
-|---|---|---|
-| RC1 + RC2 | Durable `[SYSTEM] [State checkpoint]` history message on change (complete + append-only + cache-extending); tail digest names where the content lives; relative-time labels normalised out of the hash | §2.1.2, `context-engine.ts` |
-| RC3 | Closed-task counters deleted; **team active tasks kept in full** but ranked actionable-first; empty board skipped for converse; `prepareKnowledgeForPrompt(raw, maxChars, query?)` ranks by relevance, selects **whole** sections, and always emits a title index of what was omitted | §3.9.1, `context-engine.ts` |
-| RC4 | `discover_tools.description` is now a pure function of the **registry** (minus `TOOL_DEF_CORE_KEEP`), deterministically sorted; byte-stability guard test added; per-session cache-hit window + `cacheHitRateWindow` / `cacheHitRateSamples` telemetry that returns `null` (not 0) when nothing was reported | `tool-selector.ts`, `agent-metrics.ts` |
-
-> **A note on RC3's shape:** the first attempt at the task-board fix collapsed
-> *all* non-actionable team tasks into a count bucket. That was rejected on review
-> — it traded information away for tokens, hiding \"what is my team working on?\"
-> from a manager. Only the genuinely constant counters were removed. **Deleting
-> noise is a win; deleting signal is a regression**, and the two look identical in
-> a token-diff.
-
-#### 3.9.1 Open items — status after the cache-scope round (2026-09-16, v4)
-
-| # | Item | Status |
-|---|---|---|
-| O1 | **Tool schema drift (RC5).** Session-level monotonic toolset. | **DONE.** `Agent.stickyTools()` keeps `recent`/`activated` in a session-keyed record (`toolSticky`), monotonic within a session (freezes at `STICKY_RECENT_TOOLS_MAX` instead of evicting) and reset on session switch, so the *cross-session leak* is closed as well as the per-turn drift. Remaining (deferred): the call-site inconsistency where the stream/task/risk paths do not pass `extraRecentToolNames`, and `Mask, Don't Remove` decode-time placeholders (not applicable to closed APIs). |
-| O2 | **Reported usage as the single source of truth (RC6).** | **PARTIAL — calibration only.** `calibrateTokenCounter(response.usage.inputTokens)` is now wired on 8 paths, and `extractCacheReadTokens()` already parses DeepSeek's `prompt_cache_hit_tokens` **and** OpenAI/OpenRouter `prompt_tokens_details.cached_tokens`, feeding `cacheHitRateWindow` (reported-only denominator). Still open: using reported tokens to *drive* the budget/water level and marking it `src=reported\|estimated`. Deferred per Owner's call — do DeepSeek-first if pursued. |
-| O3 | **`## Notebook` size (RC3).** Largest single tail section (mean 9 163 chars, 41 % of tail). | **DONE (size + lifecycle).** Added a TOTAL cap (`NOTEBOOK_PROMPT_MAX_CHARS = 6000`) on top of the per-entry cap, keeping the most recent entries and naming any omitted keys — so the block can no longer dominate the tail. Relevance ranking deliberately NOT applied: the notebook is the agent's own workspace, and dropping a note it wrote itself is a correctness risk, not a token win. Follow-up ([memory-system.md](./memory-system.md) §2): the cap alone was not enough — entry count/TTL/single-writer were missing, so a real notebook reached 26 entries / 33 KB and an 18-day-old triage decision was re-injected as current fact. Now: single write path (`Agent.writeNotebookEntry`), per-tier TTL, cross-tier entry cap, normalize-on-load, deterministic ordering, and inline truncation instead of whole-entry omission. |
-| O4 | **`filterSkillsByRelevance` dead code.** | **DONE.** Deleted. It was never called, and the every-turn `## Available Skills` table is ORG context (scope O) — byte-stable for the whole org — so ranking it per query would convert a shared cached block into a per-call one. Rationale recorded in-code. |
-
-**Evidence provenance.** All measured figures come from
-`~/.markus/llm-logs/2026-09-16.jsonl` (66-call session; 377 tails) plus a
-read-only audit of `packages/core/src`. The 322 tails taken *before* the gating
-commit are a historical snapshot used to size the problem, **not** a description
-of current `HEAD`.
-
-## 4. Tool Loop Harness
-
-The "harness" is the while-loop that drives agentic tool use: LLM → tool calls → results → LLM → ... until the model stops calling tools.
-
-### 4.1 Harness Variants
-
-| Harness | Location | Loop Condition | max_tokens Handling | Loop Detection | Network Retry | Iteration Limit |
-|---------|----------|----------------|--------------------|--------------------|---------------|-----------------|
-| `handleMessage` | Chat (non-stream) | `tool_use \|\| max_tokens` | ✅ Continuation prompt | ✅ `ToolLoopDetector` | ✅ `withNetworkRetry` | configurable (default 200) |
-| `handleMessageStream` | Chat (stream) | `tool_use \|\| max_tokens` | ✅ Continuation prompt | ✅ `ToolLoopDetector` | ✅ `withNetworkRetry` | configurable (default 200) |
-| `_executeTaskInternal` | Task execution | `tool_use \|\| max_tokens` | ✅ Continuation prompt | — (uses reminder instead) | ✅ `withNetworkRetry` | None |
-| `respondInSession` | Session reply | `tool_use \|\| max_tokens` | ✅ Continuation prompt | — | ✅ `withNetworkRetry` | 200 |
-
-**Design rationale for iteration limits**: Task execution has **no hard iteration limit**. Complex tasks (writing code, running tests, debugging) legitimately require 100+ tool calls. Natural limiters are sufficient: the context window triggers compression, cancel tokens allow external stop, and the model naturally finishes by calling `task_submit_review`. Chat and similar paths use a **configurable** safety cap via `AgentOptions.maxToolIterations` and the system settings API (range 1–10000, default 200) — not a hardcoded 200. Real loop protection still comes primarily from `ToolLoopDetector`, not from this cap.
-
-### 4.2 Common Harness Flow
-
-```
-0. Deterministic context assembly (no LLM): read recent activity + working-memory
-   keys; ContextEngine retrieves relevance-matched memories (bounded).
-1. Build system prompt (contextEngine.buildSystemPrompt)
-   → injects ## Relevant Memories (this turn only) + a deterministic ## Cognitive Context
-2. Build tool definitions (toolSelector.selectTools)
-3. Prepare messages (contextEngine.prepareMessages — compress to fit budget)
-4. LLM call (llmRouter.chat / chatStream, wrapped in withNetworkRetry)
-5. WHILE response requires continuation:
-   a. If tool_use: execute tools → append results → re-prepare messages → LLM call
-   b. If max_tokens: append continuation prompt → re-prepare messages → LLM call
-6. Output guardrail check
-7. Persist final reply to session
-```
-
-Step 0 is **deterministic** — there is no Cognitive Preparation Pipeline and no pre-call LLM. The ContextEngine assembles a small, bounded situational block from recent activity and working-memory keys, and performs its own bounded relevant-memory retrieval. Deeper cross-domain recall is agent-driven via `memory_search` / `kb_search`.
-
-### 4.3 Tool Execution
-
-All tool calls within a single LLM response are executed **in parallel** (`Promise.all`) in `handleMessage` and `handleMessageStream`. In `_executeTaskInternal` and `respondInSession`, they are executed **sequentially** (for-of loop) with per-tool status events.
-
-**Write serialisation under concurrency.** When the agent runs a concurrent worker pool,
-state-mutating tool calls are routed through an agent-level FIFO **write lock**
-(`Agent.withToolWriteLock`, see [concurrent-processing.md](./concurrent-processing.md)) so
-two workers cannot mutate shared state at the same instant. Read-only tools are not
-blocked; the lock is released even when the wrapped call throws. Note this serialises a
-*single tool call*, not an entire multi-step flow — see the known-limitations section of
-that doc.
-
-`spawn_subagent` and `spawn_subagents` let the model delegate focused subtasks to lightweight LLM subagents; `spawn_subagents` runs several in parallel. They are registered on the Agent like other built-in tools. All subagent limits (max parallel count, LLM retry policy, preview truncation lengths) are centralized in `packages/shared/src/limits.ts` — not hardcoded in the subagent module.
-
-Large tool results (>50K chars) are offloaded to `{agentDataDir}/tool-outputs/` with a preview in context (Manus-inspired "restorable compression").
-
-### 4.4 Loop Detection
-
-`ToolLoopDetector` is active in both `handleMessage` and `handleMessageStream`. It tracks recent tool calls and detects repetitive patterns. When a critical loop is detected, a `[SYSTEM]` warning is injected into the conversation to nudge the model toward a different approach.
-
-### 4.5 Task Completion Reminder
-
-In `_executeTaskInternal`, every 10 tool iterations, a `[SYSTEM REMINDER]` message is injected reminding the agent to call `task_submit_review`. This combats the "lost in the middle" effect where long tool-use sequences push the original instructions out of the model's attention.
-
-### 4.6 Mid-Execution Reflection Nudge
-
-Every 30 tool iterations during task execution, a `[REFLECTION CHECKPOINT]` message is injected prompting the agent to capture any insights discovered during the current task. This ensures lessons are saved while context is fresh, rather than relying solely on post-task reflection.
-
-### 4.7 Post-Task Reflection
-
-When a task is accepted (`triggerPostTaskReflection` in `task-service.ts`), the system sends a reflection prompt to the assigned agent. The prompt includes:
-- An **execution trace summary** (execution rounds, duration, result summary, recent notes)
-- Differentiated guidance for **revision** cases (focus on what went wrong) vs **success** cases (focus on what worked)
-- Guidance to create **skill packages** via skill-building for complex procedures (5+ steps)
+> **Split (2026-11-15)** — §3 and §4–§5 live in sibling files: **how history is packed and compressed** → [context-assembly.md](./context-assembly.md) (token budget, compression pipeline, task-prompt protection, ContextOS fixed/variable split & SLOT anchors, compaction defects §3.8 and root causes §3.9); **how one call runs and how each scenario is assembled** → [tool-loop-harness.md](./tool-loop-harness.md) (harness variants, loop detection, reflection nudges, scenario × context matrix §5.9, scenario × tool face §5.10, async callback replay §5.11). The section-number gap at §3–§5 below is exactly that moved material.
 
 ---
-
-## 5. Scenario-Specific Prompt Assembly
-
-### 5.1 Human Chat (`handleMessage` / `handleMessageStream`)
-
-```
-┌─ System Prompt (full: identity + memory + tasks + scenario=chat)
-├─ Session Messages (from memory store, compressed by prepareMessages)
-└─ User Message (latest)
-```
-
-Session management:
-- Uses `currentSessionId`. Creates session if none exists.
-- Messages persisted to session JSON files and replayed on next call.
-- Input/output guardrails applied.
-
-### 5.2 Task Execution (`_executeTaskInternal`)
-
-```
-┌─ System Prompt (full: identity + memory + tasks + scenario=task_execution)
-│   + projectContext (project info, repositories, governance rules)
-├─ Task Prompt (injected as first user message):
-│   [TASK EXECUTION — Task ID: xxx]
-│   {description}
-│   {resume/retry instructions if applicable}
-│   ## Completion Requirements — MANDATORY
-│   You MUST call task_submit_review ...
-└─ Session Messages (task session: task_{id}_r{round})
-```
-
-Key differences from chat:
-- **Deterministic session ID**: `task_{taskId}_r{round}`. Retries within the same round reuse session history (preserving tool call results). New rounds get fresh sessions.
-- **Project repo access**: Agents can read and write files freely; the only hard restriction is that writes to other agents' directories are blocked. The agent manages its own workspace setup (worktrees, branching) via `shell_execute`.
-- **Git command governance**: The shell tool enforces a three-tier model (Allow / Approval / Deny). Safe operations execute immediately, risky ones (checkout existing branch, merge, rebase, push to protected branches) pause for human approval via `HITLService.requestApprovalAndWait()`, and destructive operations (force push) are always denied. Approval responses include optional comments/reasons, which are returned to the agent as actionable feedback.
-- **Retry with history**: If the session has prior assistant work (from interrupted attempts), a `[SYSTEM: Your previous execution attempt was interrupted...]` message is appended instead of the full task prompt.
-- **AbortController**: Linked to `cancelToken` for external cancellation.
-
-### 5.3 Heartbeat (`handleHeartbeat`)
-
-Heartbeat uses `handleMessage(prompt, undefined, undefined, { sessionId: 'hb_<agentId>_<ts>', allowedTools, scenario: 'heartbeat' })`.
-
-The heartbeat user prompt is assembled inline; the system prompt still comes from `buildSystemPrompt(scenario:'heartbeat')` (identity, `## Your Knowledge`, and the cached `heartbeat` scenario section); mailbox context and `## Notebook` ride the volatile `[Live context]` tail rather than the system prefix. The inline prompt is deliberately **slim** — it carries only per-call dynamic content and defers durable rules to the cached system prompt. It includes:
-1. `[HEARTBEAT CHECK-IN]` header + agent's custom checklist (from `role.heartbeatChecklist`)
-2. Last heartbeat summary (from memory search)
-3. Conditional dynamic sections, only when present: `## Background Processes Completed` (finished `background_exec` sessions), `## Timed-Out Async Operations`, **`## Active Goals`** (when `goalFetcher` is wired — each standing goal's title, status, `currentIteration`/`maxIterations`, and completion criteria), and the manager `## Daily Report Required` section (after 20:00)
-4. Slim `## Failed Task Recovery` and `## Requirement Monitoring` (2-3 lines each)
-5. `## Self-Evolution` — a compact Knowledge Lifecycle **decision matrix** that routes each learning to the right home (`memory_save` / `memory_update_longterm` / skill / ROLE.md / HEARTBEAT.md), with the revision-rate quality signal folded into a single line
-6. `## Patrol Reminder` — lightweight-patrol do/don't rules; points to `schedule_wakeup` for precise follow-ups and `set_heartbeat_interval` to adjust cadence. It explicitly **defers** communication-channel and async-timing details to the cached scenario/Tier-1 sections rather than restating them
-7. `## Finishing Up` — `memory_save` a `heartbeat:summary`, produce the daily report if required, else respond `HEARTBEAT_OK`
-
-**Deduplication note**: earlier versions of the inline prompt restated `## Communication Channels`, `## Core Principle: Patrol, Don't Build`, `## Prefer Scheduled Wakeups`, `## What You CAN/MUST NOT Do`, and `## Conditional Actions`. These duplicated the cached `heartbeat` scenario section (§5.3 / `buildScenarioSection`) and Tier-1 rules, so they were removed from the (uncached) inline user prompt to cut per-heartbeat token cost. The `heartbeat` scenario section is now the single source of truth for comms/priorities.
-
-**Notebook Guidelines** (in mailbox checklists / system prompt when queue context is present): use `notebook_upsert` to save priorities, context, decisions, and blockers; `notebook_clear` when context becomes irrelevant. Do not store raw message content — use `memory_save` for durable observations.
-
-Tool whitelist = **reflex allowlist** (`REFLEX_CORE_TOOLS` + manager `team_status`):
-`task_list`, `task_get`, `memory_save`, `memory_search`, `notify_user`, `request_user_input`,
-`schedule_wakeup`, `cancel_wakeup`, `set_heartbeat_interval`, `discover_tools`, `check_mailbox`,
-`file_read`, `agent_send_message`, `notebook_upsert`. MUST NOT imply `task_create` /
-`requirement_propose` / `package_install` / `goal_*` in heartbeat (see Interaction Mode).
-
-**Heartbeat cadence & configurability**: the periodic heartbeat is a coarse safety-net (`DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h) behind the event-driven `schedule_wakeup` mechanism — it is NOT the primary timing mechanism. The interval is configurable at three levels: (a) the user via `PATCH /api/agents/:id/config` (`heartbeatIntervalMs`) or the Agent Profile → Heartbeat tab; (b) the agent itself via the `set_heartbeat_interval` tool (clamped to `MIN_HEARTBEAT_INTERVAL_MS`–`MAX_HEARTBEAT_INTERVAL_MS`, i.e. 5min–24h). Both apply **live** via `Agent.setHeartbeatInterval()` (restarts the scheduler) and persist (agent-driven changes flow through the `agent:heartbeat-interval-changed` event → `agentRepo.updateConfig`). A one-time SQLite migration (gated by `PRAGMA user_version`) bumps agents still on the legacy 30-min default to the 6h safety-net without clobbering any interval a user or agent set deliberately.
-
-Agent communication guidance (heartbeat context):
-
-**Reaching humans** — raw text output is NOT visible to humans in heartbeat mode:
-| Situation | Tool | Example |
-|-----------|------|---------|
-| Status report, finding, alert | `notify_user` (appears in chat timeline + bell) | "Daily report: completed 3 tasks today" |
-| Task completed notification | `notify_user` + `related_task_id` | "Task X is ready for review" (clicks to task) |
-| Need user to approve/reject | `request_user_approval` | "Approve deployment to production?" |
-| Need user to choose between options | `request_user_approval` with custom `options` | "Should I use approach A or B for the auth refactor?" |
-| Need user freeform input | `request_user_approval` with `allow_freeform: true` | "What credentials should I use?" |
-| Want to discuss interactively | Mention user via task/requirement comment | Use `task_comment` or `requirement_comment` |
-| Need to review past execution details | `recall_activity` | `recall_activity({ task_id: "tsk_abc" })` to find what happened |
-| Routine heartbeat, nothing notable | Neither | Agent responds with `HEARTBEAT_OK` |
-
-**Reaching agents** — use `agent_send_message` to send to a peer agent's mailbox.
-
-Retry: 3 retries with exponential backoff (3s base).
-
-### 5.4 A2A Chat
-
-Uses `handleMessage(message, fromAgentId, senderInfo, { sessionId, scenario: 'a2a' })`.
-
-**Session ID strategy**: When a `channelKey` is present (group chat context), the session ID is `channel_{channelKey}_{agentId}` — stable across all messages in the same channel. This enables conversation history accumulation and KV-cache reuse. For direct 1:1 A2A messages without a channel, a timestamp-based `a2a_{agentId}_{ts}` session is used (one-off).
-
-The sender's identity is injected via `senderIdentity` in `buildSystemPrompt`. Channel-based A2A (via group chats) passes `channelContext` — recent channel messages are prepended to the session on the first turn; subsequent turns inject only delta messages (last 5).
-
-### 5.4.1 Group Chat
-
-Group chat messages (to `group:<teamId>` channels) are broadcast to ALL team members simultaneously via `processGroupChatReply()` in `api-server.ts`. Each agent processes the message independently with `scenario: 'group_chat'` (for human messages) or `scenario: 'a2a'` (for agent chain replies).
-
-**Static rules in system prompt**: The `group_chat` scenario section in `buildScenarioSection()` contains all static group chat rules (silence by default, @mention routing, processing checklist, reply-in-group). This content is part of the Tier 1 stable system prompt and benefits from KV-caching.
-
-**Per-message prefix**: Only variable, per-message information remains in the user message prefix:
-- Channel header (team size, agent name, channel key)
-- Targeting info (who is @mentioned, reply target, whether this agent is the target)
-- Team member roster (for @mention format reference)
-
-Empty or `[NO_RESPONSE]` replies are silently discarded (not persisted or broadcast).
-
-### 5.5 Respond-in-Session
-
-`respondInSession()` is used for continuing a specific session (e.g., task execution follow-up messages via the API). It always uses `scenario: 'chat'` and streams output via `onLog` events.
-
-### 5.6 Daily Report
-
-```
-[DAILY REPORT REQUEST]
-Generate a brief daily status report. Include:
-1. What you worked on today (if anything)
-2. Current status and any blockers
-3. What you plan to work on next
-...
-Keep the report concise (3-5 sentences). Do NOT use any tools.
-```
-
-Called via `sendMessage(prompt, undefined, undefined, { sourceType: 'daily_report', sessionId: 'sys_<agentId>_<ts>', scenario: 'heartbeat' })`.
-Result written to `daily-logs/` via `memory.writeDailyLog()`.
-
-### 5.7 Memory Flush
-
-```
-[MEMORY FLUSH — System Request]
-The conversation context is approaching its limit...
-Use memory_save to persist:
-- Key decisions or conclusions reached
-- Important facts learned...
-```
-
-Called via `handleMessage(prompt, undefined, undefined, { sessionId: 'sys_<agentId>_<ts>', scenario: 'heartbeat' })`.
-
-**Trigger (spec)**: a **turn-level preflight** — before a turn packs context, if the
-previous turn's context usage crossed a threshold (~75%) and this session has not flushed
-yet, run `memoryFlush` once (deduplicated per session; the flush itself uses an independent
-`sys_` session so it cannot recurse into another flush). See the memory-flush spec in
-[memory-system.md](./memory-system.md) for the authoritative behavior, invariants, and
-tests. Status: implemented — `maybeMemoryFlushPreflight()` is wired into the three main turn paths
-(`handleMessage`, `handleMessageStream`, and task execution in `agent.ts`), deduplicated per session.
-
-### 5.8 Dream Consolidation
-
-Not a `handleMessage` call — uses `llmRouter.chat()` directly with a specialized prompt:
-
-```
-System: You are a memory consolidation assistant...
-User: ## Memory Entries\n{id|timestamp|type|tags|content for each entry}
-      ## Instructions: Output JSON with remove, merge operations...
-```
-
-Capped at 500 most recent entries (`MAX_ENTRIES_FOR_LLM`). Output is parsed as JSON and applied programmatically (remove entries, merge duplicates). Vector index is synchronized post-consolidation.
-
-### 5.9 Scenario × Context Matrix (2026-09-16)
-
-Every `AgentScenario` must render a `## Current Interaction Mode` block answering three
-questions the model **cannot infer from history**: (a) *is my text output visible to anyone?*,
-(b) *which tool actually reaches a human?*, (c) *when must I stay silent?* Losing any of the
-three is a **completeness** regression, not a token saving — a model that does not know its
-output is invisible will end the turn with prose and accomplish nothing.
-
-| Scenario | Output visible? | Reaches a human via | Silence rule | Boundary guard |
-|---|---|---|---|---|
-| `chat` | yes (streamed) | direct text | — | stop when done, no check-in questions |
-| `task_execution` | no (logs only) | `notify_user` / `task_note` | — | `task_submit_review` mandatory |
-| `heartbeat` | **no** | `notify_user` (only path) | `HEARTBEAT_OK` | reflex pack only |
-| `a2a` (DM) | auto-sent to peer | — | `[NO_RESPONSE]` on ack/conclusion | DM dedup + loop guard |
-| `a2a` (group channel) | **normalized → `group_chat`** | — | `[NO_RESPONSE]` | see invariant below |
-| `group_chat` | auto-sent to channel | `notify_user` (private) | `[NO_RESPONSE]` (default) | @mention routing |
-| `comment_response` | no | `task_comment` / `requirement_comment` | `[NO_REPLY_NEEDED]` | context-first, no bare ack |
-| `requirement_action` | no | `requirement_comment` / `notify_user` | — | ≥1 action tool required |
-| `workflow_action` | no | `notify_user` | — | ≥1 action tool required |
-| `review` | no | `task_comment` / `notify_user` | — | reviewer ≠ assignee |
-| `deliberation` | no | `complete_deliberation` | — | strict-state items untouchable |
-| `distillation` | no | `notify_user` (rare) | stop with no tools if nothing durable | Learning Habits |
-| `memory_consolidation` | no | — (tools forbidden) | — | JSON-only output |
-
-**Invariant 13a — a caller-supplied scenario is authoritative.** `agent.ts` used to force
-`opts.scenario = 'a2a'` for every `sourceType: 'a2a_message'`, clobbering an explicit scenario
-from the caller. `a2a_message` is a *transport* (it is what a channel message looks like when it
-comes from an agent rather than a human), not a scenario. The engine now defaults to `'a2a'` only
-when the caller stayed silent.
-
-**Invariant 13b — channel-derived normalization.** `a2a` covered two physically different
-channels. A group-channel item rendered the 1:1 wording — *"Humans do NOT see this conversation …
-absorb silently"* — which is false in a group chat, where the reply is **auto-broadcast to
-humans**. `buildSystemPrompt` now normalizes `a2a` + `channelKey.startsWith('group:')` →
-`group_chat`, and `api-server.ts` stops downgrading a group channel to `'a2a'` for chained
-(agent-triggered) replies. The A2A-ness of such a message is carried by the caller's injected
-`[AGENT COLLABORATION]` prefix, not by switching the scenario.
-
-Guard test: `context-scenario-matrix.test.ts` — asserts all 12 scenarios render a non-trivial
-block, that each declares visibility/reachability, that `a2a`+group renders the group block and
-never the DM/"humans do NOT see this" wording, and that `distillation` (which previously said only
-"free-text is not a chat reply") states visibility explicitly. Run against the old code, the
-group-channel and distillation cases fail.
-
----
-
-### 5.10 Scenario × Tool Face — prompts must not name tools the model doesn't have (2026-09-16)
-
-The matrix in §5.9 answers *what the model is told*. This section is its dual: *what the model can
-actually call*. A prompt that mandates a tool absent from the request's `tools` array is worse than
-a missing instruction — the model burns turns on `discover_tools` (or loops on validation errors)
-and the scenario silently fails.
-
-**The selection path.** `ToolSelector.selectTools` builds the schema from
-`BASE_TOOL_NAMES` ∪ keyword-matched `ToolGroup`s ∪ `recentToolNames` ∪ `discover_tools`
-activations, with `TOOL_DEF_CORE_KEEP` protected from eviction. A tool name that appears in **no**
-group and is not in the keep-set can therefore never reach the model by default — even when it is
-fully registered and the scenario's prompt demands it.
-
-**The authoritative-allow-list contract.** Scenarios whose prompt issues hard mandates carry an
-explicit `allowedTools` set. `agent.ts` applies it in two directions: it *filters* the selection
-**and** *unions in* any allowed tool that keyword selection missed (offering its live
-description/schema from the registry). The existing sets are
-`HEARTBEAT_ALLOWED_TOOLS`, `DELIBERATION_ALLOWED_TOOLS`, `DISTILLATION_EXTRA_TOOLS` and — added in
-this pass — `COMMENT_RESPONSE_ALLOWED_TOOLS`, `REQUIREMENT_ACTION_ALLOWED_TOOLS`,
-`WORKFLOW_ACTION_ALLOWED_TOOLS` (+ `TASK_EXECUTION_EXTRA_TOOLS` spliced into the `isTaskExecution`
-branch). `SCENARIO_ALLOWED_TOOLS` exposes the map.
-
-Why each one is load-bearing:
-
-| Scenario | Prompt mandate | Why default selection can't surface it |
-|---|---|---|
-| `requirement_action` | *"**MANDATORY**: before deciding, call `requirement_get`"*, *"`requirement_update_status`"* | neither is in `TOOL_DEF_CORE_KEEP`/`BASE_TOOL_NAMES`, and there is **no `requirement` or `workflow` tool group** |
-| `workflow_action` | *"use `workflow_status`"*, *"`workflow_cancel`"* | same — no group can ever select them |
-| `comment_response` | *"call `task_get`/`requirement_get` first"* | `requirement_get` is discover-only for `converse` |
-| `task_execution` | *"run builds and tests via `background_exec`"*, *"register key outputs via `deliverable_create`"* | the `shell` group carries only `shell_execute`; `background_exec` is in no group at all |
-
-**Invariant 14 — prompt-declared tools ⊆ scenario tool face.** Guard test
-`scenario-tool-face.test.ts` builds each scenario's prompt, asserts the prompt text actually
-mentions the mandated names, asserts those names are in the scenario's `allowedTools`, and asserts
-they are genuinely *absent* from the always-on keep-set (proving the allowance is load-bearing
-rather than redundant). It also asserts the action scenarios do **not** carry `shell_execute`,
-`apply_patch`, `package_install` or `hub_install`.
-
-**Invariant 14b — an allow-list may narrow, never widen, the capability boundary.** The union step
-in `agent.ts` only offers names the scenario's allow-list declares; it is not a bypass of
-`allowedTools` filtering.
-
----
-
-### 5.11 Async callbacks must replay their originating scenario (2026-09-16)
-
-`background_exec` is documented in the `task_execution` prompt as *"run builds and tests via
-`background_exec` — continue other subtasks while waiting"*. That contract is only meaningful if
-the **completion** turn can act. It could not.
-
-Both callback dispatch branches (`callback_result`, and the callback-typed `system_event` emitted
-by `deliverCallback`'s mailbox path) hardcoded `scenario: 'heartbeat'`. `heartbeat` maps to the
-**reflex** pack, and `REFLEX_CORE_TOOLS` contains **no work tools** — no `file_write`,
-`file_edit`, `shell_execute`, `apply_patch`, `task_note`, `subtask_complete`,
-`deliverable_create`, `task_submit_review`. The heartbeat prompt additionally says *"your text
-output is NOT visible … end with `HEARTBEAT_OK`"*. So a build launched from a task session could,
-on completion, only **notify** — never fix the failure, never record progress, never submit.
-
-**Mechanism.** The scenario is captured where it is still knowable and replayed where it is needed:
-
-| Step | Where | What |
-|---|---|---|
-| capture | `registerBackgroundSession(...)` / `a2a_reply` / `schedule_wakeup` registration | `this.activeScenario` → `PendingCallback.originScenario` |
-| carry | `deliverCallback` | writes it into the mailbox item's `payload.extra.scenario` (both delivery modes) |
-| replay | `callback_result` / callback-typed `system_event` dispatch | `asAgentScenario(extra.scenario) ?? 'heartbeat'` |
-
-Capture must happen at **registration**, not delivery: the completion fires later, outside any
-turn, when `activeScenario` no longer refers to the launching scenario. Both delivery modes carry
-it — `mailbox` surfaces a *new* attention cycle, but the work still needs work tools.
-
-**Invariant 15 — an untrusted scenario string is never cast.** `buildHandleOpts` used to do
-`opts.scenario = ex.scenario as AgentScenario`. Because that override runs **after** each branch's
-explicit default, it silently won: any mailbox producer could set an arbitrary scenario, and
-unknown/legacy values became the turn's scenario. It now goes through `asAgentScenario()` and is
-ignored when unrecognized, so the branch default (`heartbeat`) survives. `AGENT_SCENARIOS` is the
-runtime mirror of the `AgentScenario` union and the single validation authority.
-
-Guard test: `callback-scenario.test.ts` — asserts reflex has no work tools, that
-`registerBackgroundSession` records the launch scenario, that `deliverCallback` propagates it in
-both modes, that dispatch replays it, that a missing scenario falls back to `heartbeat`, and that
-invalid values (`'bogus-scenario'`) are rejected rather than passed through.
-
-
 
 ## 6. Output Token Resolution
 
@@ -1297,7 +766,7 @@ Five primary memory tools (down from seven); legacy aliases preserved:
 
 **Legacy memory aliases** (same handlers): `memory_list`, `memory_delete`, `memory_update_longterm`. (The notebook aliases `update_working_memory` / `clear_working_memory` were removed — use `notebook_upsert` / `notebook_clear`.)
 
-Goal tools (`goal_create`, `goal_update`, `goal_status`) are available during **heartbeat** and **deliberation** for standing-goal management.
+Goal tools (`goal_create`, `goal_update`, `goal_status`) are available in every scenario — including **heartbeat** patrols — for standing-goal management.
 
 `ToolSelector.selectTools()` determines which tools appear in each LLM call:
 
@@ -1308,7 +777,7 @@ Goal tools (`goal_create`, `goal_update`, `goal_status`) are available during **
 5. **Recently used tools**: Tools used in recent calls are re-included to maintain continuity
 6. **Mailbox management tools**: `defer_mailbox_item`, `drop_mailbox_item`,
    `prioritize_mailbox_item` — registered for all agents, available during
-   deliberation and focused processing.
+   every scenario, including heartbeat patrols and focused processing.
 7. **Activated tools**: Tools the agent explicitly activated via `discover_tools`
 8. **Skill-provided tools**: MCP tools from activated skills
 9. **`discover_tools` meta-tool**: Always present, enabling agents to list/activate/install skills at runtime
@@ -1365,13 +834,15 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 
 | Document | Relationship |
 |----------|-------------|
-| [state-machines.md](./state-machines.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
-| [memory-system.md](./memory-system.md) | Notebook + `knowledge.md` layers (`state.md` retired 2026-09-16); `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
-| [cognitive-architecture.md](./cognitive-architecture.md) | Deterministic context assembly (§3); CPP and its depth levels removed |
+| [context-assembly.md](./context-assembly.md) | **Split out of this document 2026-11-15** (§3): message assembly, token budget, compression pipeline, ContextOS fixed/variable split & SLOT anchors, compaction defects and root causes |
+| [tool-loop-harness.md](./tool-loop-harness.md) | **Split out of this document 2026-11-15** (§4 + §5): tool-loop harness, loop detection, scenario-specific assembly, scenario × context matrix, scenario × tool face, async callback replay |
+| [state-machines.md](./state-machines.md) | Task state transitions trigger different LLM call paths ([tool-loop-harness.md](./tool-loop-harness.md) §5.2 task execution, §5.3 heartbeat review) |
+| [memory-system.md](./memory-system.md) | Notebook + `knowledge.md` layers (`state.md` retired 2026-09-16); `## Your Knowledge` and `## Notebook` in prompts; consolidation ([tool-loop-harness.md](./tool-loop-harness.md) §5.6-5.8) |
+| [cognitive-architecture.md](./cognitive-architecture.md) | Deterministic context assembly ([context-assembly.md](./context-assembly.md) §3); CPP and its depth levels removed |
 | `packages/core/src/agent.ts` | Implementation of all 8 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation; SLOT fixed segment, volatile tail, watermark |
-| `packages/core/src/context-slot.ts` | SLOT segment model: `SlotEntry` / `SlotsStore` / `buildSlotSegment()` — the never-compacted anchors (§3.7) |
-| `packages/core/src/tools/session.ts` | Session 10-op tool family (compact/pin/include/retrieve…) + `checkOwnership` (§3.7) |
+| `packages/core/src/context-slot.ts` | SLOT segment model: `SlotEntry` / `SlotsStore` / `buildSlotSegment()` — the never-compacted anchors ([context-assembly.md](./context-assembly.md) §3.7) |
+| `packages/core/src/tools/session.ts` | Session 10-op tool family (compact/pin/include/retrieve…) + `checkOwnership` ([context-assembly.md](./context-assembly.md) §3.7) |
 | `packages/core/src/llm/router.ts` | Provider routing, circuit breaker, model catalog, output token resolution |
 | `packages/core/src/tool-selector.ts` | Tool selection logic |
-| ~~`context-os.md`~~ | **Merged into this document §3.7** (Fixed/Variable split, SLOT anchors, session tools, watermark). "ContextOS" is the name of that mechanism; deliverable notes (8/20 repro, regression ledger) are archived in git history. |
+| ~~`context-os.md`~~ | **Merged into [context-assembly.md](./context-assembly.md) §3.7** (Fixed/Variable split, SLOT anchors, session tools, watermark). "ContextOS" is the name of that mechanism; deliverable notes (8/20 repro, regression ledger) are archived in git history. |

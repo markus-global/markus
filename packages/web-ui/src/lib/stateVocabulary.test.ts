@@ -29,6 +29,7 @@ import {
   blockedReasonOf,
   crossVocabularyCollisions,
   processStatusLabel,
+  taskStatusChip,
   taskStatusLabel,
   taskStatusPresentation,
   type LabelEntry,
@@ -80,6 +81,39 @@ function translatorFor(locale: string) {
     throw new Error(`词表缺键：${key}（${locale}）`);
   }) as unknown as Parameters<typeof taskStatusLabel>[1];
 }
+
+describe('taskStatusChip：闭态 chip 的唯一写者（列表行 / 看板卡 / 详情头不得各自配色）', () => {
+  it('hold → 已挂起 + 卡住色；deps/workflow → 中性灰；hold 与 deps 不同色', () => {
+    const t = translatorFor('zh-CN');
+    const hold = taskStatusChip('blocked', t, 'hold');
+    const deps = taskStatusChip('blocked', t, 'deps');
+    const workflow = taskStatusChip('blocked', t, 'workflow');
+    // 字面读真实 locale 文件：把 hold 渲染回通用「已阻塞」即红。
+    expect(hold).toEqual({ label: '已挂起', cls: BLOCKED_TONE.hold.chip });
+    expect(deps).toEqual({ label: '等待依赖', cls: BLOCKED_TONE.deps.chip });
+    expect(workflow?.cls).toBe(TONE.neutral.chip);
+    expect(hold!.cls).not.toBe(deps!.cls);
+  });
+
+  it('无缘由 / 非 blocked → null（退回静态菜单徽章，不猜缘由）', () => {
+    const t = translatorFor('zh-CN');
+    expect(taskStatusChip('blocked', t)).toBeNull();
+    expect(taskStatusChip('blocked', t, null)).toBeNull();
+    expect(taskStatusChip('in_progress', t, 'hold')).toBeNull();
+    expect(taskStatusChip(undefined, t)).toBeNull();
+  });
+
+  it('三个 locale 下字与色都与 taskStatusPresentation 同源（不得有第二写者）', () => {
+    for (const locale of LOCALES) {
+      const t = translatorFor(locale);
+      for (const reason of ['deps', 'hold', 'workflow'] as const) {
+        const chip = taskStatusChip('blocked', t, reason);
+        const p = taskStatusPresentation('blocked', t, reason);
+        expect(chip).toEqual({ label: p.label, cls: p.tone!.chip });
+      }
+    }
+  });
+});
 
 describe('A3 · 跨词表字面互斥（同屏不得出现两个字面相同、含义不同的状态词）', () => {
   for (const locale of LOCALES) {

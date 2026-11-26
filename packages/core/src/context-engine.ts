@@ -11,6 +11,7 @@ import {
   SYSTEM_MY_TASKS_MAX,
   SYSTEM_TEAM_TASKS_MAX,
   SYSTEM_KNOWLEDGE_CHARS,
+  knowledgeInjectionCapChars,
   MEMORY_HEALTH_WARN_PERCENT,
   MEMORY_HEALTH_CRITICAL_PERCENT,
   SYSTEM_USER_PROFILE_CHARS,
@@ -54,6 +55,8 @@ import { normalizeHistoryContent } from './llm/message-content.js';
 import { omittedNotice, isPlausibleReported, truncateWithNotice } from './context-budgets.js';
 import type { EnvironmentProfile } from './environment-profile.js';
 import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capability-packs.js';
+import { deriveAssignment, renderAssignmentPrompt, type AssignmentCallbackRow } from './derive-assignment.js';
+import { renderFactsContext, type FactsPromptContext } from './facts/facts-block.js';
 import {
   compactionGuidance,
   compactionActionLine,
@@ -109,8 +112,8 @@ export function prepareKnowledgeForPrompt(
   raw: string,
   maxChars: number,
   query?: string,
-): { text: string; truncated: boolean } {
-  if (!raw.trim()) return { text: '', truncated: false };
+): { text: string; truncated: boolean; inlinedChars: number; omittedCount: number } {
+  if (!raw.trim()) return { text: '', truncated: false, inlinedChars: 0, omittedCount: 0 };
 
   // Split on markdown ATX headings while keeping delimiters
   const parts = raw.split(/(?=^#{1,6}\s)/m).filter(p => p.length > 0);
@@ -168,6 +171,11 @@ export function prepareKnowledgeForPrompt(
     inlined.add(first.idx);
   }
 
+  // DR5 — the payload is what this prompt actually carries. Measured BEFORE the
+  // index line is appended: that line is scaffolding (it names what is NOT there),
+  // so counting it as knowledge inflated the very number it was meant to report.
+  const inlinedChars = text.length;
+
   const omitted = sections.filter(s => !inlined.has(s.idx));
   const truncated = omitted.length > 0;
   if (truncated) {
@@ -177,7 +185,7 @@ export function prepareKnowledgeForPrompt(
       + `none are discarded, fetch on demand with \`memory_search\` or by reading \`knowledge.md\`: ${index}]_`;
   }
 
-  return { text: text.trimEnd(), truncated };
+  return { text: text.trimEnd(), truncated, inlinedChars, omittedCount: omitted.length };
 }
 
 export interface ContextConfig {
@@ -428,6 +436,20 @@ export class ContextEngine {
     }
   }
 
+  /**
+   * C9-A: the current subject's active facts, rendered into the volatile tail.
+   *
+   * Injected rather than derived here: the subject (which task this turn is
+   * about) is knowledge the agent owns, and the port keeps `ContextEngine` free
+   * of any database dependency. `null` ⇒ no block at all (no subject for this
+   * turn, or the port is not wired).
+   */
+  private factsProvider?: () => FactsPromptContext | null;
+
+  setFactsProvider(provider: (() => FactsPromptContext | null) | undefined): void {
+    this.factsProvider = provider;
+  }
+
   setSemanticSearch(ss: SemanticMemorySearch): void {
     this.semanticSearch = ss;
   }
@@ -456,7 +478,15 @@ export class ContextEngine {
       priority: string;
       assignedAgentId?: string;
       assignedAgentName?: string;
+      /** Cards where this agent is the reviewer — the axis the board never showed. */
+      reviewerAgentId?: string;
     }>;
+    /**
+     * Registered wakeups (`rest` / `background_exec` / `schedule_wakeup`) owned by
+     * the caller. Derived into the prompt so an agent knows it is still waiting
+     * instead of polling or forgetting. Never persisted here.
+     */
+    pendingCallbacks?: AssignmentCallbackRow[];
     knowledgeContext?: string;
     deliverableContext?: string;
     environment?: EnvironmentProfile;
@@ -484,7 +514,12 @@ export class ContextEngine {
       content: string;
       anchor?: { section: string; itemId?: string };
     }>;
-    scenario?: AgentScenario;
+    /**
+     * 这一轮的回合形状。**必填**：它决定注入的「你现在处于人类对话 / A2A /
+     * 群聊」段以及提示词剖面。旧写法可选 + 下游 `?? 'chat'`，等于“不知道就说
+     * 是人类对话” —— 会把 A2A 回合描述成“用户看着你说话”。
+     */
+    scenario: AgentScenario;
     /** When scenario is 'a2a', indicates whether the sender is blocking for a reply */
     a2aWaitForReply?: boolean;
     /** Live per-colleague runtime status (agentId → AgentState['status']).
@@ -537,11 +572,26 @@ export class ContextEngine {
     promptProfile?: PromptProfile;
     /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected so agents do NOT need to search for it. If omitted, a source-dir path is used as fallback. */
     handbookPath?: string;
-    /** 并发上下文（仅并发模式 worker>1 时注入）：分身声明 + 其他 worker 交接记录。 */
+    /** 并发上下文（仅并发模式 worker>1 时注入）：实时在途快照 + 交接历史。 */
     concurrentContext?: {
       enabled: boolean;
       workerId: number;
       workerCount: number;
+      /**
+       * 权威在途信号：**此刻真的被其他分身持有**的实体（实时状态，不是历史推断）。
+       * 来源 `AttentionController.getActiveClaims()`，已排除本 worker。
+       */
+      liveClaims: Array<{
+        workerId: number;
+        entityKeys: string[];
+        /** 条目类型（如 `human_chat`）；不带正文。 */
+        itemType: string;
+        startedAt: number;
+      }>;
+      /**
+       * 交接历史（只含终态 `done`/`conflict`）：只用于避免重复动作，
+       * **不构成「正在处理」**——历史里的实体现在可能是空闲的。
+       */
       handoffs: ConcurrentHandoffLite[];
       /**
        * 分身共享工作记忆快照（agent 级 NOTEBOOK.md）。notebook 是 agent 级共享的，
@@ -624,7 +674,7 @@ export class ContextEngine {
       stable.push('');
       stable.push('**Multi-modal / generation pre-flight**: Before calling `generate_image` or similar deferred generation tools, you MUST discover its full schema first: `discover_tools({ name: ["generate_image"] })`. Then check available models via `llm_list_providers` — look for providers that list image-generation models in their output. The tool\'s `provider` and `model` params must match actual available models. Do NOT guess — a wrong provider/model wastes a turn and fails. If unsure which model to use, ask the user: "可用模型有 {list}. 您想用哪个？"');
       stable.push('');
-      stable.push('**Deferred tools — when to discover**: Tools listed under `## Deferred Tools` have their full schemas omitted (only ≤40 char blurbs shown). You MUST `discover_tools({ name: ["tool-name"] })` before the FIRST call to any deferred tool you intend to use. Once discovered in this session, the schema is available — you do not need to re-discover. This applies to: `generate_image`, `llm_list_providers`, `llm_switch_model`, `schedule_wakeup`, `package_install`, `hub_install`, and others in the deferred list.');
+      stable.push('**Deferred tools — when to discover**: Some registered tools (e.g. `generate_image`, `llm_list_providers`, `llm_switch_model`, `schedule_wakeup`, `package_install`, `hub_install`) have their full schemas omitted from the tool list; they appear under `discover_tools` → "Optional extras". You MUST `discover_tools({ name: ["tool-name"] })` before the FIRST call to any such tool. Once discovered in this session, the schema is available — you do not need to re-discover.');
       stable.push('');
       stable.push('**Skills with instructions**: When an installed skill shows "(has instructions)" in `## Available Skills`, the skill\'s SOP/procedures are NOT loaded yet. Call `discover_tools({ name: ["skill-name"] })` to inject them. Skills showing "(no instructions)" have no SOP body, but this does NOT mean all of their tools are callable — any tools they expose via MCP still follow the normal deferred-discovery rule (`discover_tools` first). Skills marked "(load error)" had an unreadable SKILL.md: treat their instructions as unavailable and re-check the skill before relying on it.');
 
@@ -970,7 +1020,7 @@ export class ContextEngine {
     // inside a group chat, where the reply IS auto-sent and human-visible. The
     // A2A-ness of a group message is conveyed by the caller's injected
     // `[AGENT COLLABORATION]` prefix, not by switching the scenario.
-    const rawScenario = opts.scenario ?? 'chat';
+    const rawScenario = opts.scenario;
     const isGroupChannel = !!opts.channelKey && opts.channelKey.startsWith('group:');
     const scenario: AgentScenario =
       rawScenario === 'a2a' && isGroupChannel ? 'group_chat' : rawScenario;
@@ -1053,7 +1103,18 @@ export class ContextEngine {
     if (knowledgeTokCap > 0) {
       const longTermMem = opts.memory.getLongTermMemory();
       if (longTermMem) {
-        const knowledgeCapChars = Math.min(SYSTEM_KNOWLEDGE_CHARS, knowledgeTokCap * 4);
+        const knowledgeCapChars = knowledgeInjectionCapChars(knowledgeTokCap);
+        // DR5 — prepare BEFORE reporting. The banner must describe the payload THIS
+        // turn is about to carry, so the injector records its own numbers first and
+        // the store reports a measurement instead of dividing the on-disk region by
+        // a disk constant. That division is how a 16 673-char region came to be
+        // announced as "111% injected" on a turn carrying 6 691.
+        const prepared = prepareKnowledgeForPrompt(longTermMem, knowledgeCapChars, opts.currentQuery);
+        opts.memory.recordInjectedKnowledge?.(
+          prepared.inlinedChars,
+          prepared.omittedCount,
+          knowledgeCapChars,
+        );
         volatile.push('\n## Your Knowledge');
         // 审计 P-12：记忆健康信号 —— 让 Agent「知道」何时该主动整理（否则永不自知）。
         try {
@@ -1061,22 +1122,27 @@ export class ContextEngine {
           const staleDays = h.lastConsolidatedAt
             ? Math.max(0, Math.floor((Date.now() - Date.parse(h.lastConsolidatedAt)) / 86_400_000))
             : null;
-          if (h.percent >= MEMORY_HEALTH_WARN_PERCENT || (staleDays !== null && staleDays >= 14)) {
+          // DR5 — the measured object is THIS turn's injected payload. The curated
+          // region is a disk size and is reported as one; it is never turned into a
+          // percent-of-injection (that equation is the false alarm this replaces).
+          const injPercent = h.injectionUsedPercent;
+          if (injPercent >= MEMORY_HEALTH_WARN_PERCENT || (staleDays !== null && staleDays >= 14)) {
             const staleness = staleDays !== null && staleDays >= 14
               ? ` · 上次整理 ${staleDays} 天前`
               : '';
-            const overBy = Math.max(0, h.curatedChars - h.curatedCap);
+            const measured = h.injectionMeasured ? '' : '，本轮未实测、为投影值';
+            const region = ` · 磁盘策展区 ${h.curatedChars}/${h.curatedCap}（${h.curatedPercent}%，仅报告）`;
+            const omitted = h.omittedSectionCount > 0 ? ` · ${h.omittedSectionCount} 段未内联` : '';
             volatile.push(
-              `> ${h.percent >= MEMORY_HEALTH_CRITICAL_PERCENT ? '🔴' : '⚠️'} **记忆健康 ${h.percent}%**（注入段 ${h.curatedChars}/${h.curatedCap} 字符 · ${h.curatedSections} 个知识段${staleness}）。`
-              + (overBy > 0
-                ? `**已超预算 ${overBy} 字符**——最大段落的正文正被无损归档（移出每轮注入，仍可 \`memory_search\` 检索）。`
-                  + `**现在就自己瘦身，别等下个周期**：\`memory_organize\` 合并同类段落（${h.curatedSections} 段）、`
+              `> ${injPercent >= MEMORY_HEALTH_CRITICAL_PERCENT ? '🔴' : '⚠️'} **记忆健康 ${injPercent}%**（本轮注入 ${h.injectedChars}/${h.injectionCapChars} 字符${measured} · ${h.curatedSections} 个知识段${omitted}${region}${staleness}）。`
+              + (injPercent >= MEMORY_HEALTH_WARN_PERCENT
+                ? '**现在就自己瘦身，别等下个周期**：`memory_organize` 合并同类段落、'
                   + '`memory_update`（mode:"delete"）删掉已被新结论取代的条目；只留可复用的结论，过程和流水移出去。'
                   + '注入段是你的判断带宽，不是存档。'
                   + (isDream
                     ? ' **本轮就是记忆维护会话——瘦身是这一轮的主任务，不是顺带。做完再 end_turn。**'
                     : '')
-                : '接近预算：合并或删除过时段落（`memory_organize` / `memory_update` mode:"delete"）。'),
+                : '接近注入上限：超过上限的段落不会进入 prompt，索引行会列出它们，仍可 `memory_search` 取回。'),
             );
           }
           // Signal 2 — the OBSERVATION buffer. A SEPARATE budget of its own and it is
@@ -1090,12 +1156,11 @@ export class ContextEngine {
             );
           }
         } catch { /* health signal is best-effort */ }
-        // Relevance-ranked, whole-section selection (see prepareKnowledgeForPrompt).
+        // Relevance-ranked, whole-section selection: `prepared` was built ABOVE,
+        // before the health banner, because the banner reports that payload's size.
         // `opts.currentQuery` is the in-flight user text, so which sections get
         // inlined depends on what is actually being asked rather than on document
-        // order. Sections that do not fit are named in an index line, never dropped
-        // — the helper's own index line replaces the old separate "truncated" note.
-        const prepared = prepareKnowledgeForPrompt(longTermMem, knowledgeCapChars, opts.currentQuery);
+        // order. Sections that do not fit are named in an index line, never dropped.
         volatile.push(prepared.text);
       }
     } else if (isReflex) {
@@ -1158,6 +1223,18 @@ export class ContextEngine {
     // proactively. Agents use `deliverable_search` (always-on tool) to query
     // them on demand, saving ~400 tokens per call with minimal risk.
 
+    // A2 — "what am I on the hook for" has exactly one derivation. The task
+    // board below projects the `assigned` bucket from it (one predicate, one
+    // render template); the section after the board carries the two axes the
+    // board structurally cannot express (reviewer-verdict, pending callback).
+    const assignment = isDream
+      ? undefined
+      : deriveAssignment({
+          agentId: opts.agentId,
+          tasks: opts.assignedTasks,
+          callbacks: opts.pendingCallbacks,
+        });
+
     if (!isDream) {
       if (opts.assignedTasks && opts.assignedTasks.length > 0) {
         const priorityOrder = ['critical', 'high', 'medium', 'low'];
@@ -1165,10 +1242,8 @@ export class ContextEngine {
           (priorityOrder.indexOf(a.priority ?? 'medium')) - (priorityOrder.indexOf(b.priority ?? 'medium'));
 
         const CLOSED_STATUSES = new Set(['completed', 'cancelled', 'failed', 'archived', 'rejected']);
-        const myTasks = opts.assignedTasks.filter(t => t.assignedAgentId === opts.agentId);
         const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
 
-        const myActive = myTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
 
         const MY_TASK_LIMIT = SYSTEM_MY_TASKS_MAX;
         const TEAM_TASK_LIMIT = SYSTEM_TEAM_TASKS_MAX;
@@ -1196,7 +1271,9 @@ export class ContextEngine {
           if (aAct !== bAct) return aAct - bAct;
           return byPriority(a, b);
         });
-        const hasBoard = myActive.length > 0 || otherActive.length > 0;
+        // One derivation, not two: whether there is a board to draw is answered
+        // by the same `assignment` the rows come from.
+        const hasBoard = (assignment?.assigned.length ?? 0) > 0 || otherActive.length > 0;
 
         if (!hasBoard) {
           // Empty board: the stub is only worth its tokens for execute/govern,
@@ -1208,15 +1285,16 @@ export class ContextEngine {
         } else {
           dynamic.push('\n## Task Board');
           dynamic.push('### My Tasks (assigned to you):');
-          if (myActive.length > 0) {
-            const shown = myActive.slice(0, MY_TASK_LIMIT);
-            for (const t of shown) {
-              dynamic.push(
-                `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
-              );
+          const myOwed = assignment?.assigned ?? [];
+          if (myOwed.length > 0) {
+            const shown = myOwed.slice(0, MY_TASK_LIMIT);
+            for (const line of shown) {
+              // Same text the derive function produces — the board does not own a
+              // second format for "my tasks".
+              dynamic.push(`- ${line.text}`);
             }
-            if (myActive.length > MY_TASK_LIMIT) {
-              dynamic.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
+            if (myOwed.length > MY_TASK_LIMIT) {
+              dynamic.push(`_(${myOwed.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
             }
           } else {
             dynamic.push('No active tasks assigned to you.');
@@ -1248,6 +1326,15 @@ export class ContextEngine {
         // Empty board only for execute/govern — converse saves the stub tokens
         dynamic.push('\n## Task Board');
         dynamic.push('No tasks on the board.');
+      }
+
+      // A2 — the two axes the board cannot express. `assigned` is deliberately
+      // excluded: the board above already shows it, and listing the same task
+      // twice spends tokens to say one thing.
+      if (assignment) {
+        for (const line of renderAssignmentPrompt(assignment, { include: { assigned: false } })) {
+          dynamic.push(line);
+        }
       }
     }
 
@@ -1442,30 +1529,47 @@ export class ContextEngine {
     }
 
     // ─── Concurrency Context: volatile segment injected ONLY in concurrent mode ───
-    // Per-turn data: handoff records change constantly, so it lives in the
+    // Per-turn data: live claims change every second, so it lives in the
     // volatile tail (never invalidates the stable/semiStable prefix cache).
+    //
+    // 在途 = **实时状态**（`liveClaims`，来自实体锁 + worker focus），历史 = `handoffs`（终态）。
+    // 旧实现把历史里的 `declared` 当「正在进行中」注入 → 同一实体既「在进行中」又
+    // 「已完成」，分身据此宣布「由另一个 worker 处理」并停手（2026-11-17 真机事故）。
+    // 形状固定：没有占用也要显式写「无」——否则模板随数据变形，且 agent 分不清
+    // 「没人占」和「这段没注入」。
     const cc = opts.concurrentContext;
     if (cc?.enabled && cc.workerCount > 1) {
       const lines: string[] = ['\n## Concurrency Context（并发上下文）'];
       lines.push(
         `- 当前 Agent 处于并发模式：本会话是你（worker ${cc.workerId}）处理的多个会话之一，共有 ${cc.workerCount} 个分身。`
       );
-      const flight = cc.handoffs.filter(h => (h.kind === 'declared' || h.kind === 'fact')).slice(-4);
-      if (flight.length > 0) {
-        lines.push('- 正在进行中的其他分身：');
-        for (const h of flight) {
-          if (h.workerId !== cc.workerId) lines.push(`  - worker ${h.workerId}${h.entityKey ? ` → ${h.entityKey}` : ''}：${h.summary}`);
+
+      lines.push('- 此刻真正被占用（**唯一权威**：实体锁实时状态；只有这里的实体现在不能动）：');
+      if (cc.liveClaims.length === 0) {
+        lines.push('  - （无：现在没有任何实体被其他分身持有）');
+      } else {
+        for (const c of cc.liveClaims) {
+          const keys = c.entityKeys.length > 0 ? c.entityKeys.join(', ') : 'system';
+          lines.push(`  - worker ${c.workerId} → ${keys}（${c.itemType}）`);
         }
       }
-      const done = cc.handoffs.filter(h => h.workerId !== cc.workerId && (h.kind === 'done' || h.kind === 'conflict')).slice(-4).reverse();
-      if (done.length > 0) {
-        lines.push('- 最近完成的交接：');
-        for (const h of done) lines.push(`  - worker ${h.workerId}（${h.kind === 'done' ? '完成' : '冲突'}）${h.entityKey ? ` ${h.entityKey}` : ''}：${h.summary}`);
+
+      const history = cc.handoffs.filter(h => h.workerId !== cc.workerId).slice(-4).reverse();
+      lines.push('- 交接历史（**只说明过去发生了什么，不代表现在被占用**）：');
+      if (history.length === 0) {
+        lines.push('  - （无）');
+      } else {
+        for (const h of history) {
+          lines.push(
+            `  - worker ${h.workerId}（${h.kind === 'done' ? '完成' : '冲突'}）${h.entityKey ? ` ${h.entityKey}` : ''}：${h.summary}`
+          );
+        }
       }
+
       lines.push(
         '- 一致性规则：',
         '  1. 你并不独占认知。做任何持久化决策前，先查共享知识 + 交接记录，避免与已完成/进行中的工作矛盾或重复。',
-        '  2. 同一任务/需求/对话串同时只能有一个分身处理——发现实体已被占用，不要强行开做，如实说明。',
+        '  2. **占用只认上面「此刻真正被占用」那一段。** 列在其中的实体现在由别的分身在跑，不要同时动它；没列在其中的实体（哪怕刚在交接历史里出现过）现在**没有被占用**，照常接手 —— 不要因为一条历史记录就停手，更不要向用户宣称「这件事正由另一个 worker 处理」。',
         '  3. 发现事实冲突时（你的认知与交接记录矛盾），优先报告差异并请求合并决策，不静默覆盖。'
       );
 
@@ -1527,6 +1631,16 @@ export class ContextEngine {
     const segments: SystemPromptSegment[] = [];
     if (stableText) segments.push({ content: stableText, cacheBreakpoint: true });
     if (semiStableText) segments.push({ content: semiStableText, cacheBreakpoint: true });
+
+    // ─── FACTS → volatile tail, LAST (C9-A) ─────────────────────────────────
+    // `[FACTS:<subject>]` is per-subject live state: it changes when a fact is
+    // asserted, which must never invalidate the cached system prefix. It also
+    // sits last so the priority truncation of the block never pushes the
+    // behavioural sections (scenario / team docs) out of the tail.
+    if (this.factsProvider) {
+      const factsCtx = this.factsProvider();
+      if (factsCtx) volatile.push(`\n${renderFactsContext(factsCtx)}`);
+    }
 
     const volatileText = volatile.join('\n').trim();
 
@@ -1609,13 +1723,12 @@ export class ContextEngine {
       lines.push('');
       lines.push('## Message Processing Checklists');
       lines.push('');
-      lines.push('### When Deliberating (multiple queued items)');
+      lines.push('### 处理待决项');
       lines.push('1. **Scan**: Read all items — identify human messages, urgent items, stale items.');
       lines.push('2. **Clean**: `drop_mailbox_item` for stale informational items (old heartbeats, outdated status updates, superseded notifications).');
       lines.push('3. **Group**: Items sharing a taskId / requirementId / channel → plan to handle together.');
       lines.push('4. **Inline**: Handle trivial items now (quick ack via `notify_user`, one-line `task_comment`). Mark as inline_completed.');
       lines.push('5. **Assess**: `notebook_upsert` with your situational summary — priorities, blockers, what you plan to do.');
-      lines.push('6. **Focus**: `complete_deliberation` — choose the most important remaining item.');
       lines.push('');
       lines.push('### Per-Type Processing');
       lines.push('');
@@ -1681,8 +1794,7 @@ export class ContextEngine {
    * restricts to task/review/deliberation scenarios.
    */
   private buildScenarioPolicyBlocks(scenario: AgentScenario): string | undefined {
-    const needsExecutionPolicies = scenario === 'task_execution' || scenario === 'review'
-      || scenario === 'deliberation';
+    const needsExecutionPolicies = scenario === 'task_execution' || scenario === 'review';
     if (!needsExecutionPolicies) return undefined;
 
     const lines: string[] = [];
@@ -2050,31 +2162,49 @@ export class ContextEngine {
         lines.push('Never `hub_install` or auto-deploy agents/teams. If nothing durable → stop without tools.');
         break;
 
-      case 'deliberation':
-        lines.push('You are in **deliberation mode** — reviewing your mailbox before committing to work.');
+      case 'loop':
+        // ─── [LOOP CONTRACT] ────────────────────────────────────────────────
+        // 这条会话只做一件事：对**没有归属**的信号做决定。它不写代码、不写文案、
+        // 不做任务执行 —— 那些有自己的回合。它唯一的产物是一个决定。
+        lines.push('[LOOP CONTRACT]');
         lines.push('');
-        lines.push('**Purpose**: You have multiple pending items. Assess the full picture before deciding.');
+        lines.push('## 你是谁');
+        lines.push('你是这个 agent 的**决策面**，不是执行面。发到你这里的，全是**平台路由不了**的信号：没有实体归属、或者指向一条已经不存在的会话。换句话：能直接投递的事已经投完了，剩下的需要一个人看一看。');
         lines.push('');
-        lines.push('**What you can do**:');
-        lines.push('1. **Inspect queue**: `check_mailbox` — see your full mailbox at any time.');
-        lines.push('2. **Gather context**: `recall_activity`, `task_get`, `memory_search` — understand history.');
-        lines.push('3. **Manage queue**: `defer_mailbox_item` — postpone items; `drop_mailbox_item` — discard stale ones.');
-        lines.push('4. **Handle inline**: `notify_user`, `task_comment`, `agent_send_message` — handle trivial items now.');
-        lines.push('5. **Record awareness**: `notebook_upsert` — persist your situational assessment.');
+        lines.push('## 你每次醒来会看到什么');
+        lines.push('1. `check_mailbox` — 当前待决清单（每条带来源、时间、为什么没被自动路由）。');
+        lines.push('2. `[SLOTS]` — 你自己上一轮钉下的工作锚点（你在等什么、下一步是什么）。');
+        lines.push('3. 上一轮的台账（你做过什么决定、为什么）。');
         lines.push('');
-        lines.push('**Rules**:');
-        lines.push('- Human messages and comments are ALWAYS highest priority.');
-        lines.push('- Stale informational items (old heartbeats, status updates) should be dropped aggressively.');
-        lines.push('- **Batch related items**: Multiple items for the same task/requirement → handle with ONE context lookup + ONE reply. Mark all as inline_completed.');
+        lines.push('## 你可以做的六个动作（只有这六个）');
+        lines.push('| 动作 | 工具 | 什么时候用 |');
+        lines.push('|---|---|---|');
+        lines.push('| delegate | `agent_delegate_task` / `delegate_message` | 这件事该另一个 agent 做 |');
+        lines.push('| spawn | `spawn_subagent`（窄活）/ `task_create`（长活） | 这件事需要真实的执行回合 |');
+        lines.push('| defer | `defer_mailbox_item` | 现在不是时候，但以后是 |');
+        lines.push('| drop | `drop_mailbox_item`（**必须给理由**） | 过期、重复、无意义 |');
+        lines.push('| reply | 直接写文字 | 只需要一句话回答 |');
+        lines.push('| rest | `rest` | 没事可做，去睡 |');
         lines.push('');
-        lines.push('**⚠ 严格状态管理事件（任务执行 / 评审 / 需求·工作流收尾动作）保护**:');
-        lines.push('- `check_mailbox` 中标记为 `isStrictState: true` 的项是「正式任务执行/评审/收尾动作」，承载任务状态机与执行闭包。');
-        lines.push('- 你**只能**通过 `prioritize_mailbox_item` 调整它们的优先级顺序；**绝不** `defer_mailbox_item` / `drop_mailbox_item` / 将它们放入 `process_item_ids` 批处理 / `inline_completed_ids`。');
-        lines.push('- 它们会由正常出队路径**单独执行**（带完整 task 工具链），你在这里的分拣职责只是排序。');
+        lines.push('## 三条纪律');
+        lines.push('1. **不要自己干活**。你写代码、写文案、执行任务，就是把决策面当成执行面用——那样你就丢掉了全局视角，而这是你唯一的价值。');
+        lines.push('2. **每条待决项都必须有一条台账**：做了什么（六动作之一）+ 为什么。没有台账 = 这条信号消失了，而「静默消失」是这套系统里最贵的 bug。');
+        lines.push('3. **拿不准就 defer，不要猜**。 defer 有成本（它还会回来），猜错的成本更高（它会以错的形式被执行）。');
         lines.push('');
-        lines.push('- When done, call `complete_deliberation` with your decision.');
+        lines.push('## 什么时候去睡');
+        lines.push('待决清单空了 → `rest`。**不要轮询**。你可以声明两个唤醒条件：`wakeOn`（有新信号再叫我）与 `timeoutMs`（最迟多久后回来看看）。没有 `rest` 就结束回合，等于静默丢掉这段时间。');
         lines.push('');
-        lines.push('**Communication channel**: Your text output is NOT visible to anyone. Only tool calls have effect.');
+        lines.push('## 被「到期」叫醒时');
+        lines.push('你会收到一条 `[REST EXPIRED]` 系统信号：它表示你声明的等待窗口到期了，**不是**「没事了」。先 `check_mailbox` 再决定；如果仍然无事可做，**再 `rest` 一次**（可以换一个更长的 `timeoutMs`）。醒来后直接结束回合而不重新 `rest`，等于这个 agent 从此静默 —— 到期唤醒只负责把你叫醒，不负责替你重新声明等待。');
+        lines.push('');
+        lines.push('## 这条会话会活很久 —— 压缩纪律');
+        lines.push('Loop 会话是**永久会话**，它会一直长。历史被压缩时，能活下来的只有写进固定段的东西，所以：');
+        lines.push('1. **工作锚点必须 pin 到 `[SLOTS]`**，不能只写在对话里 —— 对话会被摘要，`[SLOTS]` 不会。');
+        lines.push('2. **决定必须落台账**（动作 + 理由）。台账是这条会话存在的证据；只存在于对话中的决定等同于没做过。');
+        lines.push('3. **不要在 Loop 里展开内容**。需要写代码/写文案就 `spawn` 一个执行回合，它有自己的上下文和自己的压缩曲线；把成品写进 Loop 只会把永久会话变成垃圾桶。');
+        lines.push('4. **压缩后先看 `[SLOTS]` 与台账**。它们是重建现场的唯一入口；不要因为读不到细节就重新看一遍全部历史（那会把刚释放的预算再烧掉）。');
+        lines.push('');
+        lines.push('**Communication channel**: 你的文字会写进这条会话（下一轮你自己能看到），但**不会主动通知任何人**。需要别人知道，就用工具。');
         break;
 
       case 'requirement_action':
@@ -2298,8 +2428,13 @@ export class ContextEngine {
      */
     cacheHitRate?: number;
     /**
-     * The turn's scenario. Used only to decide whether the context banner may
-     * name a lever (compaction) — scenarios that must read everything get none.
+     * The turn's scenario. Decides whether the context banner may name a lever
+     * (compaction) — scenarios that must read everything get none.
+     *
+     * 可选，因为 `prepareMessages` 也会在回合之外被调（post-turn 安全网、压缩预演）。
+     * 但**未传时不得静默当成 'chat'**：那会让 `memory_consolidation` / `distillation`
+     * 回合被建议去 compact，而那两场景恰恰不该动历史。未传 → 不注入可行动建议
+     * （宁可不提示，也不给一个用不了的杠杆）。
      */
     scenario?: AgentScenario;
   }): Promise<PreparedContext> {

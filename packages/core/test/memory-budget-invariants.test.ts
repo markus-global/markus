@@ -316,11 +316,26 @@ describe('H1 — 健康指标按"注入段"口径报告，不被观察缓冲虚�
     expect(h.percent).not.toBe(h.observationPercent);
   });
 
-  it('curated 确实接近上限时，percent 才升高', () => {
-    fs.writeFileSync(file(), '# Knowledge\n\n## big\n' + 'x'.repeat(14_000), 'utf8');
+  it('两个口径各自对着自己的上限：磁盘区域 ≠ 单轮注入（DR5）', () => {
+    // 合法形态：单段受 MEMORY_MD_SECTION_MAX_CHARS（3000）限制，区域靠多段累积。
+    // （旧版本这里写了「单段 14000 字符」，那是不可能出现的形态 —— 单段写不进去。）
+    const body = Array.from({ length: 3 }, (_, i) => `## s${i}\n` + 'x'.repeat(2_500)).join('\n\n');
+    fs.writeFileSync(file(), '# Knowledge\n\n' + body, 'utf8');
     const h = new MemoryStore(dir).getMemoryHealth();
-    expect(h.percent).toBeGreaterThanOrEqual(70);
+
+    // 区域口径：磁盘策展区 / 15000 —— 仅报告，不是注入预算
     expect(h.curatedCap).toBe(MEMORY_MD_CURATED_MAX_CHARS);
+    expect(h.curatedPercent).toBeGreaterThanOrEqual(45);
+
+    // 注入口径：本轮载荷 / 注入上限 —— 两个分母是不同的数，这正是 DR5 的修正
+    expect(h.injectionCapChars).toBeGreaterThan(0);
+    expect(h.injectionCapChars).toBeLessThan(h.curatedCap);
+    expect(h.injectionMeasured).toBe(false); // 未跑过打包 → 投影值
+    expect(h.injectionUsedPercent).toBeGreaterThan(h.curatedPercent);
+
+    // 同一个 store，两个数不是一回事（曾把区域值当成注入值报 111%）
+    expect(h.percent).toBe(h.injectionUsedPercent);
+    expect(h.percent).not.toBe(h.curatedPercent);
   });
 });
 

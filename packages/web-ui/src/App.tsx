@@ -4,6 +4,7 @@ import { setNativeBrowserPagePaintAllowed } from './lib/nativeBrowserOverlay.ts'
 import { isEphemeralAuthBrowserUrl } from './lib/browserAuthUrl.ts';
 import { useNavRingSwipe, ringStep, currentRingSub, requestRingSub } from './lib/navRing.ts';
 import { requestHistoryModal } from './lib/historyModal.ts';
+import { useAttentionBadge } from './lib/useAttentionBadge.ts';
 import { HomePage } from './pages/Home.tsx';
 
 const TeamPage = lazy(() => import('./pages/Team.tsx').then(m => ({ default: m.TeamPage })));
@@ -13,6 +14,9 @@ const AgentBuilder = lazy(() => import('./pages/AgentBuilder.tsx').then(m => ({ 
 const WorkPage = lazy(() => import('./pages/Work.tsx').then(m => ({ default: m.WorkPage })));
 const DeliverablesPage = lazy(() => import('./pages/Deliverables.tsx').then(m => ({ default: m.DeliverablesPage })));
 const SearchPage = lazy(() => import('./pages/Search.tsx').then(m => ({ default: m.SearchPage })));
+// C9-E · 只读事实审计页（owner/admin 深链；不在导航栏里）
+const AuditFactsPage = lazy(() => import('./pages/AuditFacts.tsx').then(m => ({ default: m.default })));
+import { canViewFactsAudit } from './pages/AuditFacts.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
@@ -90,9 +94,10 @@ function syncLocalePreferences(user: AuthUser): void {
 }
 
 function PageFallback({ docScroll }: { docScroll?: boolean } = {}) {
+  const { t } = useTranslation('common');
   return (
     <div className={`flex-1 flex items-center justify-center text-fg-tertiary text-sm animate-pulse ${docScroll ? 'min-h-[50dvh]' : ''}`}>
-      Loading...
+      {t('loading')}
     </div>
   );
 }
@@ -902,6 +907,9 @@ export function App() {
   }, [authUser]);
 
   const currentUser = authUser !== 'loading' && authUser !== null ? authUser : undefined;
+  // 概览徽标的全局驱动器：常驻 App 根部，与当前停在哪个页面无关，保证侧栏/底栏
+  // 角标实时更新（不再只有进概览页才重算）。徽标数字的唯一发布点，见 lib/useAttentionBadge。
+  useAttentionBadge(currentUser?.id);
   const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => {
     if (isMobile) {
       return {
@@ -912,6 +920,11 @@ export function App() {
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
         [PAGE.SEARCH]: <SearchPage />,
+        // C9-E · 只读事实审计：**只有 owner/admin 被挂载**。别的角色根本不创建这个元素，
+        // 所以页面不会发请求、不会渲染过滤器，也不会通过任何 UI 痕迹确认它存在。
+        ...(canViewFactsAudit(currentUser?.role)
+          ? { [PAGE.AUDIT]: <AuditFactsPage role={currentUser?.role} authUser={currentUser} /> }
+          : {}),
       };
     }
     return {
@@ -922,6 +935,9 @@ export function App() {
       [PAGE.BUILDER]: <AgentBuilder authUser={currentUser} />,
       [PAGE.WORK]: <WorkPage authUser={currentUser} />,
       [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
+      ...(canViewFactsAudit(currentUser?.role)
+        ? { [PAGE.AUDIT]: <AuditFactsPage role={currentUser?.role} authUser={currentUser} /> }
+        : {}),
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id, currentUser?.role, theme.mode, isMobile]);

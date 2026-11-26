@@ -78,6 +78,16 @@
      darker red ad hoc. Mono overrides it to white + black foreground. */
   --color-danger-solid: oklch(0.47 0.19 27);
 
+  /* Status TEXT on a tinted surface (verified / pending / rejected). Same rule as
+     the switch and selected tokens above: the hue that means "ok" belongs to the
+     THEME, not to the component. Before this, every new panel picked its own
+     green-500 / emerald-400, and a raw `dark:` variant silently followed the OS
+     instead of the app's theme class. One token per state per theme; mono is
+     brightness-only because it has no hue at all. */
+  --color-status-ok: oklch(0.78 0.15 155);
+  --color-status-warn: oklch(0.80 0.14 78);
+  --color-status-danger: oklch(0.70 0.17 25);
+
   --font-sans: 'SF Pro Display', 'SF Pro Text', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
@@ -116,6 +126,9 @@ html.light {
   --color-amber-600: oklch(0.47 0.12 62);
   --color-orange-500: oklch(0.48 0.14 55);
   --color-danger-solid: oklch(0.47 0.19 27);
+  --color-status-ok: oklch(0.47 0.14 155);
+  --color-status-warn: oklch(0.49 0.12 65);
+  --color-status-danger: oklch(0.47 0.19 27);
 }
 
 @media (prefers-color-scheme: light) {
@@ -147,6 +160,9 @@ html.light {
     --color-amber-600: oklch(0.47 0.12 62);
     --color-orange-500: oklch(0.48 0.14 55);
     --color-danger-solid: oklch(0.47 0.19 27);
+    --color-status-ok: oklch(0.47 0.14 155);
+    --color-status-warn: oklch(0.49 0.12 65);
+    --color-status-danger: oklch(0.47 0.19 27);
   }
 }
 
@@ -181,6 +197,9 @@ html.cyberpunk {
   --color-selected-border: oklch(0.48 0.16 330);
   --color-selected-fg: oklch(0.86 0.14 330);
   --color-on-brand: oklch(1 0 0);
+  --color-status-ok: oklch(0.82 0.20 150);
+  --color-status-warn: oklch(0.85 0.18 95);
+  --color-status-danger: oklch(0.72 0.22 25);
 }
 
 html.mono {
@@ -224,6 +243,11 @@ html.mono {
   /* Mono has no red: a danger action is a white fill with black text, exactly
      like every other solid in this theme. */
   --color-danger-solid: oklch(1 0 0);
+  /* Mono has no hue: state is carried by BRIGHTNESS (ok brightest, danger dimmest)
+     and always reinforced by the label text, never by colour alone. */
+  --color-status-ok: oklch(1 0 0);
+  --color-status-warn: oklch(0.78 0 0);
+  --color-status-danger: oklch(0.55 0 0);
 }
 
 html, body, #root {
@@ -568,10 +592,28 @@ html[data-anim-paused='true'] *::after {
 [data-anim-tick='6'] { --anim-pulse: 0.75;   --anim-bounce: -13%; --anim-spin: 270deg; --anim-shimmer: -71%;  --anim-border: 270deg; }
 [data-anim-tick='7'] { --anim-pulse: 0.875;  --anim-bounce: -25%; --anim-spin: 315deg; --anim-shimmer: -100%; --anim-border: 315deg; }
 
-.animate-pulse {
-  animation: none !important;
-  opacity: var(--anim-pulse, 1);
+/* 【2026-11-16】长串（全局路径 / 长 URL）必须能断行，否则溢出消息气泡的卡片。
+   Tailwind Typography 的 `.prose` 自带 `overflow-wrap: break-word` —— 它只在空格等
+   可断点换行，管不住无空格的长 token；而 utility `[overflow-wrap:anywhere]` 与
+   `.prose` **同特异性**，源序靠前就被盖掉（实测 computed 仍是 break-word）。
+   这里用**双类选择器**把特异性抬到 (0,2,0)，稳定盖过 `.prose`。 */
+/* 长串强制断行。两层：单类给普通容器用；双类专治 Tailwind Typography 的 `.prose`
+   （它自带 `overflow-wrap: break-word`，同特异性下 utility 会被盖掉，实测 computed 仍是
+   break-word → 全局路径 / 长 URL 照样溢出）。`anywhere` 只在一行装不下时才断，
+   不像 `break-all` 那样把正常词也切碎。 */
+.msg-break-anywhere {
+  overflow-wrap: anywhere;
 }
+.prose.msg-break-anywhere {
+  overflow-wrap: anywhere;
+}
+
+/* 【2026-11-16】`.animate-pulse` 的覆盖已删除：它把原生 CSS 动画换成
+   `opacity: var(--anim-pulse)`，由 250ms 的 JS tick 驱动。结果是每 250ms 向
+   聊天消息体（大量状态圆点在那里）写一次属性 → 消息体子树的 MutationObserver
+   触发 setState → React 重渲染整段 Markdown → 子节点被反复替换。
+   实测只屏蔽 animate-pulse 就能把 3 秒内的 childList 重建从 270 降到 0。
+   现在回归 Tailwind 原生 `.animate-pulse`（opacity 动画由合成器处理，免费）。 */
 .animate-bounce {
   animation: none !important;
   transform: translateY(var(--anim-bounce, 0%));

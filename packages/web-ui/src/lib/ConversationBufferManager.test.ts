@@ -375,19 +375,41 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
     const mgr = new ConversationBufferManager();
     mgr.currentConvKey = 'agt_x';
 
-    // Scenario: user clicks "new conversation" while 'sess_old' is still streaming.
-    // resetConv(key, NEW_CHAT_ID) must atomically reset AND re-pin so the running
-    // old stream routes to its own cache, not the fresh display buffer.
+    // Incident shape: the user is LOOKING at sess_old while it streams — view
+    // pinned, live mark registered, optimistic bubble in the buffer — then
+    // clicks "new conversation". The reset must re-pin the view WITHOUT
+    // destroying sess_old's buffer: its SSE is still attached and keeps writing.
+    mgr.setActiveSession('agt_x', 'sess_old');
+    mgr.beginStream('agt_x');
+    mgr.addStreamSession('agt_x', 'sess_old');
+    mgr.updateMessages('agt_x', () => [
+      msg('u_old', 'user', 'question', '2026-08-02T07:05:00.000Z'),
+      { ...msg('a_old', 'agent', 'partial', '2026-08-02T07:05:30.000Z'), isStreaming: true },
+    ], 'sess_old');
+
     mgr.resetConv('agt_x', ConversationBufferManager.NEW_CHAT_ID);
 
-    // Stale stream from the old session keeps pushing SSE events.
+    // The live buffer survived the reset (the old implementation deleted it —
+    // every later delta then found no bubble and was silently dropped).
+    expect(mgr.buffers.get('sess_old')!.map(m => m.id)).toEqual(['u_old', 'a_old']);
+
+    // The old session's SSE keeps pushing deltas: they must still land in its
+    // own bubble, not the fresh display buffer.
     const rOld = mgr.updateMessages(
       'agt_x',
-      () => [msg('a_old', 'agent', 'stale chunk', '2026-08-02T07:06:00.000Z')],
+      prev => prev.map(m => m.id === 'a_old' ? { ...m, text: m.text + ' chunk' } : m),
       'sess_old',
     );
     expect(rOld.displayChanged).toBe(false);
     expect(mgr.getMessages('agt_x')).toBeUndefined();
+    expect(mgr.buffers.get('sess_old')!.find(m => m.id === 'a_old')!.text).toBe('partial chunk');
+
+    // Switching back to sess_old restores the live bubble — no page refresh needed.
+    const restored = mgr.restoreFromCache('agt_x', 'sess_old');
+    expect(restored!.map(m => m.id)).toEqual(['u_old', 'a_old']);
+    expect(restored!.find(m => m.id === 'a_old')!.isStreaming).toBe(true);
+    // Re-pin the placeholder for the remaining new-chat assertions below.
+    mgr.resetConv('agt_x', ConversationBufferManager.NEW_CHAT_ID);
 
     // Fresh new-chat optimistic message still lands in the visible buffer.
     const rNew = mgr.updateMessages(
@@ -583,7 +605,7 @@ describe('ConversationBufferManager window bounds（窗口边界必须与窗口�
     });
   });
 
-  it('resetConv 连带丢掉被重置 buffer 的边界（事实与内容同生命周期）', () => {
+  it('resetConv 不动真实会话的 buffer 与边界（视图重置 ≠ 销毁会话状态）', () => {
     const mgr = new ConversationBufferManager();
     mgr.currentConvKey = 'agt';
     mgr.setActiveSession('agt', 'sess_a');
@@ -592,7 +614,40 @@ describe('ConversationBufferManager window bounds（窗口边界必须与窗口�
 
     mgr.resetConv('agt', 'sess_b');
 
-    expect(mgr.getWindowBounds('sess_a')).toEqual({ hasMore: false, oldestCursor: null });
+    // buffer 属于会话生命周期，不属于视图指针：切走/新建都不得销毁它，
+    // 否则在途流的增量会写进虚空（并发 session 气泡丢失事故的根因）。
+    expect(mgr.buffers.get('sess_a')!.map(m => m.id)).toEqual(['m1']);
+    expect(mgr.getWindowBounds('sess_a')).toEqual({ hasMore: true, oldestCursor: 'c1' });
+  });
+
+  it('LRU 驱逐不得销毁在途流的 buffer（后台 tab 的流和前台一样活）', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt';
+    mgr.beginStream('agt');
+    mgr.addStreamSession('agt', 'sess_live');
+    mgr.updateMessages('agt', () => [
+      { ...msg('a_live', 'agent', 'streaming...'), isStreaming: true },
+    ], 'sess_live');
+    // Move the view to another session, then churn past the buffer cap.
+    mgr.restoreFromCache('agt', 'sess_viewed');
+    for (let i = 0; i < ConversationBufferManager.MAX_BUFFERS + 5; i++) {
+      mgr.updateMessages('agt', () => [msg(`m${i}`, 'user', 'x')], `sess_${i}`);
+    }
+    expect(mgr.buffers.get('sess_live')!.map(m => m.id)).toEqual(['a_live']);
+  });
+
+  it('resetConv 只清非在途的占位草稿；在途占位回合不得被销毁', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt';
+    // Stale draft from an aborted turn → cleared on reset.
+    mgr.updateMessages('agt', () => [msg('draft', 'user', 'aborted draft')], ConversationBufferManager.NEW_CHAT_ID);
+    mgr.resetConv('agt', ConversationBufferManager.NEW_CHAT_ID);
+    expect(mgr.buffers.get(ConversationBufferManager.NEW_CHAT_ID)).toBeUndefined();
+    // In-flight placeholder turn (pre-registration: phase flipped, mark not landed).
+    mgr.beginStream('agt');
+    mgr.updateMessages('agt', () => [msg('u_new', 'user', 'sending')], ConversationBufferManager.NEW_CHAT_ID);
+    mgr.resetConv('agt', ConversationBufferManager.NEW_CHAT_ID);
+    expect(mgr.buffers.get(ConversationBufferManager.NEW_CHAT_ID)!.map(m => m.id)).toEqual(['u_new']);
   });
 
   it('buffer 被淘汰时边界一起淘汰（不留下悬空的窗口边界）', () => {

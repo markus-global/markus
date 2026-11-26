@@ -17,11 +17,13 @@
  * 缺失字段一律**省略**，绝不编造占位值 —— 一份写着 "provider: unknown" 的
  * 反馈比没有这一行更坏，它会让人去查一个不存在的东西。
  *
- * ── 为什么用中文标签 ────────────────────────────────────────────────────────
- * 这不是给最终用户读的文案，而是给处理反馈的人看的一次性诊断快照：界面文案
- * 跟着 i18n 走，这份快照不跟（否则英文用户提交上来的东西，处理人还得反向
- * 翻译字段名）。这里刻意不接 i18n，也不进 locales/*。
+ * ── 字段键为什么是 ASCII，提示语为什么走 i18n ─────────────────────────────
+ * 字段键（`raw_error:` / `time:` / `session_id:` …）是机器可读的协议名，不是文案：
+ * 同一条反馈在任何界面语言下都长成同一组键，处理人永远不用反向翻译，`grep`
+ * 也一命即中。给人读的引导语则必须走 i18n —— 它们落在用户会读、会改、会提交的
+ * 文本框里，`i18n/noHardcodedCopy` 守卫正是按这条契约判定源文件的。
  */
+import i18n from '../i18n/index.ts';
 import type { ChatMsg } from '../pages/ChatHelpers.ts';
 
 /** 反馈正文的长度上限，与 FeedbackModal 的 textarea maxLength 一致。 */
@@ -117,25 +119,30 @@ export function buildErrorFeedbackDraft(src: ErrorFeedbackSource): ErrorFeedback
   const providerModel = extractProviderModel(`${raw}\n${friendly}`);
   const when = src.now ?? new Date();
 
-  const lines: string[] = ['—— 以下为自动填入的错误诊断，可直接修改 ——'];
+  const lines: string[] = [i18n.t('common:feedback.draft.autoFilled')];
   // 「原文」这个词必须名副其实：拿不到原文时说出来，别让美化后的文案冒充。
-  lines.push(`原始错误：${raw ? clip(raw) : '（该气泡没有保留错误原文，只有下面的界面提示）'}`);
-  if (friendly && friendly !== raw) lines.push(`界面提示：${clip(friendly)}`);
-  if (providerModel) lines.push(`provider:model：${providerModel}`);
-  lines.push(`时间：${localIsoString(when)}`);
-  if (src.appVersion) lines.push(`客户端版本：${src.appVersion}`);
+  lines.push(`raw_error: ${raw ? clip(raw) : i18n.t('common:feedback.draft.noRawError')}`);
+  if (friendly && friendly !== raw) lines.push(`friendly_error: ${clip(friendly)}`);
+  if (providerModel) lines.push(`provider:model: ${providerModel}`);
+  lines.push(`time: ${localIsoString(when)}`);
+  if (src.appVersion) lines.push(`app_version: ${src.appVersion}`);
 
   const agent = (src.agentName ?? '').trim();
   const agentId = (src.agentId ?? '').trim();
-  const who = agent && agentId ? `${agent}（${agentId}）` : agent || agentId;
-  if (who) lines.push(`agent：${who}`);
-  if (src.sessionId) lines.push(`会话 ID：${src.sessionId}`);
+  const who = agent && agentId ? `${agent} (${agentId})` : agent || agentId;
+  if (who) lines.push(`agent: ${who}`);
+  if (src.sessionId) lines.push(`session_id: ${src.sessionId}`);
 
   lines.push('');
-  lines.push('我当时的操作 / 期望的结果：（在这里补充）');
+  lines.push(i18n.t('common:feedback.draft.myAction'));
 
-  const reason = firstLine(friendly || raw, 60) || '未知错误';
-  const title = clip(`聊天报错：${providerModel ? `${providerModel} · ` : ''}${reason}`, MAX_TITLE);
+  const reason = firstLine(friendly || raw, 60) || i18n.t('common:feedback.draft.unknownError');
+  const title = clip(
+    i18n.t('common:feedback.draft.title', {
+      reason: `${providerModel ? `${providerModel} · ` : ''}${reason}`,
+    }),
+    MAX_TITLE,
+  );
 
   return { title, body: clip(lines.join('\n')) };
 }

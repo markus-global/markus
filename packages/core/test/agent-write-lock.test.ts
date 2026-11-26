@@ -36,9 +36,19 @@ function makeMockRouter(): LLMRouter {
   } as unknown as LLMRouter;
 }
 
-/** 观测工具：记录当前正在执行的调用数峰值。 */
-function makeObservedTool(name: string, opts: { throwOn?: number; alwaysThrow?: boolean; active: { max: number } }): AgentToolHandler {
-  let running = 0;
+/**
+ * 观测工具：记录当前正在执行的调用数峰值。
+ *
+ * 两个陷阱（2026-11-22 写 shell 锁回归时实测踩过）：
+ * 1. 默认计数器是**每实例**的 —— 两个不同工具共享 `active` 也观测不到跨工具
+ *    重叠（各自 running 峰值都是 1）。跨工具并发断言必须传同一个 `sharedRunning`。
+ * 2. shell_execute / file_write / file_edit 有**幂等缓存**（tool-hooks.ts，同名同参
+ *    5 分钟内直接返回缓存结果、不执行 handler）—— 锁测试的每次调用参数必须唯一，
+ *    否则观测到的是幂等去重，不是锁串行（假绿）。
+ */
+function makeObservedTool(name: string, opts: { throwOn?: number; alwaysThrow?: boolean; active: { max: number }; sharedRunning?: { n: number } }): AgentToolHandler {
+  const local = { n: 0 };
+  const counter = opts.sharedRunning ?? local;
   const records: Array<{ id: number; enter: number; exit: number }> = [];
   let seq = 0;
   return {
@@ -47,18 +57,18 @@ function makeObservedTool(name: string, opts: { throwOn?: number; alwaysThrow?: 
     inputSchema: { type: 'object', properties: {} },
     async execute() {
       const id = ++seq;
-      running += 1;
-      opts.active.max = Math.max(opts.active.max, running);
+      counter.n += 1;
+      opts.active.max = Math.max(opts.active.max, counter.n);
       const enter = Date.now();
       const self = { id, enter, exit: 0 };
       records.push(self);
       if (opts.alwaysThrow || opts.throwOn === id) {
-        running -= 1;
+        counter.n -= 1;
         throw new Error(`boom-${id}`);
       }
       await new Promise(r => setTimeout(r, SLEEP_MS));
       self.exit = Date.now();
-      running -= 1;
+      counter.n -= 1;
       return JSON.stringify({ status: 'ok', id, name });
     },
     _records: records,
@@ -167,8 +177,8 @@ describe('P2-A Agent 工具写互斥', () => {
       'background_exec', 'process', 'create_project', 'update_project', 'delete_project',
       'workflow_run', 'workflow_cancel', 'team_update', 'agent_start', 'agent_update',
       'generate_image', 'office_generate', 'task_note', 'task_assign',
-      // 共享可变状态：session 切会话、complete_deliberation 关信箱
-      'session', 'complete_deliberation']) {
+      // 共享可变状态：session 切会话
+      'session']) {
       expect(cls.isWriteTool(w), `${w} 应判为写`).toBe(true);
     }
     // 读 / 纯计算（即使带 task_/workflow_ 前缀）
@@ -258,7 +268,8 @@ describe('P2-A Agent 工具写互斥', () => {
       resourceLocks: { withLock: <T>(req: { domain: string }, fn: () => Promise<T>) => Promise<T> };
     };
 
-    // 复现现场：同一 Agent 的另一个 worker 正在跑 shell_execute（domain '*' 全局独占）。
+    // 复现现场：某调用方正持有 '*' 全局独占（如 package_install；shell_execute
+    // 已改按实际资源取锁，不再取 '*' —— 但任何 '*' 持有者都不得冻结纯内存元工具）。
     let release!: () => void;
     const held = new Promise<void>(r => { release = r; });
     const holder = a.resourceLocks.withLock({ domain: '*' }, () => held);
@@ -315,7 +326,7 @@ describe('P2-A Agent 工具写互斥', () => {
       'generate_image', 'generate_video', 'office_generate', 'text_to_speech',
       'exec_terminal', 'write_terminal', 'new_terminal', 'close_terminal',
       // discover_tools 曾在此清单 —— 已改判免锁（纯内存元工具，见 TOOL_LOCK_FREE）
-      'session', 'complete_deliberation',
+      'session',
     ];
     for (const name of MUST_BE_REGISTERED) {
       expect(cls.WRITE_TOOL_NAMES.has(name), `${name} 必须登记资源域`).toBe(true);
@@ -382,27 +393,148 @@ describe('P2-A Agent 工具写互斥', () => {
     expect(active.max).toBe(1);
   });
 
-  it('shell_execute（全局域）与 file_write 互斥 —— 不能边跑 shell 边写文件', async () => {
-    const fileActive = { max: 0 };
-    const shellActive = { max: 0 };
+  // ── 2026-11-22 等锁事故回归：互斥按「实际触及的资源」keyed，不是「能力未知」。
+  // 现场：worker A `sleep 210` 等 CI 持 '*' → worker B 的 session rename 等锁
+  // 151.9s、git diff 等锁 148.6s（真实执行仅 10ms/93ms）。
+
+  it('纯读/纯等待的 shell_execute 不再冻结其他 session 的写工具（事故回归）', async () => {
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>, onOutput?: unknown, sessionId?: string) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    a.tools.set('shell_execute', makeObservedTool('shell_execute', { active: { max: 0 } }));
+    a.tools.set('file_write', makeObservedTool('file_write', { active: { max: 0 } }));
+    a.tools.set('session', makeObservedTool('session', { active: { max: 0 } }));
+
+    const start = Date.now();
+    await Promise.all([
+      a.executeTool(makeToolCall('shell_execute', { command: 'sleep 0.12' }), undefined, 'sess_A'),
+      a.executeTool(makeToolCall('file_write', { path: '/tmp/c.txt', content: 'c' }), undefined, 'sess_B'),
+      a.executeTool(makeToolCall('session', { operation: 'rename', title: 'x' }), undefined, 'sess_B'),
+    ]);
+    const elapsed = Date.now() - start;
+    // 并行 ≈ 单段耗时；若仍全局独占 = 三段相加
+    expect(elapsed, 'shell 纯等待仍在冻结其他写工具').toBeLessThan(SLEEP_MS * 2 - 30);
+  });
+
+  it('shell_execute 写同一文件时与 file_write 仍互斥（静态写目标解析）', async () => {
+    const shared = { max: 0 };
+    const gate = { n: 0 };
     const agent = createTestAgent([]);
     const a = agent as unknown as {
       executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
       tools: Map<string, AgentToolHandler>;
     };
-    a.tools.set('file_write', makeObservedTool('file_write', { active: fileActive }));
-    a.tools.set('shell_execute', makeObservedTool('shell_execute', { active: shellActive }));
+    a.tools.set('file_write', makeObservedTool('file_write', { active: shared, sharedRunning: gate }));
+    a.tools.set('shell_execute', makeObservedTool('shell_execute', { active: shared, sharedRunning: gate }));
 
-    const order: string[] = [];
     await Promise.all([
-      a.executeTool(makeToolCall('file_write', { path: '/tmp/c.txt', content: 'c' })).then(() => order.push('file')),
-      a.executeTool(makeToolCall('shell_execute', { command: 'true' })).then(() => order.push('shell')),
+      a.executeTool(makeToolCall('file_write', { path: '/tmp/same.txt', content: 'a' })),
+      a.executeTool(makeToolCall('shell_execute', { command: 'echo hi > /tmp/same.txt' })),
     ]);
+    expect(shared.max).toBe(1);
+  });
 
-    // 全局域与任何域互斥 → 二者绝不重叠
-    expect(fileActive.max).toBe(1);
-    expect(shellActive.max).toBe(1);
-    expect(order).toHaveLength(2);
+  it('shell_execute 写不同文件时与 file_write 并行（不再一刀切）', async () => {
+    const shared = { max: 0 };
+    const gate = { n: 0 };
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    a.tools.set('file_write', makeObservedTool('file_write', { active: shared, sharedRunning: gate }));
+    a.tools.set('shell_execute', makeObservedTool('shell_execute', { active: shared, sharedRunning: gate }));
+
+    await Promise.all([
+      a.executeTool(makeToolCall('file_write', { path: '/tmp/same.txt', content: 'a' })),
+      a.executeTool(makeToolCall('shell_execute', { command: 'echo hi > /tmp/other.txt' })),
+    ]);
+    expect(shared.max).toBe(2);
+  });
+
+  it('不同执行上下文的 shell_execute 并行（默认 shell 按会话隔离）', async () => {
+    const shared = { max: 0 };
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>, onOutput?: unknown, sessionId?: string) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    a.tools.set('shell_execute', makeObservedTool('shell_execute', { active: shared }));
+
+    await Promise.all([
+      a.executeTool(makeToolCall('shell_execute', { command: 'true # ctx-a' }), undefined, 'sess_A'),
+      a.executeTool(makeToolCall('shell_execute', { command: 'true # ctx-b' }), undefined, 'sess_B'),
+    ]);
+    expect(shared.max).toBe(2);
+  });
+
+  it('同一执行上下文的 shell_execute 串行（同一个 shell 进程物理串行）', async () => {
+    const shared = { max: 0 };
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>, onOutput?: unknown, sessionId?: string) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    a.tools.set('shell_execute', makeObservedTool('shell_execute', { active: shared }));
+
+    // 命令参数必须互异：同参会被幂等缓存直接返回，观测到的就不是锁串行了。
+    await Promise.all([
+      a.executeTool(makeToolCall('shell_execute', { command: 'true # same-ctx-a' }), undefined, 'sess_A'),
+      a.executeTool(makeToolCall('shell_execute', { command: 'true # same-ctx-b' }), undefined, 'sess_A'),
+    ]);
+    expect(shared.max).toBe(1);
+  });
+
+  it('显式 session_id：同名串行、异名并行', async () => {
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    const same = { max: 0 };
+    a.tools.set('shell_execute', makeObservedTool('shell_execute', { active: same }));
+    await Promise.all([
+      a.executeTool(makeToolCall('shell_execute', { command: 'true # one-a', session_id: 'one' })),
+      a.executeTool(makeToolCall('shell_execute', { command: 'true # one-b', session_id: 'one' })),
+    ]);
+    expect(same.max).toBe(1);
+
+    const diff = { max: 0 };
+    a.tools.set('shell_execute', makeObservedTool('shell_execute', { active: diff }));
+    await Promise.all([
+      a.executeTool(makeToolCall('shell_execute', { command: 'true # one-c', session_id: 'one' })),
+      a.executeTool(makeToolCall('shell_execute', { command: 'true # two-a', session_id: 'two' })),
+    ]);
+    expect(diff.max).toBe(2);
+  });
+
+  it('apply_patch 按 patch 文件取锁：同文件与 file_write 互斥，不再全局独占', async () => {
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    const same = { max: 0 };
+    const gate1 = { n: 0 };
+    a.tools.set('apply_patch', makeObservedTool('apply_patch', { active: same, sharedRunning: gate1 }));
+    a.tools.set('file_write', makeObservedTool('file_write', { active: same, sharedRunning: gate1 }));
+    await Promise.all([
+      a.executeTool(makeToolCall('apply_patch', { patches: [{ file: '/tmp/p.txt', action: 'create', content: 'x' }] })),
+      a.executeTool(makeToolCall('file_write', { path: '/tmp/p.txt', content: 'y' })),
+    ]);
+    expect(same.max).toBe(1);
+
+    const diff = { max: 0 };
+    const gate2 = { n: 0 };
+    a.tools.set('apply_patch', makeObservedTool('apply_patch', { active: diff, sharedRunning: gate2 }));
+    a.tools.set('file_write', makeObservedTool('file_write', { active: diff, sharedRunning: gate2 }));
+    await Promise.all([
+      a.executeTool(makeToolCall('apply_patch', { patches: [{ file: '/tmp/p.txt', action: 'create', content: 'x' }] })),
+      a.executeTool(makeToolCall('file_write', { path: '/tmp/q.txt', content: 'y' })),
+    ]);
+    expect(diff.max).toBe(2);
   });
 
   it('不同 task_id 的 task_update 可并行（实体级细分）', async () => {

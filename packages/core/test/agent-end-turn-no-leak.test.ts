@@ -96,13 +96,18 @@ type PrivateAgent = Agent & {
 };
 
 describe('end_turn signal must not leak across streaming turns', () => {
-  it('runs the tool loop in the turn AFTER a turn that ended via end_turn', async () => {
+  // 2026-11-18 语义更新：流式回合 = 人类对话，`end_turn` 在那里**被拒绝**（Owner 要求：
+  // human chat 只能以正常 stop 结束）。所以本用例改为钉新契约 —— 拒绝之后：
+  //   ① 回合不得被标成「已结束」（否则 reply 清空 → 用户看到空白）；
+  //   ② 该回合必须继续跑完工具循环，给出可见文字；
+  //   ③ 下一回合不被上一回合的信号污染（原不变量，仍由工作区事实保证）。
+  it('人类流式回合拒绝 end_turn：工具循环继续、reply 非空、不跨回合泄漏', async () => {
     const { agent, chatStream } = makeStreamAgent([
-      // Turn 1: model calls end_turn — turn ends, delivers nothing (documented).
+      // Turn 1: model calls end_turn — refused in a human-facing turn.
       { content: '', finishReason: 'tool_use', toolCalls: [{ id: 't1', name: 'end_turn', arguments: { reason: 'done' } }], usage: { inputTokens: 10, outputTokens: 5 } },
-      // Turn 2: model requests a real tool — the loop MUST run it.
+      // Turn 1 continues: a real tool runs.
       { content: '', finishReason: 'tool_use', toolCalls: [{ id: 't2', name: 'list_directory', arguments: { path: tempDir } }], usage: { inputTokens: 10, outputTokens: 5 } },
-      // Turn 2 continues: final text reply.
+      // Turn 1 final text.
       { content: 'work is done', finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 5 } },
     ]);
 
@@ -110,17 +115,13 @@ describe('end_turn signal must not leak across streaming turns', () => {
     const onEvent = () => {};
 
     const reply1 = await a.handleMessageStream('turn one', onEvent);
-    // end_turn turn delivers nothing by design. The flag still describes THIS
-    // turn until the next turn starts (see ensureTurnCompleted doc) — the
-    // behavioral contract under test is that the NEXT turn's loop runs.
-    expect(reply1).toBe('');
+    // ① end_turn 被拒 → 不能静默收尾；② 循环继续并给出可见文字。
+    expect(reply1).toBe('work is done');
+    expect(chatStream).toHaveBeenCalledTimes(3);
 
     const reply2 = await a.handleMessageStream('turn two', onEvent);
-    // Per-turn reset fired at handleMessageStream entry: flag must be cleared.
+    // ③ 上一回合的信号不得污染本回合（end_turn 本身也不应该被置真）。
     expect((agent as unknown as { endTurnRequested: boolean }).endTurnRequested).toBe(false);
-    // The tool loop must have continued: a third LLM call happened and the final
-    // reply is the model's text, not the empty tool-call response content.
-    expect(chatStream).toHaveBeenCalledTimes(3);
-    expect(reply2).toBe('work is done');
+    expect(reply2).toBeTruthy();
   });
 });

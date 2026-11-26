@@ -5,6 +5,7 @@ import type { RoleTemplate } from '@markus/shared';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { startSettled } from './helpers/agent-start.js';
 
 /**
  * 重构 3 回归测试：core 状态机收敛为单一派生函数 transitionStatus。
@@ -38,7 +39,11 @@ function makeMockRouter(chatFn?: (...args: unknown[]) => Promise<unknown>): LLMR
 
   return {
     chat,
-    chatStream: vi.fn(),
+    // `start()` wakes the Loop, so a real turn now runs through the STREAMING
+    // path. A bare `vi.fn()` returned undefined there and wedged the turn —
+    // the fixture, not the product, was incomplete. Keep both paths on one
+    // scripted response so they cannot drift apart.
+    chatStream: vi.fn(async (...args: unknown[]) => chat(...args)),
     getActiveModelContextWindow: () => 200000,
     getActiveModelName: () => 'test-model',
     getActiveModelMaxOutput: () => 8000,
@@ -88,13 +93,14 @@ describe('单一状态派生函数 transitionStatus — 生命周期与 Normal �
   it('start → reset：无条件回 idle（从离线/错误恢复）', async () => {
     const agent = createAgent();
     expect(agent.getState().status).toBe('offline'); // 构造后默认 offline
-    await agent.start();
+    // start() 也会唤醒 Loop，所以 idle 是**收敛后**的状态，不是瞬时快照。
+    await startSettled(agent);
     expect(agent.getState().status).toBe('idle');
   });
 
   it('stop → offline：无条件落地', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     await agent.stop('maintenance');
     expect(agent.getState().status).toBe('offline');
     expect(agent.getStopReason()).toBe('maintenance');
@@ -102,7 +108,7 @@ describe('单一状态派生函数 transitionStatus — 生命周期与 Normal �
 
   it('working 意图：从 idle 进入 working，幂等不抖动', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     ts(agent, { to: 'working' });
     expect(agent.getState().status).toBe('working');
     ts(agent, { to: 'working' });
@@ -111,7 +117,7 @@ describe('单一状态派生函数 transitionStatus — 生命周期与 Normal �
 
   it('error 意图在无活跃任务时落地并记录 lastError', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     ts(agent, { to: 'error', message: 'boom' });
     expect(agent.getState().status).toBe('error');
     expect(agent.getState().lastError).toBe('boom');
@@ -120,7 +126,7 @@ describe('单一状态派生函数 transitionStatus — 生命周期与 Normal �
 
   it('working 意图可从 error 恢复并清空 lastError（Normal 转换）', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     ts(agent, { to: 'error', message: 'boom' });
     ts(agent, { to: 'working' });
     expect(agent.getState().status).toBe('working');
@@ -132,7 +138,7 @@ describe('单一状态派生函数 transitionStatus — 生命周期与 Normal �
 describe('单一状态派生函数 transitionStatus — 竞态覆盖防护（需求核心）', () => {
   it('error 粘性：error 后并行的 idle 意图不得覆盖错误状态', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     ts(agent, { to: 'working' });
     // 模拟严格并行：任务 A 失败 → error；任务 B 成功回来请求 idle（后到）
     ts(agent, { to: 'error', message: 'task A failed' });
@@ -144,7 +150,7 @@ describe('单一状态派生函数 transitionStatus — 竞态覆盖防护（需
 
   it('idle 意图在 error 粘性下只能通过 reset / 新 working 恢复', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     ts(agent, { to: 'error', message: 'boom' });
     ts(agent, { to: 'idle' });
     expect(agent.getState().status).toBe('error'); // 粘性拒绝
@@ -156,7 +162,7 @@ describe('单一状态派生函数 transitionStatus — 竞态覆盖防护（需
 
   it('working 中有并行活动时 idle 意图被拒（聚合状态守卫）', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     ts(agent, { to: 'working' });
     // 模拟仍有活跃任务（聚合非空闲）
     (agent as unknown as { activeTasks: Set<string> }).activeTasks.add('task-1');
@@ -170,7 +176,7 @@ describe('单一状态派生函数 transitionStatus — 竞态覆盖防护（需
 
   it('并发模式：仍有 worker 忙碌时 idle 意图被拒，全部空闲后落地', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     ts(agent, { to: 'working' });
     // 模拟并发 worker 聚合状态为忙碌
     (agent as unknown as { attentionController: unknown }).attentionController = {
@@ -190,7 +196,7 @@ describe('单一状态派生函数 transitionStatus — 竞态覆盖防护（需
 
   it('force idle：仲裁兜底可强制越过聚合守卫与 error 粘性', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     ts(agent, { to: 'working' });
     (agent as unknown as { activeTasks: Set<string> }).activeTasks.add('stuck');
     ts(agent, { to: 'idle' }, { force: true });
@@ -201,7 +207,7 @@ describe('单一状态派生函数 transitionStatus — 竞态覆盖防护（需
 
   it('error 意图在仍有活跃任务时不落地（部分失败不污染全局状态）', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     ts(agent, { to: 'working' });
     (agent as unknown as { activeTasks: Set<string> }).activeTasks.add('other-task');
     ts(agent, { to: 'error', message: 'partial failure' });
@@ -213,7 +219,7 @@ describe('单一状态派生函数 transitionStatus — 竞态覆盖防护（需
 describe('状态机收敛 — 心跳/仲裁路径统一入口', () => {
   it('reconcileToIdle（保守仲裁兜底）走 reset 派生函数：从 error 回收 idle', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     ts(agent, { to: 'error', message: 'stale error' });
     agent.reconcileToIdle();
     // 无 stale 活动可清时 cleared=false，但状态回收仍走 reset 派生函数
@@ -223,7 +229,7 @@ describe('状态机收敛 — 心跳/仲裁路径统一入口', () => {
 
   it('handleMessage 正常完成 → idle（聚合空闲落地）', async () => {
     const agent = createAgent();
-    await agent.start();
+    await startSettled(agent);
     const reply = await agent.handleMessage('hello');
     expect(reply).toContain('Hello');
     expect(agent.getState().status).toBe('idle');

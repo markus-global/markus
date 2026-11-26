@@ -86,13 +86,17 @@ describe('installEgress — switching the proxy OFF must restore the direct disp
     expect(status.policy.source).toBe('config');
     expect(status.installed).toBe(true);
     expect(dispatchers).toHaveLength(1);
-    expect(dispatchers[0]).toBeInstanceOf(FakeProxyAgent);
+    // What "a proxy is installed" means to the wire is that the global dispatcher
+    // is NOT the direct agent. The concrete object is the policy dispatcher, which
+    // wraps the proxied agent so NO_PROXY hosts still go direct (see egress.test);
+    // asserting on its constructor would silently re-pin the pre-policy shape.
+    expect(dispatchers[0]).not.toBeInstanceOf(FakeAgent);
   });
 
   it('replaces it with a direct Agent when the proxy is turned off (no restart)', async () => {
     writeNetwork({ proxy: 'http://127.0.0.1:7890' });
     await mod.installEgress({ force: true });
-    expect(dispatchers[0]).toBeInstanceOf(FakeProxyAgent);
+    expect(dispatchers[0]).not.toBeInstanceOf(FakeAgent);
 
     // The user turns the proxy off in Settings — exactly the config the reported
     // machine has: `network.proxyEnabled: false`, no proxy URL.

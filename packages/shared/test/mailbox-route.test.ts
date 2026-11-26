@@ -10,15 +10,23 @@ import {
   MAILBOX_TYPE_REGISTRY,
   isStrictStateItem,
   resolveEntityKeys,
+  resolveMailboxDestination,
   type MailboxItemType,
   type MailboxPayload,
 } from '../src/types/mailbox.js';
 
-function lite(sourceType: MailboxItemType, payload: Partial<MailboxPayload> = {}, metadata?: Record<string, unknown>) {
+function lite(
+  sourceType: MailboxItemType,
+  payload: Partial<MailboxPayload> = {},
+  metadata?: Record<string, unknown>,
+  structured: { intent?: 'deliver' | 'trigger_execution' | 'action_required'; round?: number } = {},
+) {
   return {
     sourceType,
     payload: { summary: '', content: '', ...payload } as MailboxPayload,
     metadata,
+    ...(structured.intent ? { envelope: { intent: structured.intent } } : {}),
+    ...(structured.round !== undefined ? { round: structured.round } : {}),
   };
 }
 
@@ -37,13 +45,18 @@ const GOLDEN: Record<MailboxItemType, {
   mention:              { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'user', 'conversation', 'system'], strictState: false, triageStaleDrop: false },
   session_reply:        { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'conversation', 'system'], strictState: false, triageStaleDrop: false },
   task_status_update:   { priority: 1, invokesLLM: false, affinity: ['task', 'system'], strictState: false, triageStaleDrop: true },
-  a2a_message:          { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'channel', 'system'], strictState: false, triageStaleDrop: false },
+  a2a_message:          { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'workunit', 'system'], strictState: false, triageStaleDrop: false },
   review_request:       { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], strictState: true,  triageStaleDrop: false },
   requirement_comment:  { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], strictState: false, triageStaleDrop: false },
   requirement_update:   { priority: 1, invokesLLM: false, affinity: ['requirement', 'system'], strictState: false, triageStaleDrop: false },
   daily_report:         { priority: 2, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: true },
   heartbeat:            { priority: 3, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: true },
-  memory_consolidation: { priority: 4, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: true },
+  // C8-A: the one row that deliberately diverges from the legacy readers.
+  // `memory_consolidation` is the dream run — background work on the sleep path,
+  // not attention noise. Age expiry used to discard it silently, losing the run
+  // with no trace. Affinity stays `['system']` (that is C8-C); only the disposal
+  // fact changes, and `TRIAGE_STALE_DROP_TYPES` is now derived from this flag.
+  memory_consolidation: { priority: 4, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: false },
   workflow_update:      { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], strictState: false, triageStaleDrop: false },
   callback_result:      { priority: 1, invokesLLM: true,  affinity: ['conversation', 'system'], strictState: false, triageStaleDrop: true },
 };
@@ -62,45 +75,54 @@ describe('routeMailboxItem — golden decision table', () => {
   }
 });
 
-describe('routeMailboxItem — strictState predicates', () => {
-  it('triggerExecution is authoritative regardless of type', () => {
-    const r = routeMailboxItem(lite('task_status_update', { extra: { triggerExecution: true } }));
+describe('routeMailboxItem — 权威态只读结构字段（第六刀 C2）', () => {
+  it('intent=trigger_execution 与类型无关地构成权威态', () => {
+    const r = routeMailboxItem(lite('task_status_update', {}, undefined, { intent: 'trigger_execution' }));
     expect(r.strictState).toBe(true);
   });
 
-  it('review_request is authoritative', () => {
+  it('review_request 注册表内置权威态', () => {
     expect(routeMailboxItem(lite('review_request')).strictState).toBe(true);
   });
 
-  it('requirement_update is authoritative only with actionRequired', () => {
-    expect(routeMailboxItem(lite('requirement_update', { extra: { actionRequired: true } })).strictState).toBe(true);
+  it('intent=action_required 只对声明了 actionRequiredStrict 的类型成立', () => {
+    expect(routeMailboxItem(lite('requirement_update', {}, undefined, { intent: 'action_required' })).strictState).toBe(true);
+    expect(routeMailboxItem(lite('workflow_update', {}, undefined, { intent: 'action_required' })).strictState).toBe(true);
+    // 心跳可能带动作（不得折叠），但它**不是**权威态——否则会占满并发锁。
+    expect(routeMailboxItem(lite('heartbeat', {}, undefined, { intent: 'action_required' })).strictState).toBe(false);
     expect(routeMailboxItem(lite('requirement_update')).strictState).toBe(false);
   });
 
-  it('workflow_update is authoritative only with actionRequired', () => {
-    expect(routeMailboxItem(lite('workflow_update', { extra: { actionRequired: true } })).strictState).toBe(true);
-    expect(routeMailboxItem(lite('workflow_update')).strictState).toBe(false);
+  it('改 payload.extra 不影响路由（I2：结构不从载荷推断）', () => {
+    const base = { taskId: 'tsk_x' };
+    const a = routeMailboxItem(lite('task_status_update', { ...base, extra: { triggerExecution: true, round: 7 } }));
+    const b = routeMailboxItem(lite('task_status_update', { ...base, extra: { triggerExecution: false, round: 99, actionRequired: true } }));
+    const c = routeMailboxItem(lite('task_status_update', { ...base }));
+    // 三者除载荷外完全相同 → 路由必须逐字段相同（含 strictState / dedupeKey）。
+    expect(a).toEqual(b);
+    expect(a).toEqual(c);
+    expect(a.strictState).toBe(false);
   });
 });
 
-describe('routeMailboxItem — identity-based idempotency key', () => {
-  it('review_request with taskId+round → type:task:round', () => {
-    const r = routeMailboxItem(lite('review_request', { taskId: 'tsk_x', extra: { round: 2 } }));
+describe('routeMailboxItem — 幂等键同样只读结构字段', () => {
+  it('review_request + 结构 round → type:task:round（值不变）', () => {
+    const r = routeMailboxItem(lite('review_request', { taskId: 'tsk_x' }, undefined, { round: 2 }));
     expect(r.dedupeKey).toBe('review_request:tsk_x:2');
   });
 
-  it('reads round from metadata too', () => {
-    const r = routeMailboxItem(lite('review_request', { taskId: 'tsk_x' }, { round: 3 }));
-    expect(r.dedupeKey).toBe('review_request:tsk_x:3');
+  it('payload.extra.round / metadata.round 不再进幂等键', () => {
+    expect(routeMailboxItem(lite('review_request', { taskId: 'tsk_x', extra: { round: 3 } })).dedupeKey).toBeUndefined();
+    expect(routeMailboxItem(lite('review_request', { taskId: 'tsk_x' }, { round: 3 })).dedupeKey).toBeUndefined();
   });
 
-  it('missing taskId or round → no constraint', () => {
+  it('缺 taskId 或缺 round → 不施加约束', () => {
     expect(routeMailboxItem(lite('review_request', { taskId: 'tsk_x' })).dedupeKey).toBeUndefined();
-    expect(routeMailboxItem(lite('review_request', { extra: { round: 1 } })).dedupeKey).toBeUndefined();
+    expect(routeMailboxItem(lite('review_request', {}, undefined, { round: 1 })).dedupeKey).toBeUndefined();
   });
 
-  it('non-deduping types never constrain', () => {
-    expect(routeMailboxItem(lite('task_comment', { taskId: 'tsk_x', extra: { round: 1 } })).dedupeKey).toBeUndefined();
+  it('非幂等类型永不施加约束', () => {
+    expect(routeMailboxItem(lite('task_comment', { taskId: 'tsk_x' }, undefined, { round: 1 })).dedupeKey).toBeUndefined();
   });
 });
 
@@ -145,5 +167,136 @@ describe('consumers must not fork from route()', () => {
     expect(keys).toContain('task:t1');
     expect(keys).toContain('req:r1');
     expect(keys).toContain('conv:s1');
+  });
+});
+
+// ─── C8-A: entity identity converges on the WorkUnit ─────────────────────────
+//
+// The symptom this locks down: one piece of work reached the recipient through
+// two different transport routes must NOT look like two entities. Conversely a
+// row that predates the WorkUnit (workUnitRef null) must keep producing exactly
+// today's keys — that is the whole read-only-compatibility promise.
+
+describe('C8-A — resolveEntityKeys yields to the WorkUnit', () => {
+  function withWu(
+    sourceType: MailboxItemType,
+    payload: Partial<MailboxPayload>,
+    metadata: Record<string, unknown> | undefined,
+    workUnitRef: string | null,
+  ) {
+    return { ...lite(sourceType, payload, metadata), workUnitRef };
+  }
+
+  it('same task + different channelKey + same WU → identical entity keys', () => {
+    const a = resolveEntityKeys(
+      withWu('a2a_message', {}, { senderId: 'agt_a' }, 'a2a:task:tsk_1'),
+      'agent1',
+    );
+    const b = resolveEntityKeys(
+      { ...withWu('a2a_message', {}, { senderId: 'agt_a' }, 'a2a:task:tsk_1'),
+        payload: { summary: '', content: '', extra: { channelKey: 'dm:a2a:a:b' } } },
+      'agent1',
+    );
+    expect(a).toEqual(b);
+    expect(a).toContain('task:tsk_1');
+  });
+
+  it('a WU-carrying item emits no channel: or conv: key (transport identity)', () => {
+    const keys = resolveEntityKeys(
+      { ...withWu('a2a_message', {}, { senderId: 'agt_a', dbSessionId: 's1' }, 'a2a:channel:dm:a2a:a:b'),
+        payload: { summary: '', content: '', extra: { channelKey: 'dm:a2a:a:b' } } },
+      'agent1',
+    );
+    expect(keys.some(k => k.startsWith('channel:'))).toBe(false);
+    expect(keys.some(k => k.startsWith('conv:'))).toBe(false);
+    expect(keys).toEqual(['wu:a2a:channel:dm:a2a:a:b']);
+  });
+
+  it('legacy row with no WorkUnit falls back to the conservative system key — `channel:` is deleted, not kept', () => {
+    // C8-A 是「删机制」而不是「加守卫」：`channel` 作用域整个消失，所以旧行不会
+    // 再产出 `channel:` 键，而是落到「未知 = 保守串行」。这是**安全方向**的退化
+    // （串行只是慢），而留着 `channel:` 会让投递通道继续拥有实体身份（分裂会复发）。
+    const item = { ...lite('a2a_message', { extra: { channelKey: 'dm:a2a:a:b' } }, { senderId: 'agt_a' }), workUnitRef: null };
+    expect(resolveEntityKeys(item, 'agent1')).toEqual(['system:agent1']);
+  });
+
+  it('never empty, even for a WU with no other dimension', () => {
+    const keys = resolveEntityKeys(withWu('a2a_message', {}, undefined, 'a2a:channel:c'), 'agent1');
+    expect(keys.length).toBeGreaterThan(0);
+  });
+});
+
+describe('C8-A — dedupeKey derives from the entity, not from the payload', () => {
+  it('takes the task id from the WU ref when the payload is silent', () => {
+    const item = {
+      ...lite('review_request', {}, undefined, { round: 3 }),
+      workUnitRef: 'task_tsk_9_r3',
+    };
+    expect(routeMailboxItem(item).dedupeKey).toBe('review_request:tsk_9:3');
+  });
+
+  it('payload taskId still wins shape-wise for legacy rows (no WU)', () => {
+    const item = lite('review_request', { taskId: 'tsk_x' }, undefined, { round: 2 });
+    expect(routeMailboxItem(item).dedupeKey).toBe('review_request:tsk_x:2');
+  });
+});
+
+describe('C8-A — three destinations, one decision point', () => {
+  it('no entity (system fallback only) → overview', () => {
+    expect(resolveMailboxDestination(['system:agent1'], [])).toBe('overview');
+    expect(resolveMailboxDestination(['system:agent1'], null)).toBe('overview');
+  });
+
+  it('intersects the active turn → inject (never queue behind itself)', () => {
+    expect(resolveMailboxDestination(['task:t1', 'wu:x'], ['task:t1'])).toBe('inject');
+  });
+
+  it('different entity → queue (parallel is safe)', () => {
+    expect(resolveMailboxDestination(['task:t2'], ['task:t1'])).toBe('queue');
+  });
+
+  it('active turn unknown (idle agent) → queue, never inject', () => {
+    expect(resolveMailboxDestination(['task:t1'], null)).toBe('queue');
+    expect(resolveMailboxDestination(['task:t1'], [])).toBe('queue');
+  });
+});
+
+/**
+ * M0 — 「欠不欠一个 LLM 回合」由结构 intent 决定，不由 sourceType 的常量决定。
+ *
+ * 根因（2026-11-25 实测）：`external_signal` 在注册表里是 record 类 + `invokesLLM:false`，
+ * 而 `routeMailboxItem` 只抄这个常量 ⇒ 外部信号永远不欠回合。活实例读数：收件 agent 在该时段
+ * `execution_stream_logs`=0、`agent_activities`=0（根本没有模型调用），只有 pick 决策
+ * 且 outcome=NULL，work_unit 停 idle，邮箱行 1ms 内 completed。
+ *
+ * 判据方向必须是**只上调、不下调**：`mailbox.enqueue` 把每条 item 的 intent 缺省成 `deliver`
+ * （mailbox.ts 的 `options?.intent ?? 'deliver'`），若让 `deliver` 反向关掉回合，
+ * human_chat / a2a_message 会全部失去回合 —— 那是把整个平台静音。
+ */
+describe('M0 · invokesLLM derives from structural intent (upgrade only)', () => {
+  it('external_signal + action_required ⇒ owes a turn', () => {
+    expect(routeMailboxItem(lite('external_signal', {}, undefined, { intent: 'action_required' })).invokesLLM).toBe(true);
+  });
+
+  it('external_signal + trigger_execution ⇒ owes a turn', () => {
+    expect(routeMailboxItem(lite('external_signal', {}, undefined, { intent: 'trigger_execution' })).invokesLLM).toBe(true);
+  });
+
+  it('external_signal + deliver ⇒ stays a record (echoes must not wake anyone)', () => {
+    expect(routeMailboxItem(lite('external_signal', {}, undefined, { intent: 'deliver' })).invokesLLM).toBe(false);
+  });
+
+  it('external_signal without an envelope ⇒ registry default (legacy rows unchanged)', () => {
+    expect(routeMailboxItem(lite('external_signal')).invokesLLM).toBe(false);
+  });
+
+  it('the upgrade is general, not an external_signal special case', () => {
+    expect(routeMailboxItem(lite('task_comment', {}, undefined, { intent: 'action_required' })).invokesLLM).toBe(true);
+  });
+
+  it('deliver never cancels a turn the type already owes (no platform-wide mute)', () => {
+    for (const t of ['human_chat', 'a2a_message', 'mention', 'review_request'] as MailboxItemType[]) {
+      expect(routeMailboxItem(lite(t, {}, undefined, { intent: 'deliver' })).invokesLLM).toBe(true);
+    }
   });
 });

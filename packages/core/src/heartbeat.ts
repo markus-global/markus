@@ -1,7 +1,10 @@
-import { createLogger, HEARTBEAT_MIN_INITIAL_DELAY_MS, DEFAULT_HEARTBEAT_INTERVAL_MS } from '@markus/shared';
-import type { EventBus } from './events.js';
-
-const log = createLogger('heartbeat');
+/**
+ * Heartbeat **state fingerprint** and active-hours helpers.
+ *
+ * The scheduler class that used to live here is gone (forever-loop M6): the periodic
+ * patrol is no longer a scheduler object owning a timer. Sleep is `rest`, and the
+ * single clock (`AgentClock`) owns the only timers.
+ */
 
 export interface HeartbeatActiveHours {
   start: string;   // "08:00"
@@ -87,110 +90,4 @@ export function heartbeatStateFingerprint(
     .join(',');
   const tasks = [...activeTaskIds].sort().join(',');
   return `q:[${queue}]|t:[${tasks}]`;
-}
-
-export class HeartbeatScheduler {
-  private initialTimer?: ReturnType<typeof setTimeout>;
-  private timer?: ReturnType<typeof setInterval>;
-  private running = false;
-  private startTime = Date.now();
-  private effectiveInitialDelayMs = 0;
-
-  constructor(
-    private agentId: string,
-    private eventBus: EventBus,
-    private config: HeartbeatConfig = { intervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS, enabled: true },
-  ) {}
-
-  /**
-   * @param initialDelayMs - Delay before the first heartbeat fires.
-   *   If omitted, uses random jitter in [0, intervalMs) to spread heartbeats
-   *   across the interval window and avoid traffic spikes.
-   */
-  start(initialDelayMs?: number): void {
-    if (this.running || !this.config.enabled) return;
-    if (this.config.intervalMs <= 0) {
-      log.info('Heartbeat disabled (intervalMs <= 0)', { agentId: this.agentId });
-      return;
-    }
-    this.running = true;
-    this.startTime = Date.now();
-
-    const rawDelay = initialDelayMs ?? Math.floor(Math.random() * this.config.intervalMs);
-    const delay = Math.max(rawDelay, HEARTBEAT_MIN_INITIAL_DELAY_MS);
-    this.effectiveInitialDelayMs = delay;
-
-    log.info('Starting heartbeat scheduler', {
-      agentId: this.agentId,
-      intervalMs: this.config.intervalMs,
-      initialDelayMs: delay,
-      activeHours: this.config.activeHours,
-    });
-
-    this.initialTimer = setTimeout(() => {
-      this.initialTimer = undefined;
-      this.tick();
-      this.timer = setInterval(() => this.tick(), this.config.intervalMs);
-    }, delay);
-  }
-
-  stop(): void {
-    if (this.initialTimer) {
-      clearTimeout(this.initialTimer);
-      this.initialTimer = undefined;
-    }
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = undefined;
-    }
-    this.running = false;
-    log.info('Heartbeat scheduler stopped', { agentId: this.agentId });
-  }
-
-  /**
-   * Change the heartbeat interval and apply it live. If the scheduler is
-   * running, it is restarted so the new cadence takes effect immediately
-   * (with fresh jitter for the next tick to avoid a thundering herd).
-   */
-  updateInterval(intervalMs: number): void {
-    this.config.intervalMs = intervalMs;
-    log.info('Heartbeat interval updated', { agentId: this.agentId, intervalMs });
-    if (this.running) {
-      this.stop();
-      this.start();
-    }
-  }
-
-  isRunning(): boolean {
-    return this.running;
-  }
-
-  getStatus(): { running: boolean; uptimeMs: number; intervalMs: number; initialDelayMs: number } {
-    return {
-      running: this.running,
-      uptimeMs: this.running ? Date.now() - this.startTime : 0,
-      intervalMs: this.config.intervalMs,
-      initialDelayMs: this.effectiveInitialDelayMs,
-    };
-  }
-
-  /** Manually trigger a heartbeat (e.g. from API) */
-  trigger(): void {
-    this.eventBus.emit('heartbeat:trigger', { agentId: this.agentId, triggeredAt: new Date().toISOString() });
-  }
-
-  private tick(): void {
-    if (!this.running) return;
-
-    if (this.config.activeHours && !this.isWithinActiveHours()) {
-      log.debug('Skipping heartbeat — outside active hours', { agentId: this.agentId });
-      return;
-    }
-
-    this.eventBus.emit('heartbeat:trigger', { agentId: this.agentId, triggeredAt: new Date().toISOString() });
-  }
-
-  private isWithinActiveHours(): boolean {
-    return isWithinActiveHours(this.config.activeHours!);
-  }
 }

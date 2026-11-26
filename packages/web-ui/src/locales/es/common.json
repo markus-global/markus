@@ -105,6 +105,50 @@
     "cancelled": "Cancelado",
     "archived": "Archivado"
   },
+  "threadStage": {
+    "waitingHuman": "Te necesita",
+    "running": "En ejecución",
+    "needsEvidence": "Falta evidencia",
+    "inVerification": "Pendiente de revisión",
+    "done": "Cerrado",
+    "blockedDeps": "Espera dependencias",
+    "ended": "Terminado sin éxito",
+    "evidence": {
+      "title": "Evidencia de finalización ({{count}})",
+      "subtitle": "En qué se basa esta tarjeta: cada conclusión, quién la afirmó y si alguien la verificó de forma independiente.",
+      "empty": "Todavía no hay ningún hecho de evidencia",
+      "emptyHint": "Para enviar a revisión hace falta un hecho de 'evidencia de finalización'; si no, la compuerta lo rechaza.",
+      "unverified": "Sin verificación independiente",
+      "assertedBy": "afirmado por {{who}}",
+      "verifiedBy": "verificado por {{who}}",
+      "predicateOnly": "Registrado como valor estructurado — sin resumen de texto.",
+      "expand": "Ver todo",
+      "collapse": "Contraer",
+      "predicate": {
+        "task_completion_evidence": "Evidencia de finalización",
+        "task_rejection_reason": "Motivo del rechazo",
+        "requirement_acceptance_met": "Aceptación cumplida",
+        "work_defect_class": "Clase de defecto",
+        "agent_capability_claim": "Declaración de capacidad",
+        "memory_consolidation_suggestion": "Sugerencia de consolidación de memoria"
+      },
+      "verification": {
+        "pass": "Verificado",
+        "fail": "Verificación fallida"
+      },
+      "refKind": {
+        "deliverable": "Entregable",
+        "comment": "Comentario",
+        "inPlace": "Referencia",
+        "commit": "Commit",
+        "probe": "Prueba real",
+        "task": "Tarea",
+        "record": "Hecho",
+        "transcript": "Transcripción",
+        "other": "Otro"
+      }
+    }
+  },
   "processStatus": {
     "idle": "Inactivo",
     "working": "Trabajando",
@@ -138,13 +182,19 @@
     "urgent": "Urgente",
     "high": "Alta",
     "normal": "Normal",
-    "low": "Baja"
+    "low": "Baja",
+    "medium": "Media"
   },
   "role": {
     "owner": "Propietario",
     "admin": "Admin",
     "member": "Miembro",
     "guest": "Invitado"
+  },
+  "actor": {
+    "user": "Usuario",
+    "agent": "Agente",
+    "system": "Sistema"
   },
   "units": {
     "members": "{{count}} miembros",
@@ -157,7 +207,8 @@
     "now": "Ahora",
     "minutesAgo": "{{count}}m",
     "hoursAgo": "{{count}}h",
-    "daysAgo": "{{count}}d"
+    "daysAgo": "{{count}}d",
+    "yesterday": "ayer"
   },
   "signOut": "A ver.",
   "openInBrowser": "Abrir en Navegador",
@@ -398,7 +449,9 @@
       "text": "texto",
       "thinkingTag": "pensando",
       "round": "Ronda #{{n}}",
-      "rounds": "{{count}} rondas"
+      "rounds": "{{count}} rondas",
+      "toolsExecuted": "{{count}} herramientas ejecutadas",
+      "toolsLine": "{{count}} herramientas"
     },
     "fullLog": {
       "title": "Registro de ejecución",
@@ -428,8 +481,19 @@
       "state": {
         "running": "En curso",
         "done": "Completado"
-      }
-    }
+      },
+      "tools": "{{count}} herramientas",
+      "subagents": "{{count}} subagentes",
+      "errors": "{{count}} errores"
+    },
+    "prompt": "Prompt",
+    "inputArguments": "Argumentos de entrada",
+    "earlierStepsOmitted": "{{n}} pasos anteriores omitidos",
+    "filesChanged": "{{n}} archivos modificados",
+    "modifiedFiles": "Archivos modificados",
+    "cost": "Coste",
+    "inputTokens": "{{n}} tokens de entrada",
+    "outputTokens": "{{n}} tokens de salida"
   },
   "taskDag": {
     "noTasks": "No hay tareas que mostrar",
@@ -510,14 +574,17 @@
     "typographyDesc": "Ajuste la fuente y el tamaño de la salida HTML copiada",
     "renderingDiagram": "Renderizando diagrama…",
     "mermaidRenderError": "Error al renderizar Mermaid",
-    "plantumlRenderError": "Error al renderizar PlantUML"
+    "plantumlRenderError": "Error al renderizar PlantUML",
+    "imageLoadFailed": "No se pudo cargar la imagen — haz clic para reintentar",
+    "clickToRetry": "Haz clic para reintentar"
   },
   "activity": {
     "step_one": "{{count}} paso",
     "step_other": "{{count}} Medidas adoptadas",
     "failed": "{{count}} fallado",
     "thinking": "Pensando",
-    "writingResponse": "Respuesta por escrito…"
+    "writingResponse": "Respuesta por escrito…",
+    "step": "Paso {{count}}"
   },
   "copyFailed": "Fallido",
   "aiDisclaimer": "El contenido es generado por AI; por favor verifique antes de confiar en él.",
@@ -648,7 +715,14 @@
     "hubUnsupported": "Esta versión de Hub aún no admite comentarios. Actualiza Hub.",
     "successTitle": "Comentarios enviados",
     "successDesc": "Gracias, lo revisaremos pronto.",
-    "successClose": "Listo"
+    "successClose": "Listo",
+    "draft": {
+      "autoFilled": "— Diagnóstico de error rellenado automáticamente — puedes editarlo —",
+      "noRawError": "(este globo no conservó el error original, solo el mensaje de la interfaz)",
+      "myAction": "Lo que hice / lo que esperaba: (añádelo aquí)",
+      "unknownError": "Error desconocido",
+      "title": "Error de chat: {{reason}}"
+    }
   },
   "ambassador": {
     "entry": "Embajador",
@@ -668,5 +742,159 @@
     "loadFailed": "No se pudieron cargar las invitaciones. Inténtalo más tarde.",
     "unsupported": "Esta versión de Hub no expone datos de invitación. Actualiza Hub.",
     "openHub": "Abrir en Hub"
-  }
+  },
+  "factsAudit": {
+    "title": "Rastro de auditoría de hechos",
+    "subtitle": "Solo lectura: para cada conclusión, valor anterior → valor nuevo → quién y cuándo, con su evidencia y verificador.",
+    "subjectKind": "Tipo de sujeto",
+    "subjectId": "Id del sujeto",
+    "predicate": "Predicado",
+    "any": "Todos",
+    "since": "Desde",
+    "until": "Hasta",
+    "includeSuperseded": "Incluir historial reemplazado",
+    "disabled": "La capa de hechos no está conectada en este despliegue, así que no hay nada que mostrar aquí; no es lo mismo que \"no hay hechos\".",
+    "empty": "Ningún hecho coincide con estos filtros.",
+    "truncated": "Se alcanzó el límite de resultados: acota los filtros.",
+    "unverified": "Sin verificación independiente",
+    "colPredicate": "Predicado",
+    "colSubject": "Sujeto",
+    "colAsserted": "Afirmado por / cuándo / turno",
+    "colVerification": "Verificación",
+    "colChain": "Cadena de reemplazo",
+    "colValue": "Valor",
+    "statTotal": "registros",
+    "statVerified": "verificados de forma independiente",
+    "statSuperseded": "reemplazados",
+    "fSubject": "Sobre",
+    "fKind": "Tipo",
+    "fConclusion": "Conclusión",
+    "fTime": "Tiempo",
+    "subjectSearchPlaceholder": "Buscar por nombre: tarea / requisito / agente / entregable",
+    "subjectNoMatch": "Ningún sujeto coincide. Déjalo vacío para verlo todo.",
+    "clearSubject": "Borrar sujeto seleccionado",
+    "openSubject": "Abrir detalles ({{id}})",
+    "kindAll": "Todos",
+    "conclusionAll": "Todas las conclusiones",
+    "range": "Rango de tiempo",
+    "rangeAll": "Todo el tiempo",
+    "range24h": "Últimas 24 horas",
+    "range7d": "Últimos 7 días",
+    "range30d": "Últimos 30 días",
+    "rangeCustom": "Personalizado…",
+    "emptyHint": "Amplía el rango de tiempo o borra los filtros de sujeto / predicado.",
+    "by": "afirmado por {{name}}",
+    "confidence": "Confianza",
+    "confidenceShort": "conf {{pct}}%",
+    "verificationTitle": "Resultado · verificador · hora",
+    "chain": {
+      "replacedBy": "Reemplazado por una conclusión nueva el {{time}}",
+      "replacedByUnknown": "Reemplazado por otra conclusión (fuera de este resultado)",
+      "replaces": "Reemplaza la conclusión anterior de {{time}}"
+    },
+    "evidence": "Evidencia",
+    "kind": {
+      "task": "Tarea",
+      "requirement": "Requisito",
+      "agent": "Agente",
+      "deliverable": "Entregable",
+      "work_unit": "Unidad de trabajo"
+    },
+    "predicateName": {
+      "task_completion_evidence": "Evidencia de finalización",
+      "task_rejection_reason": "Motivo del rechazo",
+      "requirement_acceptance_met": "Aceptación cumplida",
+      "work_defect_class": "Clase de defecto",
+      "agent_capability_claim": "Declaración de capacidad",
+      "memory_consolidation_suggestion": "Sugerencia de consolidación de memoria"
+    },
+    "reset": "Restablecer",
+    "superseded": "Reemplazado",
+    "wu": {
+      "session": "Sesión",
+      "sessionRound": "Sesión · ronda {{round}}",
+      "a2a": "Mensaje"
+    },
+    "src": {
+      "commit": "Commit {{hash}}",
+      "probe": "Prueba real",
+      "task": "Tarea",
+      "deliverable": "Entregable"
+    }
+  },
+  "retry": "Reintentar",
+  "copyPath": "Copiar ruta",
+  "exitFullscreen": "Salir de pantalla completa",
+  "fullscreen": "Pantalla completa",
+  "collapsePanel": "Ocultar panel",
+  "agents": "Agentes",
+  "tasks": "Tareas",
+  "requirements": "Requisitos",
+  "projects": "Proyectos",
+  "deliverables": "Entregables",
+  "workflows": "Flujos",
+  "showAll": "Ver todo",
+  "searchHint": "Escribe una palabra clave",
+  "toggle": "Mostrar/ocultar",
+  "switchTab": "Cambiar pestaña",
+  "navigate": "Navegar",
+  "justNow": "ahora mismo",
+  "rawOutput": "Salida sin procesar",
+  "filePreview": {
+    "loadFailed": "No se pudo cargar el archivo",
+    "unsupported": "Este tipo de archivo no se puede previsualizar."
+  },
+  "browserTest": {
+    "title": "Suite de pruebas de integración del navegador",
+    "subtitle": "Prueba de navegador concurrente multiagente con verificación de corrección",
+    "failuresOnly": "Solo fallos",
+    "extensionNotConnected": "La extensión de Chrome no está conectada. Conecta la extensión antes de ejecutar las pruebas.",
+    "quickTab": "Prueba rápida (~15 s)",
+    "chaosTab": "Prueba de caos",
+    "runQuick": "Ejecutar prueba rápida",
+    "duration": "Duración",
+    "startChaos": "Iniciar caos",
+    "passedCount": "{{n}} correctas",
+    "failedCount": "{{n}} fallidas",
+    "completeSummary": "Completado: {{passed}}/{{total}} correctas en {{seconds}} s",
+    "liveLogFailures": "Registro en vivo ({{n}} fallos)",
+    "liveLogOps": "Registro en vivo ({{n}} ops)"
+  },
+  "menu": "Menú",
+  "forward": "Adelante",
+  "fileNotFound": "Archivo no encontrado",
+  "htmlPreview": "Vista previa HTML",
+  "revealInFileExplorer": "Mostrar en el explorador de archivos",
+  "publishToHub": "Publicar en Markus Hub",
+  "duration": {
+    "unknown": "Duración desconocida",
+    "lessThanAMinute": "Menos de un minuto",
+    "lessThan1Minute": "<1 min",
+    "minutes": "{{count}} min",
+    "hours": "{{count}} h",
+    "days": "{{count}} d",
+    "daysHours": "{{days}} d {{hours}} h",
+    "moreThan30Days": ">30 d",
+    "approximate": "aprox. {{duration}}"
+  },
+  "loadFailed": "Error al cargar",
+  "readErrorNotice": "No se pudo cargar {{subject}}: {{error}} (esto no significa «{{notEquals}}»)",
+  "emptyDirectory": "Esta carpeta está vacía",
+  "revealInFileBrowser": "Mostrar en el navegador de archivos",
+  "backToParentDir": "Volver a la carpeta superior",
+  "goUp": "Subir",
+  "clickToPreview": "Haz clic para previsualizar",
+  "clickToRevealInExplorer": "Haz clic para mostrar en el explorador de archivos",
+  "codingTool": {
+    "files": "{{n}} archivos",
+    "tokensIn": "{{n}} de entrada",
+    "tokensOut": "{{n}} de salida"
+  },
+  "slashMenu": {
+    "commands": "Comandos"
+  },
+  "searchResults": {
+    "workflowMeta": "{{n}} pasos · v{{version}}"
+  },
+  "readFailed": "Error de lectura"
 }

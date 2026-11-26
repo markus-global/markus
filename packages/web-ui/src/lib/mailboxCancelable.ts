@@ -13,7 +13,8 @@
  * attention loop's current focus (an in-flight stream actually exists).
  * This keeps the UI's promise aligned with core's execution semantics:
  *  - stale processing (idle + DB row stuck on processing) → NO button
- *  - queued / completed / dropped → NO button
+ *  - queued / completed / bounced / catch_all → NO button
+ *    (a bounced row is claimed or archived from the catch-all overview — never cancelled)
  *  - the in-flight item → button (core will accept the targeted cancel).
  *
  * Pure synchronization of an existing invariant — no behavior change for the

@@ -6,6 +6,7 @@ import type { RoleTemplate } from '@markus/shared';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { startSettled } from './helpers/agent-start.js';
 
 let tempDir: string;
 
@@ -198,8 +199,20 @@ describe('generateDailyReport', () => {
 describe('injectFollowUp and sendTaskExecution', () => {
   it('injectFollowUp enqueues without blocking', async () => {
     const agent = createAgent(makeMockRouter());
-    agent.injectFollowUp('Follow up question', 'user_1', { name: 'User', role: 'human' });
+    agent.injectFollowUp('Follow up question', 'user_1', { name: 'User', role: 'human' }, undefined, { workUnitRef: null });
     expect(agent.getMailbox().depth).toBe(1);
+  });
+
+  it('injectFollowUp 把回合身份落进投递行（删掉转发行就会红）', () => {
+    // 2026-11-14 真机缺陷：这条路径唯一漏传 workUnitRef，导致追随消息的
+    // mailbox 行 `work_unit_ref = NULL`、台账里从未建过该回合 ——
+    // 于是「运行与注意力」显示「正在运行 0」而那回合正在跑。
+    const agent = createAgent(makeMockRouter());
+    agent.injectFollowUp('Follow up question', 'user_1', { name: 'User', role: 'human' }, undefined, {
+      workUnitRef: 'session:cs_probe:r7',
+    });
+    const item = agent.getMailbox().peek()!;
+    expect(item.workUnitRef).toBe('session:cs_probe:r7');
   });
 
   it('sendTaskExecution enqueues task execution item', async () => {
@@ -207,7 +220,7 @@ describe('injectFollowUp and sendTaskExecution', () => {
     const promise = agent.sendTaskExecution('task_abc', 'Implement feature X', {
       taskId: 'task_abc',
       title: 'Feature X',
-    });
+    } as never, undefined, undefined, undefined, undefined, undefined, undefined, () => {});
     expect(agent.getMailbox().depth).toBeGreaterThan(0);
     expect(promise).toBeInstanceOf(Promise);
   });
@@ -269,7 +282,7 @@ describe('stopped agent behavior', () => {
     const agent = createAgent(makeMockRouter());
     await agent.stop();
     expect(agent.getState().status).toBe('offline');
-    await agent.start();
+    await startSettled(agent);
     expect(agent.getState().status).toBe('idle');
     await agent.stop();
   });

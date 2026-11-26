@@ -63,7 +63,7 @@
   },
   "detail": {
     "selectToView": "Select a deliverable to view details",
-    "keyboardHint": "Use \u2191\u2193 arrow keys to navigate, \u2318F to search",
+    "keyboardHint": "Use ↑↓ arrow keys to navigate, ⌘F to search",
     "details": "Details",
     "verify": "Verify",
     "flagOutdated": "Flag Outdated",
@@ -93,7 +93,8 @@
     "unsavedTitle": "Unsaved Changes",
     "unsavedMessage": "You have unsaved changes. Do you want to save before leaving?",
     "discard": "Discard",
-    "saveAndLeave": "Save"
+    "saveAndLeave": "Save",
+    "backToParentFolder": "Back to parent folder"
   },
   "diffStats": {
     "title": "Diff Stats",
@@ -152,7 +153,8 @@
     "closeChat": "Close chat",
     "placeholder": "Message agent...",
     "currentDeliverable": "Current deliverable",
-    "selectedFrom": "Selected from"
+    "selectedFrom": "Selected from",
+    "sendToChat": "Send to conversation"
   },
   "contextMenu": {
     "addToConversation": "Add to conversation"
@@ -186,7 +188,12 @@
     "resubmit": "Resubmit",
     "shareAgain": "Share again",
     "revoke": "Remove sharing",
-    "urlPending": "Generating link… refresh shortly to view"
+    "urlPending": "Generating link… refresh shortly to view",
+    "tooLarge": "The deliverable file is {{bytes}} bytes, over the {{limit}}-byte limit (50MB). Compress it, or decline to share it.",
+    "hubRequestFailed": "Hub request failed (HTTP {{status}}): {{message}}",
+    "formatUnsupported": "Sharing supports only {{formats}}",
+    "rejectedFallback": "Sharing was rejected",
+    "notLoggedIntoHub": "Sign in to your Markus Hub account before sharing deliverables."
   },
   "time": {
     "justNow": "just now",

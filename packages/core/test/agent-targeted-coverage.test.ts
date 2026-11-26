@@ -103,7 +103,6 @@ type PrivateAgent = Agent & {
   dreamConsolidateMemory: (entries: Array<{ id: string; timestamp: string; type: string; content: string; metadata?: Record<string, unknown> }>) => Promise<void>;
   memoryFlush: (sessionId: string) => Promise<void>;
   createLLMSummarizer: () => (messages: Array<{ role: string; content: unknown }>) => Promise<string>;
-  performDeliberation: (head: MailboxItem, all: MailboxItem[]) => Promise<unknown>;
 };
 
 async function execTool(agent: Agent, name: string, args: Record<string, unknown>) {
@@ -121,55 +120,6 @@ afterEach(() => {
 });
 
 describe('attention delegate callbacks', () => {
-  it('getTriageContext includes session messages and active tasks', async () => {
-    const agent = createAgent(makeMockRouter());
-    const session = agent.getMemory().createSession(agent.id);
-    (agent as unknown as { currentSessionId: string }).currentSessionId = session.id;
-    agent.getMemory().appendMessage(session.id, { role: 'user', content: 'Recent user question about deploy' });
-    agent.getMemory().appendMessage(session.id, { role: 'assistant', content: 'Deploy steps explained here.' });
-
-    const execPromise = agent.executeTask('task_triage_ctx', 'Background work', () => {});
-    await vi.waitFor(() => agent.getActiveTasks().length > 0, { timeout: 2000 });
-
-    const delegate = (agent as unknown as PrivateAgent).createAttentionDelegate();
-    const ctx = await delegate.getTriageContext() as {
-      recentMainSessionMessages: unknown[];
-      activeTaskIds: string[];
-      agentName: string;
-    };
-    expect(ctx.recentMainSessionMessages.length).toBeGreaterThan(0);
-    expect(ctx.activeTaskIds).toContain('task_triage_ctx');
-    expect(ctx.agentName).toBe('Targeted Agent');
-
-    await execPromise;
-  });
-
-  it('onTriageCompleted and onDeliberationCompleted update working memory', () => {
-    const agent = createAgent(makeMockRouter());
-    const delegate = (agent as unknown as PrivateAgent).createAttentionDelegate();
-
-    delegate.onTriageCompleted({
-      processItemId: 'mbx_1',
-      deferItemIds: ['mbx_2'],
-      dropItemIds: ['mbx_3'],
-      reasoning: 'Focus on human message first',
-    });
-    delegate.onDeliberationCompleted({
-      processItemId: 'mbx_1',
-      inlineCompletedIds: ['mbx_4'],
-      deferItemIds: [],
-      dropItemIds: [],
-      reasoning: 'Handled inline items',
-      situationalAwareness: 'Team is waiting on deploy approval',
-    });
-    delegate.applyMemoryUpdates([
-      { type: 'working', key: 'focus', content: 'Deploy approval pending' },
-      { type: 'longterm', key: 'procedures', content: 'Always tag releases' },
-    ]);
-
-    expect(agent.getMemory().getLongTermSection('procedures')).toContain('Always tag releases');
-  });
-
   it('onFocusChanged sets working and idle status', () => {
     const events: string[] = [];
     const agent = createAgent(makeMockRouter());
@@ -183,19 +133,6 @@ describe('attention delegate callbacks', () => {
     delegate.onFocusChanged(undefined);
     expect(agent.getState().status).toBe('idle');
     expect(events.length).toBeGreaterThan(0);
-  });
-
-  it('getMindState includes deliberation activity when deliberating', () => {
-    const agent = createAgent(makeMockRouter());
-    (agent.getAttentionController() as unknown as { isDeliberating: boolean }).isDeliberating = true;
-    (agent as unknown as { state: { currentActivity: { id: string; label: string; startedAt: string } } }).state.currentActivity = {
-      id: 'act_delib',
-      label: 'Deliberating',
-      startedAt: new Date().toISOString(),
-    };
-
-    const mind = agent.getMindState();
-    expect(mind.deliberationActivity?.label).toBe('Deliberating');
   });
 });
 
@@ -457,38 +394,6 @@ describe('memory consolidation and dream cycle', () => {
 });
 
 describe('deliberation and team context', () => {
-  it('performDeliberation records inline-completed item activities', async () => {
-    const router = makeMockRouter({
-      chatFn: async (req: unknown) => {
-        const text = (req as { messages: Array<{ content: unknown }> }).messages
-          .map(m => String(m.content)).join('\n');
-        if (text.includes('[DELIBERATION MODE]')) {
-          const idMatch = text.match(/id="([^"]+)"/g);
-          const secondId = idMatch?.[1]?.match(/id="([^"]+)"/)?.[1];
-          return makeResponse('', 'tool_use', [{
-            id: 'tc_delib_inline',
-            name: 'complete_deliberation',
-            arguments: {
-              process_item_id: idMatch?.[0]?.match(/id="([^"]+)"/)?.[1],
-              inline_completed_ids: secondId ? [secondId] : [],
-              reasoning: 'Handled trivial status update inline',
-            },
-          }]);
-        }
-        return makeResponse(`Done.`, 'end_turn');
-      },
-    });
-
-    const agent = createAgent(router);
-    const head = agent.enqueueToMailbox('human_chat', { summary: 'Priority', content: 'Need help now' });
-    const inline = agent.enqueueToMailbox('task_status_update', { summary: 'Status', content: 'Tests passed', taskId: 't1' });
-
-    const result = await (agent as unknown as PrivateAgent).performDeliberation(head, [head, inline]) as {
-      inlineCompletedIds: string[];
-    } | null;
-    expect(result).not.toBeNull();
-    expect(result!.inlineCompletedIds.length).toBeGreaterThanOrEqual(0);
-  });
 
   it('resetDailyTokens and setTeamDataDir inject team context into prompts', async () => {
     const teamDir = mkdtempSync(join(tmpdir(), 'markus-team-ctx-'));
@@ -583,7 +488,7 @@ describe('stream and task execution edge paths', () => {
       execute: async () => JSON.stringify({ status: 'ok' }),
     });
 
-    await agent.executeTask('task_final_reminder', 'Build the feature', () => {});
+    await agent.executeTask('task_final_reminder', 'Build the feature', () => {}, undefined, undefined, 1);
     expect(streamCalls).toBeGreaterThanOrEqual(2);
   });
 

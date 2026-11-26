@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { isTerminal as isTerminalStatus, TERMINAL_REQUIREMENT_STATUSES } from '../lib/taskStatus.ts';
-import { taskStatusLabel, taskStatusPresentation } from '../lib/stateVocabulary.ts';
+import { BLOCKED_TONE, taskStatusLabel, taskStatusChip } from '../lib/stateVocabulary.ts';
 import { deriveReviewSessions, activeReviewSession, hasLiveReview, type ReviewSession } from '../lib/taskReview.ts';
 import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { buildActivityTimeline } from '../lib/activityTimeline.ts';
 import { matchReviewActivities, isWithinReviewWindow } from '../lib/reviewActivities.ts';
+import { taskIsLive, type WorkUnitLivenessRow } from '../lib/workUnitLiveness.ts';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
@@ -27,6 +28,8 @@ import { Avatar } from '../components/Avatar.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
+import { ThreadStageBadge, EvidenceFold } from '../components/ThreadStage.tsx';
+import { commentsBeforeFirstRound as beforeFirstRound, commentsForRound } from '../lib/roundAttribution.ts';
 import { ProjectSidebar } from '../components/ProjectSidebar.tsx';
 import { ProjectKnowledgePanel } from '../components/ProjectKnowledgePanel.tsx';
 import { navBus } from '../navBus.ts';
@@ -43,7 +46,7 @@ import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 import { filterBoardTasks } from '../lib/boardFilters.ts';
 import { agentsFromIds } from '../lib/commentThinking.ts';
-import { needsHumanDecision, blockedReasonOf } from '../lib/blockedReason.ts';
+import { blockedReasonOf, type BlockedReasonValue } from '../lib/blockedReason.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
@@ -773,9 +776,14 @@ const PRIORITY_BADGE_CLS: Record<string, string> = {
   high:   'bg-surface-overlay text-fg-secondary font-semibold',
   urgent: TONE.danger.chip,
 };
+// 需求徽章的显示集 = 状态机里**可作为流转目标**的全部状态，唯一来源 REQ_ALLOWED_TRANSITIONS
+// （镜像自 shared，契约测试锁死）。不再手维护第二份清单：旧的手写列表漏了 `blocked`，
+// 而流转菜单能切到 blocked → 菜单/徽章退回英文原值（Owner 2026-11-19 报）。
+const REQ_DISPLAY_STATUSES: readonly string[] = [...new Set(
+  Object.values(REQ_ALLOWED_TRANSITIONS).flatMap(set => [...set]),
+)];
 const REQ_STATUS_BADGE_CLS: Record<string, string> = Object.fromEntries(
-  ['pending', 'in_progress', 'completed', 'rejected', 'cancelled', 'archived']
-    .map(s => [s, TONE[requirementTone(s)].chip]),
+  REQ_DISPLAY_STATUSES.map(s => [s, TONE[requirementTone(s)].chip]),
 );
 
 function buildTaskStatusBadges(t: (key: string, opts?: Record<string, unknown>) => string): Record<string, { label: string; cls: string }> {
@@ -1120,7 +1128,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   }, []);
 
   return (
-    <div className="mt-5">
+    <div className="mt-5" id="task-activity">
       <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">{t('work:task.activityCommentsHeading')}</p>
       <div className="space-y-0.5 mb-3">
         {items.length === 0 && (
@@ -1266,6 +1274,8 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
   const [agentActivities, setAgentActivities] = useState<Map<string, ExecutionStreamEntryUI[]>>(new Map());
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
   const [relatedActivities, setRelatedActivities] = useState<ActivityRecord[]>([]);
+  // C9-B：「在跑」只由 work_units 回答（不读 activity 的 endedAt）。
+  const [runningUnits, setRunningUnits] = useState<WorkUnitLivenessRow[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
@@ -1392,7 +1402,14 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
       .then(d => setRelatedActivities(d.activities))
       .catch(() => setRelatedActivities([]))
       .finally(() => setLoadingActivities(false));
+    // 同一回合的另一面：这一轮到底还在不在跑 —— 只问 work_units。
+    api.agents.workUnits(agentId, 'running')
+      .then(r => setRunningUnits(r.units))
+      .catch(() => setRunningUnits([]));
   }, [taskId, task.assignedAgentId]);
+
+  /** 这张卡自己那一轮是否在跑（别的任务/聊天在跑不算）。 */
+  const taskLive = taskIsLive(runningUnits, taskId);
 
   // Load a specific round's logs on demand
   const loadRound = useCallback((round: number) => {
@@ -1631,10 +1648,17 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
               <div className="text-xs text-fg-secondary mb-3 flex items-center gap-1.5">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />
                 {t('work:task.relatedSessions', { agent: agent?.name ?? t('work:task.agent'), count: relatedActivities.length })}
+                {taskLive && (
+                  <span className="ml-1 flex items-center gap-1 text-[10px] text-green-500 font-medium">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                    {t('work:task.sessionLive')}
+                  </span>
+                )}
               </div>
               <div className="space-y-1.5">
                 {relatedActivities.map(act => {
-                  const isLive = !act.endedAt;
+                  // C9-B：这一行是**历史**。它是否“未结束”不是状态，绝不能拿来判在跑；
+                  // 在跑与否只看上面从 work_units 得来的 taskLive（页面级）。
                   const typeIcon = act.type === 'task' ? '🔧' : act.type === 'chat' ? '💬' : act.type === 'respond_in_session' ? '💬' : act.type === 'heartbeat' ? '💓' : '📋';
                   return (
                     <button
@@ -1650,16 +1674,10 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
                           {act.endedAt ? ` — ${act.totalTools} tools, ${act.totalTokens.toLocaleString()} tokens` : ''}
                         </div>
                       </div>
-                      {isLive && (
-                        <span className="shrink-0 flex items-center gap-1 text-[10px] text-green-500 font-medium">
-                          <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                          {t('work:task.sessionLive')}
-                        </span>
-                      )}
-                      {!isLive && (
-                        <span className={`shrink-0 text-[10px] ${act.success ? 'text-fg-tertiary' : 'text-red-400'}`}>
-                          {act.success ? '✓' : '✗'}
-                        </span>
+                      {act.success ? (
+                        <span className="shrink-0 text-[10px] text-fg-tertiary">✓</span>
+                      ) : (
+                        <span className="shrink-0 text-[10px] text-red-400">✗</span>
                       )}
                       <span className="shrink-0 text-fg-tertiary text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">→</span>
                     </button>
@@ -1696,18 +1714,11 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
     );
   }
 
-  // Assign comments to rounds based on timestamps
-  const getCommentsForRound = (rs: RoundSummary, nextRs?: RoundSummary) => {
-    const roundStart = rs.firstAt ? new Date(rs.firstAt).getTime() : 0;
-    const roundEnd = nextRs?.firstAt ? new Date(nextRs.firstAt).getTime() : Infinity;
-    return comments.filter(c => {
-      const ct = new Date(c.createdAt).getTime();
-      return ct >= roundStart && ct < roundEnd;
-    });
-  };
-  const commentsBeforeFirstRound = roundsSummary.length > 0
-    ? comments.filter(c => new Date(c.createdAt).getTime() < new Date(roundsSummary[0]!.firstAt).getTime())
-    : [];
+  // Assign comments to rounds based on timestamps —— 归属规则见 lib/roundAttribution.ts。
+  // 边界取「上一轮结束时刻」而非「下一轮首条日志」：上一轮已 settled 到下一轮产出首条
+  // 日志之间的**间隙**里的评论，应归下一轮（人不会对着一轮已结束的执行说话）。
+  const getCommentsForRound = (rs: RoundSummary) => commentsForRound(comments, roundsSummary, rs.round);
+  const commentsBeforeFirstRound = beforeFirstRound(comments, roundsSummary);
 
   // Multiple rounds — show round headers with lazy loading + comments
   return (
@@ -1739,8 +1750,8 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
                   <div className="flex items-center gap-2">
                     <span className="text-sm">{icon}</span>
                     <span className="text-xs text-fg-secondary font-medium">{t('work:task.reviewRoundLabel', { round: s.round })}</span>
-                    <span className="text-[10px] text-fg-tertiary">{s.reviewerName}</span>
-                    {live && <span className="text-[10px] text-purple-400">{t('work:task.reviewLive')}</span>}
+                    <span className="text-[10px] text-fg-tertiary">{s.reviewerName ?? t('work:task.reviewerUnknown')}</span>
+                    {live && <span className="text-[10px] text-purple-400">{s.reviewerType === 'human' ? t('work:task.reviewWaiting') : t('work:task.reviewLive')}</span>}
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-[10px] text-fg-tertiary tabular-nums">{new Date(s.queuedAt).toLocaleString()}</span>
@@ -1772,7 +1783,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
           const isLatest = rs.round === roundsSummary[roundsSummary.length - 1]!.round;
           const logs = roundLogs.get(rs.round);
           const isLoading = loadingRounds.has(rs.round);
-          const roundComments = getCommentsForRound(rs, roundsSummary[rsIdx + 1]);
+          const roundComments = getCommentsForRound(rs);
           const statusIcon = rs.status === 'completed' || rs.status === 'execution_finished' ? '✅'
             : rs.status === 'failed' ? '❌'
             : rs.status === 'cancelled' ? '⏹'
@@ -2065,7 +2076,7 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
               ) : data.type === 'binary' || data.content == null ? (
                 <div className="space-y-3 text-center py-6">
                   <p className="text-sm text-fg-secondary">
-                    {t('work:task.cannotPreviewFile', { defaultValue: 'This file type cannot be previewed.' })}
+                    {t('common:filePreview.unsupported')}
                   </p>
                   <p className="text-xs text-fg-tertiary font-mono">
                     {data.name}{data.extension ? ` (${data.extension})` : ''}{data.size != null ? ` · ${fmtSize(data.size)}` : ''}
@@ -2145,13 +2156,28 @@ function TaskDetailPanel({
 
   // 评审会话从**权威状态历史**派生（不新增后端/表）：一次「→ review」即一条。
   const [reviewSessions, setReviewSessions] = useState<ReviewSession[]>([]);
+  /**
+   * 评审人的可读名：**按权威字段 `reviewerType` 选名册**。
+   *
+   * 旧实现只查 agent 名册（`agents.find(...)`），人类评审人必然查不到 →
+   * `deriveReviewSessions` 回退到「把卡推进 review 的提交者」，于是显示成
+   * 「CTO 正在评审」（评审人变成了提交人）。名册选择由 reviewerType 决定；
+   * 两边都查一遍只是同一个实体的两个表，不是换实体。
+   */
+  const reviewerDisplayName = (() => {
+    const id = task.reviewerId;
+    if (!id) return undefined;
+    const fromAgents = agents.find(a => a.id === id)?.name;
+    const fromUsers = users.find(u => u.id === id)?.name;
+    return task.reviewerType === 'human' ? (fromUsers ?? fromAgents) : (fromAgents ?? fromUsers);
+  })();
   useEffect(() => {
     let live = true;
     api.tasks.getHistory(task.id)
-      .then(r => { if (live) setReviewSessions(deriveReviewSessions(r.history, { reviewerId: task.reviewerId, reviewerName: agents.find(a => a.id === task.reviewerId)?.name })); })
+      .then(r => { if (live) setReviewSessions(deriveReviewSessions(r.history, { reviewerId: task.reviewerId, reviewerName: reviewerDisplayName, reviewerType: task.reviewerType })); })
       .catch(() => { if (live) setReviewSessions([]); });
     return () => { live = false; };
-  }, [task.id, task.status, task.reviewerId, agents]);
+  }, [task.id, task.status, task.reviewerId, task.reviewerType, reviewerDisplayName, agents, users]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -2327,7 +2353,9 @@ function TaskDetailPanel({
   const finishedCount = completedCount + cancelledCount;
   const isRunning = task.status === 'in_progress';
   const isBlocked = task.status === 'blocked';
-  const isAbnormallyBlocked = isBlocked && needsHumanDecision(task, id => allTasks.find(t => t.id === id));
+  // blocked 缘由与 chip 共用同一次解析（带依赖查找）：旧行上两者不得分叉。
+  const blockedReason = isBlocked ? blockedReasonOf(task, id => allTasks.find(t => t.id === id)) : undefined;
+  const needsHuman = blockedReason === 'hold';
   const isCompleted = task.status === 'completed';
   const isFailed = task.status === 'failed';
   const isRejected = task.status === 'rejected';
@@ -2363,14 +2391,20 @@ function TaskDetailPanel({
           <h3 className="flex-1 min-w-0 text-base font-semibold leading-snug text-fg-primary">
             {task.title}
             {' '}
+            {/*
+              C9-C：「在等谁」只读服务端派生好的闭集值（`deriveStage()` 的唯一输出）。
+              这里刻意**不再**由 approvals / blockedBy / 消息自己拼一次 —— 治理态徽章
+              （下面那段）回答的是另一个问题，两者同屏出现但不同轴。
+            */}
+            <ThreadStageBadge stage={task.threadStage} />
+            {' '}
             {(() => {
-              // blocked 有子缘由（deps/hold/workflow），必须走 taskStatusPresentation 才能
-              // 区分「等待依赖/已挂起」；静态 taskStatusBadges 是「切换状态菜单」的通用词，
-              // 拿来展示会把 deps 永远渲染成通用「已阻塞」（同一事实两个写者）。
-              if (task.status === 'blocked') {
-                const p = taskStatusPresentation(task.status, t, blockedReasonOf(task));
+              // blocked 有子缘由（deps/hold/workflow），闭态 chip 走 taskStatusChip（唯一写者）；
+              // 静态 taskStatusBadges 是「切换状态菜单」的通用词，不得拿来展示。
+              const chip = taskStatusChip(task.status, t, blockedReason);
+              if (chip) {
                 return (
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${p.tone?.chip ?? 'bg-gray-500/15 text-fg-tertiary'}`}>{p.label}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${chip.cls}`}>{chip.label}</span>
                 );
               }
               const badge = taskStatusBadges[task.status];
@@ -2380,9 +2414,7 @@ function TaskDetailPanel({
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{taskStatusLabel(task.status, t)}</span>
               );
             })()}
-            {isAbnormallyBlocked && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle bg-red-500/15 text-red-500">{t('work:task.abnormalBlock')}</span>
-            )}
+            {/* hold 不再另挂徽章：「已挂起」chip 已说明状态，行动指引在依赖区 holdHint（同一事实不写两遍）。 */}
           </h3>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -2553,13 +2585,13 @@ function TaskDetailPanel({
                 ) : (
                   <p className="text-[11px] text-fg-tertiary mb-2">{t('work:task.noDependencies')}</p>
                 )}
-                {isAbnormallyBlocked && (
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-500 mb-2">
+                {needsHuman && (
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1.5 border rounded-lg text-xs mb-2 ${BLOCKED_TONE.hold.card} ${TONE.blocked.text}`}>
                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
                       <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
                     </svg>
-                    <span>{t('work:task.abnormalBlockHint')}</span>
+                    <span>{t('work:task.holdHint')}</span>
                   </div>
                 )}
                 {!isTerminal && (
@@ -2784,11 +2816,32 @@ function TaskDetailPanel({
 
           {/* Deliverables tab — full paginated list (newest first) */}
           <div className={activeTab === 'history' ? '' : 'hidden'}>
-            <StatusHistoryTimeline entityType="task" entityId={task.id} />
+            <StatusHistoryTimeline entityType="task" entityId={task.id} statusLabel={(s) => taskStatusBadges[s]?.label ?? s} />
           </div>
 
 
           <div className={activeTab === 'deliverables' ? 'px-6 py-4' : 'hidden'}>
+              {/*
+                C9-C：「完成依据」——放在交付物 tab 里，不放 tab 上方。
+                理由（Owner 2026-11-15）：「凭什么说做完了」与「交付了什么」是同一个问题，
+                悬在所有 tab 顶上等于让每个页面都背着一块取证件；它不是导航，是这一页的内容。
+                并且**没有证据就不渲染**：空盒子不传递信息（阶段徽章已经会说「缺证据」），
+                真缺证据时该看见的是徽章，不是一块点开才知为空的折叠加。
+              */}
+              {(task.evidence?.length ?? 0) > 0 && (
+                <EvidenceFold
+                  evidence={task.evidence ?? []}
+                  nameOf={(id) => agents.find(a => a.id === id)?.name}
+                  onOpenSource={(ref) => {
+                    if (ref.startsWith('dlv_')) {
+                      navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: ref });
+                      return;
+                    }
+                    // 评论 / decision / 其它指针：回到本页的活动区（它就在同一屏里）。
+                    document.getElementById('task-activity')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }}
+                />
+              )}
               {(() => {
                 const validDeliverables = unifiedDeliverables.filter(
                   d => typeof d.reference === 'string' && d.reference.length > 0
@@ -2941,15 +2994,25 @@ function TaskDetailPanel({
           </div>
         )}
 
-        {task.status === 'review' && activeReviewSession(reviewSessions) && (
+        {task.status === 'review' && activeReviewSession(reviewSessions) && (() => {
+          const s = activeReviewSession(reviewSessions)!;
+          // 人类评审人：没有回合在跑，只是「在等人」。原文案「X 正在评审」会把「等待」
+          // 说成「进行中」，脉冲小点也误导。两种对象分开表达。
+          const waitingOnHuman = s.reviewerType === 'human';
+          return (
           <div className="mx-6 mt-3 flex items-start gap-2.5 rounded-lg border border-purple-500/30 bg-purple-500/8 px-3 py-2">
-            <span className="mt-1 w-1.5 h-1.5 shrink-0 rounded-full bg-purple-400 animate-pulse" />
+            <span className={`mt-1 w-1.5 h-1.5 shrink-0 rounded-full bg-purple-400${waitingOnHuman ? '' : ' animate-pulse'}`} />
             <div className="min-w-0 flex-1 text-xs text-fg-primary">
-              {t('work:task.reviewInProgressBy', { agent: activeReviewSession(reviewSessions)!.reviewerName })}
+              {s.reviewerName
+                ? (waitingOnHuman
+                    ? t('work:task.reviewWaitingFor', { name: s.reviewerName })
+                    : t('work:task.reviewInProgressBy', { agent: s.reviewerName }))
+                : t('work:task.reviewInProgress')}
             </div>
             <button onClick={() => switchTab('activity')} className="shrink-0 rounded-md border border-purple-500/30 px-2 py-1 text-[11px] font-medium text-purple-400 hover:bg-purple-500/10 transition-colors">{t('work:task.reviewViewSession')}</button>
           </div>
-        )}
+          );
+        })()}
 
         {/* Actions */}
         <div className="px-6 py-4 border-t border-border-default flex items-center justify-between gap-2">
@@ -3457,16 +3520,19 @@ function relativeTime(iso: string, t: (key: string, opts?: Record<string, unknow
   return t('work:relative.daysAgo', { count: days });
 }
 
-function TagPicker({ value, options, onSelect, allowedValues }: {
+function TagPicker({ value, options, onSelect, allowedValues, display }: {
   value: string;
   options: Array<{ value: string; label: string; cls: string }>;
   onSelect: (val: string) => void;
   allowedValues?: ReadonlySet<string>;
+  /** 闭态展示覆写（label + cls）。菜单选项保持通用词表；展示态可以带缘由（如 blocked → 已挂起）。 */
+  display?: { label: string; cls: string };
 }) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const current = options.find(o => o.value === value);
+  const displayCurrent = display ?? current;
 
   useEffect(() => {
     if (!open) return;
@@ -3485,9 +3551,9 @@ function TagPicker({ value, options, onSelect, allowedValues }: {
       <button
         ref={btnRef}
         onClick={() => setOpen(v => !v)}
-        className={`text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors cursor-pointer hover:ring-1 hover:ring-current/30 ${current?.cls ?? 'bg-gray-500/15 text-fg-tertiary'}`}
+        className={`text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors cursor-pointer hover:ring-1 hover:ring-current/30 ${displayCurrent?.cls ?? 'bg-gray-500/15 text-fg-tertiary'}`}
       >
-        {current?.label ?? value}
+        {displayCurrent?.label ?? value}
       </button>
       {open && (
         <div ref={panelRef} className="absolute top-full left-0 mt-1 w-40 bg-surface-overlay border border-border-default rounded-lg shadow-xl z-50 py-1 max-h-64 overflow-y-auto">
@@ -3602,7 +3668,7 @@ function QuickAddRow({
   );
 }
 
-function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile, isAbnormalBlocked }: {
+function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile, blockedReason }: {
   row: BacklogRow; idx: number; dragIdx: number | null;
   agentMap: Map<string, AgentInfo>; projMap: Map<string, ProjectInfo>;
   onTaskClick: (t: TaskInfo) => void; onReqClick: (r: RequirementInfo) => void;
@@ -3611,7 +3677,8 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   handlePriorityChange: (row: BacklogRow, val: string) => Promise<void>;
   selected?: boolean;
   isMobile?: boolean;
-  isAbnormalBlocked?: boolean;
+  /** 父级解析好的 blocked 缘由（带依赖查找）；非 task 行 / 非 blocked 为 undefined。 */
+  blockedReason?: BlockedReasonValue;
 }) {
   const { t } = useTranslation(['work', 'common']);
   const taskStatusBadges = useMemo(() => buildTaskStatusBadges(t), [t]);
@@ -3619,6 +3686,9 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   const priorityBadges = useMemo(() => buildPriorityBadges(t), [t]);
   const status = row.data.status;
   const priority = row.data.priority;
+  const isHold = blockedReason === 'hold';
+  // 闭态 chip 走词表（带缘由）；静态 taskStatusBadges 只留给切换菜单。
+  const statusDisplay = row.kind === 'task' ? taskStatusChip(status, t, blockedReason) ?? undefined : undefined;
   const assignee = row.kind === 'task' ? agentMap.get(row.data.assignedAgentId ?? '') : undefined;
   const proj = (() => {
     const p = projMap.get(row.kind === 'task' ? (row.data.projectId ?? '') : (row.data.projectId ?? ''));
@@ -3642,13 +3712,14 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       >
         <div className="flex items-center gap-2 min-w-0">
           {typeBadge}
-          {isAbnormalBlocked && <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-500/15 text-red-500">⚠</span>}
+          {isHold && <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${BLOCKED_TONE.hold.chip}`}>⚠</span>}
           <span className="text-sm text-fg-primary truncate flex-1">{row.data.title}</span>
         </div>
         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
           <div onClick={e => e.stopPropagation()}>
             <TagPicker
               value={status}
+              display={statusDisplay}
               options={
                 row.kind === 'task'
                   ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: taskStatusBadges[s]?.label ?? s, cls: taskStatusBadges[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
@@ -3690,11 +3761,12 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       <div className="w-12 shrink-0">{typeBadge}</div>
       <div className="flex-1 min-w-[200px] text-sm text-fg-primary truncate flex items-center gap-1.5">
         <span className="truncate">{row.data.title}</span>
-        {isAbnormalBlocked && <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-500/15 text-red-500 shrink-0">⚠</span>}
+        {isHold && <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold shrink-0 ${BLOCKED_TONE.hold.chip}`}>⚠</span>}
       </div>
       <div className="w-[130px] shrink-0" onClick={e => e.stopPropagation()}>
         <TagPicker
           value={status}
+          display={statusDisplay}
           options={
             row.kind === 'task'
               ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: taskStatusBadges[s]?.label ?? s, cls: taskStatusBadges[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
@@ -3764,9 +3836,10 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
     return m;
   }, [tasks]);
 
-  const checkAbnormalBlocked = useCallback((task: TaskInfo): boolean => {
-    if (task.status !== 'blocked') return false;
-    return needsHumanDecision(task, id => taskMap.get(id));
+  // 行的 blocked 缘由唯一解析点（带依赖查找）：chip 文案与 ⚠（hold）都从它派生。
+  const resolveBlockedReason = useCallback((task: TaskInfo): BlockedReasonValue | undefined => {
+    if (task.status !== 'blocked') return undefined;
+    return blockedReasonOf(task, id => taskMap.get(id));
   }, [taskMap]);
 
   const rows = useMemo(() => {
@@ -3935,7 +4008,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
                   <span className="text-[10px] text-fg-tertiary">{groupCounts[groupId] ?? 0}</span>
                 </div>
                 {groupRows.map(row => (
-                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
+                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} blockedReason={row.kind === 'task' ? resolveBlockedReason(row.data) : undefined} />
                 ))}
                 {/* Quick-capture placeholder — pinned to the bottom of the 待办 group. */}
                 {groupId === 'todo' && (
@@ -3946,7 +4019,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
           })
         ) : (
           rows.map((row, idx) => (
-            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
+            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} blockedReason={row.kind === 'task' ? resolveBlockedReason(row.data) : undefined} />
           ))
         )}
         {loadingMore && (
@@ -4745,7 +4818,7 @@ export function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: p
 
     const doc = parseYaml(yamlText) as { steps?: Array<Record<string, unknown>> } | null;
     const step = doc?.steps?.find((entry) => entry?.['id'] === stepId);
-    if (!doc || !step) throw new Error(`找不到步骤 ${stepId}`);
+    if (!doc || !step) throw new Error(t('work:task.stepNotFound', { stepId }));
 
     if (patch.name !== undefined) step['name'] = patch.name;
     if (patch.role !== undefined) step['role'] = patch.role;
@@ -5577,7 +5650,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     const allTasks = Object.values(board).flat();
     const updated = allTasks.find(t => t.id === sel.id);
     if (updated && updated.updatedAt !== sel.updatedAt) {
-      setSelectedTask(updated);
+      // 看板项是 lean 的：它不带 evidence（证据只有详情接口 api.tasks.get 才返回）。
+      // 直接 setSelectedTask(updated) 会把详情拿到的事实清空 —— 真机现象就是
+      // 卡片刚刷新一下，「完成依据」从 2 条跳成 0 条（Owner 报的「点了没内容」之一）。
+      // 所以这里只拿看板拥有的字段，evidence 保留上一次详情的结果；
+      // 数据真变了时，markus:data-changed 处理器会重拉详情覆盖它（同一事实一个写者）。
+      setSelectedTask(prev => (prev && prev.id === updated.id ? { ...updated, evidence: prev.evidence } : updated));
     }
   }, [board]);
 
@@ -6975,7 +7053,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   <div className="flex items-center gap-1.5">
                                     {reqProject && <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-fg-secondary rounded truncate max-w-[90px]" title={reqProject.name}>{reqProject.name}</span>}
                                     <span className="text-[10px] text-fg-tertiary">{req.priority}</span>
-                                    <span className="text-[10px] text-fg-muted">by {creatorName}</span>
+                                    <span className="text-[10px] text-fg-muted">{t('work:task.byCreator', { name: creatorName })}</span>
                                   </div>
                                   <div className="flex items-center gap-1">
                                     {req.goalConfig?.loopEnabled && <span className="text-[10px] text-brand-500/70 bg-brand-500/8 px-1.5 py-0.5 rounded-md" title={req.goalConfig.completionCriteria}>🎯 {req.goalConfig.currentIteration}/{req.goalConfig.maxIterations}</span>}
@@ -7004,14 +7082,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                             const taskCreatorName = task.createdBy ? (resolveActorName(task.createdBy, agents, users) ?? task.createdBy) : null;
                             const isSelected = selectedTask?.id === task.id;
                             const priorityDot: Record<string, string> = { urgent: 'bg-red-500', high: 'bg-amber-500', medium: 'bg-blue-500', low: 'bg-gray-400' };
-                            const cardAbnormalBlocked = task.status === 'blocked' && needsHumanDecision(task, id => boardTaskMap.get(id));
+                            const cardBlockedReason = task.status === 'blocked' ? blockedReasonOf(task, id => boardTaskMap.get(id)) : undefined;
+                            const cardNeedsHuman = cardBlockedReason === 'hold';
                             return (
                               <div key={task.id} data-work-item-id={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
                                 onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
                                 onClick={() => handleSelectTask(task)} onKeyDown={e => e.key === 'Enter' && handleSelectTask(task)}
                                 className={`group rounded-lg p-2.5 border border-transparent transition-all ${
-                                  cardAbnormalBlocked
-                                    ? 'bg-red-500/[0.06] border-red-500/30 ring-1 ring-red-500/15 cursor-pointer'
+                                  cardNeedsHuman
+                                    ? `${BLOCKED_TONE.hold.card} cursor-pointer`
                                     : isApprovalTask
                                     ? 'bg-amber-500/[0.06] border-amber-500/30 ring-1 ring-amber-500/15 cursor-pointer'
                                     : isSchedTask
@@ -7022,8 +7101,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${priorityDot[task.priority] ?? 'bg-gray-400'}`} title={task.priority} />
                                   {isSchedTask && <span className="text-blue-500 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
                                   {isSchedTask && schedLabel && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500 whitespace-nowrap">{schedLabel}</span>}
-                                  {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${badge.cls}`}>{badge.label}</span>}
-                                  {cardAbnormalBlocked && <span className="text-[10px] px-1.5 py-0.5 rounded-md shrink-0 bg-red-500/15 text-red-500 font-medium">⚠</span>}
+                                  {(() => {
+                                    // blocked 闭态 chip 走词表（带缘由）；静态 subStatusBadges 是菜单词。
+                                    const chip = taskStatusChip(task.status, t, cardBlockedReason) ?? badge;
+                                    return chip ? <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${chip.cls}`}>{chip.label}</span> : null;
+                                  })()}
+                                  {cardNeedsHuman && <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 font-medium ${BLOCKED_TONE.hold.chip}`}>⚠</span>}
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{task.title}</div>
                                 {task.description && <div className="text-[11px] text-fg-tertiary line-clamp-1 mb-1.5">{task.description}</div>}
@@ -7031,12 +7114,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   <div className="flex flex-wrap gap-1 mb-1.5">
                                     {taskProjName && <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-fg-secondary rounded-md truncate max-w-[100px]" title={taskProjName}>{taskProjName}</span>}
                                     {taskReqTitle && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/8 text-brand-500 rounded-md truncate max-w-[110px]" title={taskReqTitle}># {taskReqTitle}</span>}
-                                    {task.blockedBy && task.blockedBy.length > 0 && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-600 rounded-md">⏳ {task.blockedBy.length} dep{task.blockedBy.length > 1 ? 's' : ''}</span>}
+                                    {task.blockedBy && task.blockedBy.length > 0 && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-600 rounded-md">⏳ {t('work:dag.depCount', { count: task.blockedBy.length })}</span>}
                                   </div>
                                 )}
                                 <div className="flex items-center justify-between mt-auto pt-1.5 border-t border-border-default/20">
                                   <div className="flex items-center gap-1.5">
-                                    {taskCreatorName && <span className="text-[10px] text-fg-muted" title={`by ${taskCreatorName}`}>by {taskCreatorName}</span>}
+                                    {taskCreatorName && <span className="text-[10px] text-fg-muted" title={t('work:task.byCreator', { name: taskCreatorName })}>{t('work:task.byCreator', { name: taskCreatorName })}</span>}
                                   </div>
                                   <div className="flex items-center gap-1.5">
                                     {subCount > 0 && <span className="text-[10px] text-fg-tertiary">⋮ {subCount}</span>}
@@ -8155,7 +8238,7 @@ function RequirementDetailPanel({
           {!previewMode && <RequirementCommentThread requirementId={req.id} createdBy={req.createdBy} agents={agents} users={users} authUser={authUser} />}
 
           {/* Status History */}
-          {!previewMode && <StatusHistoryTimeline entityType="requirement" entityId={req.id} />}
+          {!previewMode && <StatusHistoryTimeline entityType="requirement" entityId={req.id} statusLabel={(s) => reqBadges[s]?.label ?? s} />}
         </div>
         {scrollState !== 'none' && scrollState !== 'top' && (
           <button
@@ -8399,8 +8482,8 @@ function RequirementDetailPanel({
 
 // ─── Shared mini-components ─────────────────────────────────────────────────────
 
-function StatusHistoryTimeline({ entityType, entityId }: { entityType: 'task' | 'requirement'; entityId: string }) {
-  const { t } = useTranslation(['work']);
+function StatusHistoryTimeline({ entityType, entityId, statusLabel }: { entityType: 'task' | 'requirement'; entityId: string; statusLabel: (status: string) => string }) {
+  const { t } = useTranslation(['work', 'common']);
   const [history, setHistory] = useState<StatusTransitionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(false);
@@ -8418,7 +8501,7 @@ function StatusHistoryTimeline({ entityType, entityId }: { entityType: 'task' | 
   const hasMore = history.length > 5 && !expanded;
 
   const actorBadge = (h: StatusTransitionInfo) => {
-    const label = h.changedByName || h.changedById || (h.changedByType === 'human' ? 'User' : h.changedByType === 'agent' ? 'Agent' : 'System');
+    const label = h.changedByName || h.changedById || (h.changedByType === 'human' ? t('common:actor.user') : h.changedByType === 'agent' ? t('common:actor.agent') : t('common:actor.system'));
     const cls = h.changedByType === 'human' ? 'bg-blue-500/20 text-blue-500' : h.changedByType === 'agent' ? 'bg-brand-500/20 text-brand-500' : 'bg-gray-500/20 text-fg-tertiary';
     return <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${cls}`}>{label}</span>;
   };
@@ -8440,9 +8523,9 @@ function StatusHistoryTimeline({ entityType, entityId }: { entityType: 'task' | 
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {actorBadge(h)}
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-elevated text-fg-tertiary line-through">{h.fromStatus}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-elevated text-fg-tertiary line-through">{statusLabel(h.fromStatus)}</span>
                   <span className="text-[10px] text-fg-tertiary">→</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand-500/15 text-brand-500 font-medium">{h.toStatus}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand-500/15 text-brand-500 font-medium">{statusLabel(h.toStatus)}</span>
                 </div>
                 {h.reason && <p className="text-[10px] text-fg-secondary mt-0.5 leading-snug">{h.reason}</p>}
                 <p className="text-[9px] text-fg-tertiary mt-0.5">{new Date(h.createdAt).toLocaleString()}</p>

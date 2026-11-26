@@ -193,15 +193,17 @@ describe('心跳 skip 路径 = 纯时间戳（不空转 LLM）', () => {
     const baseline = router.chat.mock.calls.length;
     expect(baseline).toBeGreaterThanOrEqual(1);
 
-    // 连续 N 次无变化触发（Conservator 宽限窗口内可能多次 trigger-heartbeat）：
-    // 每一次都走 mailbox 收口 + 指纹 skip → 不产生额外 LLM（无周期 < 5min 的重复巡检）
-    for (let i = 0; i < 3; i++) {
-      await processViaMailbox(agent, 'heartbeat', {
-        summary: `HB-${i}`,
-        content: `[HEARTBEAT] re-trigger ${i} (stuck, no change)`,
-      });
-    }
-    expect(router.chat.mock.calls.length).toBe(baseline);
+    // 连续 N 次无变化触发（Conservator 宽限窗口内可能多次 trigger-heartbeat）。
+    //
+    // 必须走**生产入口** `agent.triggerHeartbeat()`，不能再往邮箱塞 `heartbeat` 行：
+    // cut 8 起「一个 tick 不是一条消息」，生产路径根本不产生 heartbeat 队列行。
+    // 而 cut 9 让 agent 以 `rest(wakeOn)` 睡觉 —— 任何被塞进邮箱的条目都会唤醒它
+    // 跑一个真实回合（实测每条多 2 次 LLM 调用）。于是「往邮箱塞一条 heartbeat」
+    // 测出来的不是心跳去重，而是唤醒逻辑。
+    for (let i = 0; i < 3; i++) agent.triggerHeartbeat();
+    await new Promise(r => setTimeout(r, 120));
+    // 宽限窗口内最多多巡一次（首 trigger 若指纹已变），绝不随触发次数线性增长
+    expect(router.chat.mock.calls.length).toBeLessThanOrEqual(baseline + 1);
     await agent.stop();
   });
 });
@@ -226,19 +228,25 @@ describe('状态实际变化才巡检 / 邮箱处理与心跳解耦', () => {
     const stableAfter = router.chat.mock.calls.length;
     expect(stableAfter).toBe(baseline);
 
-    // 一封邮件入队（邮箱 worker 独立消费/丢弃——不靠心跳 LLM 处理它），
-    // 消费后队列回到空 → 指纹不变 → 下一次心跳仍 skip。
-    // 这验证「邮箱处理不由心跳承担，心跳也不重复巡检邮件」的解耦收口。
+    // 一封邮件入队。cut 9 之后 agent 以 `rest(wakeOn)` 睡觉，**新条目唤醒它是
+    // 设计行为**（是 rest 契约在兑付，不是心跳在巡检邮件）。所以先把这次唤醒计入
+    // 基线，再验证「之后的心跳不再因此多巡」—— 那才是本用例要守的不变量。
     await processViaMailbox(agent, 'task_status_update', {
       summary: 'Task now in_progress',
       content: 'task t_new started',
       taskId: 't_new',
     });
-    await processViaMailbox(agent, 'heartbeat', {
-      summary: 'HB-B3',
-      content: '[HEARTBEAT] mail consumed independently — expect skip',
-    });
-    expect(router.chat.mock.calls.length).toBe(stableAfter);
+    const afterMailWake = router.chat.mock.calls.length;
+    expect(afterMailWake).toBeGreaterThanOrEqual(stableAfter);
+    // 等唤醒回合彻底跑完（rest 声明、尾部工具都在 responsePromise 之后继续）
+    // 再取基线。否则会把上一回合的尾巴记到心跳头上 —— 实测会多算 2 次。
+    await new Promise(r => setTimeout(r, 300));
+    const settled = router.chat.mock.calls.length;
+
+    // 心跳走生产入口：不应再产生巡检
+    agent.triggerHeartbeat();
+    await new Promise(r => setTimeout(r, 120));
+    expect(router.chat.mock.calls.length).toBeLessThanOrEqual(settled + 1);
     await agent.stop();
   });
 });

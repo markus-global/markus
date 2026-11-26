@@ -35,7 +35,6 @@ function makeHarness() {
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('preempt'),
     onTriageCompleted: vi.fn(),
-    performDeliberation: vi.fn().mockResolvedValue(null),
     onDeliberationCompleted: vi.fn(),
     getWorkerWorkspace: (workerId: number) => {
       let ws = workspaces.get(workerId);

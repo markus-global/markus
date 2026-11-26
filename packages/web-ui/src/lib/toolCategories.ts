@@ -28,12 +28,27 @@ export const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'communication', prefixes: ['agent_send_message', 'agent_ask_agent', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task', 'feishu_'] },
   { id: 'memory', prefixes: ['memory_', 'recall_context', 'recall_activity', 'notebook_upsert', 'notebook_clear', 'notebook_read', 'session'] },
   { id: 'knowledge', prefixes: ['kb_search', 'kb_list', 'kb_read'] },
-  { id: 'mailbox', prefixes: ['check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item', 'delegate_message'] },
+  // 第六刀新增的邮箱工具（地址绑定 C1 / 路由与 catch-all 概览 C3）与投递域同一处分组：
+  // 它们的读面都是 mailbox，放在这里才不会被归到「其他」。
+  { id: 'mailbox', prefixes: ['check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item', 'delegate_message', 'bind_address', 'address_revoke', 'address_list', 'message_route', 'catch_all',
+    // C10-B：外部信号源工具（注册 / 列表 / 持久 kill switch）—— 读面同样是 mailbox
+    // （信号进来的地方），与地址绑定同组；web-ui 不能 import @markus/shared，只镜像字串。
+    'external_source_register', 'external_source_list', 'external_source_toggle',
+    // C8-C: `rest(wakeOn)` 是「声明我在等哪条邮箱事件」，与邮箱同组；`list_waits` / `cancel_wait` 是同一关系的读/取消面。
+    'rest', 'list_waits', 'cancel_wait'] },
   { id: 'planning', prefixes: ['goal_create', 'goal_update', 'goal_status', 'workflow_'] },
-  { id: 'reasoning', prefixes: ['decide'] },
+  // 第九刀 C9-A：`fact_assert` / `fact_supersede` / `fact_query` 是「结构化结论」的  // 写/读面，与 `decide`（结构化决策）同族 —— 归入 reasoning，不为展示新建分类
+  // （新建桶要在 zh-CN/en/es 三份 locale 各加字串，收益只是分组标题）。
+  { id: 'reasoning', prefixes: ['decide', 'fact_'] },
   { id: 'teamManager', prefixes: ['team_list', 'team_status', 'team_update', 'team_start', 'team_stop', 'agent_update', 'agent_start', 'agent_stop', 'list_teams'] },
   { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents', 'invoke_coding_tool', 'coding_tool_apply'] },
-  { id: 'system', prefixes: ['discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'schedule_wakeup', 'cancel_wakeup', 'set_heartbeat_interval'] },
+  // 第七刀 C7-A：`work_status` 是**运行时自省**（读本 agent 的 WorkUnit 台账），
+  // 与 `discover_tools` 同族，归入 system；不新开分类 —— 新建一个桶要给
+  // zh-CN/en/es 三份 locale 各加一个字串，而它只是展示分组，不值得那个改动量。
+  { id: 'system', prefixes: ['work_status', 'discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'schedule_wakeup', 'cancel_wakeup', 'set_heartbeat_interval',
+    // C10-D：组织身份 / 余额查询（org_info / org_list / org_usage）是运行时自省，
+    // 与 work_status 同族 —— 同样不新开分类（新桶要在三份 locale 各加字串）。
+    'org_info', 'org_list', 'org_usage'] },
   { id: 'llm', prefixes: ['llm_', 'agent_model_'] },
 ];
 

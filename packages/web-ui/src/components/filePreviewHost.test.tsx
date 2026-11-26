@@ -10,8 +10,20 @@
  * there the same click is routed to the right panel (`hostAvailable`), whose
  * lifetime belongs to the page.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import i18n from '../i18n/index.ts';
+
+// 本套件断言的是**中文文案**（'复制路径'）。文案走 i18n 后，jsdom 里 LanguageDetector
+// 会探到 en，断言就会因为语言而不是因为行为变红。把语言钉住（同 ThreadStage.test.tsx 先例），
+// 让测试继续测它本来要测的东西：弹窗在行被回收后是否存活。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
+afterAll(async () => {
+  // i18next 是模块单例，别把语言留给下一个套件。
+  await i18n.changeLanguage('zh-CN');
+});
 
 vi.mock('../api.ts', () => ({
   api: {

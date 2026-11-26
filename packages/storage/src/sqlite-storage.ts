@@ -9,8 +9,15 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary, toStringArray,
+  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, isMarkusOrgAddress, parseAddress,
+  normalizeSignalStatus, catchAllTargetOf,
+  pickOrgSecretary, toStringArray,
+  assertWorkUnitTransition,
+  checkOrgSlug, MARKUS_MAIL_DOMAIN,
+  type AddressBindOutcome, type AddressResolution, type AddressRevokeOutcome,
+  type MailAddressRef,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
+  type WorkUnitRecord, type WorkUnitStatus,
 } from '@markus/shared';
 import { StreamWriteBatcher } from './stream-write-batcher.js';
 import { BlobStore, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
@@ -111,7 +118,25 @@ CREATE TABLE IF NOT EXISTS organizations (
   manager_agent_id TEXT,
   settings TEXT DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- C10-A：注册表 slug。可空；唯一索引在迁移之后建。取值只有显式赋值
+  -- （createOrg 与一次性 backfill 共用 registryOrgSlug），绝不从 name 推导。
+  org_slug TEXT,
+  -- C10-C：跨组织信任策略。默认 observe：未验证跨组织输入可投递可读，
+  -- 不驱动自主动作。升 auto 的唯一写者 = OrganizationService.setCrossOrgPolicy
+  -- （一次人批 + 一条 audit 行）；本列不在创建时手写。
+  cross_org_policy TEXT NOT NULL DEFAULT 'observe',
+  -- C10-F: the org-level external ingress policy. 'off' (default) refuses
+  -- inbound at the single ingest point, 'observe' records without owing a turn,
+  -- 'accept' owes a turn. Default is the safe state, because for an open-source
+  -- product the default IS the configuration most installs run. The single
+  -- writer is OrganizationService.setExternalIngress (human + audit row).
+  external_ingress TEXT NOT NULL DEFAULT 'off',
+  -- C10-D：组织的全局身份（markus.global 侧 org id）。NULL = 从未连接过 hub，
+  -- 此时 org_slug 只是本地占位事实。唯一写者 = SqliteOrgRepo.bindHubOrg，
+  -- 由登录时的对齐调用（幂等：同一 hub org 重复登录不产生第二次写入）。
+  hub_org_id TEXT,
+  hub_synced_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -139,13 +164,20 @@ CREATE TABLE IF NOT EXISTS agents (
   channels TEXT DEFAULT '[]',
   agent_role TEXT NOT NULL DEFAULT 'worker',
   heartbeat_interval_ms INTEGER NOT NULL DEFAULT 1800000,
+  -- A5: 自主档位 'observe' | 'act'。DEFAULT 'act' 就是关键：加这列之前每个 agent
+  -- 到心跳点都会自发巡逻，那正是 'act' —— 所以历史行读出来等价于旧行为，
+  -- 不需要任何数据迁移，只需保证旧数据能被读出来。
+  autonomy TEXT NOT NULL DEFAULT 'act',
   container_id TEXT,
   tokens_used_today INTEGER NOT NULL DEFAULT 0,
   active_task_ids TEXT DEFAULT '[]',
   profile TEXT,
   last_heartbeat TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- C10-A：邮件别名（预留列，H3）。可空 = 未设置；UNIQUE(org_id, agent_alias)
+  -- 部分索引在迁移之后建。签发/撤销生命周期的写者归后续卡，本卡只建列与约束。
+  agent_alias TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -184,29 +216,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- 这个列只在真实状态转移时推进。NULL 仅出现在本列引入前的旧行（迁移时由 updated_at 回填）。
   status_changed_at TEXT,
   due_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-  id TEXT PRIMARY KEY,
-  platform TEXT NOT NULL,
-  direction TEXT NOT NULL,
-  channel_id TEXT NOT NULL,
-  sender_id TEXT NOT NULL,
-  sender_name TEXT,
-  agent_id TEXT REFERENCES agents(id),
-  content TEXT NOT NULL,
-  reply_to_id TEXT,
-  thread_id TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS memories (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL REFERENCES agents(id),
-  type TEXT NOT NULL,
-  content TEXT NOT NULL,
-  metadata TEXT DEFAULT '{}',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -256,6 +265,8 @@ CREATE TABLE IF NOT EXISTS task_logs (
   type TEXT NOT NULL,
   content TEXT NOT NULL DEFAULT '',
   metadata TEXT DEFAULT '{}',
+  -- C9-B：这一行日志属于哪一轮执行（可空；调用方用 WORK_UNIT_REF.task 给出）。
+  work_unit_ref TEXT,
   execution_round INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -329,25 +340,6 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE INDEX IF NOT EXISTS idx_projects_org ON projects(org_id);
 
-CREATE TABLE IF NOT EXISTS agent_knowledge (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  org_id TEXT NOT NULL,
-  category TEXT NOT NULL,
-  title TEXT NOT NULL,
-  content TEXT NOT NULL,
-  tags TEXT NOT NULL DEFAULT '[]',
-  source TEXT NOT NULL DEFAULT 'agent',
-  metadata TEXT DEFAULT '{}',
-  importance INTEGER NOT NULL DEFAULT 50,
-  access_count INTEGER NOT NULL DEFAULT 0,
-  last_accessed_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_agent_knowledge_agent ON agent_knowledge(agent_id, category);
-CREATE INDEX IF NOT EXISTS idx_agent_knowledge_org ON agent_knowledge(org_id);
-
 CREATE TABLE IF NOT EXISTS deliverables (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL DEFAULT 'file',
@@ -382,83 +374,6 @@ CREATE INDEX IF NOT EXISTS idx_deliverables_agent ON deliverables(agent_id);
 CREATE INDEX IF NOT EXISTS idx_deliverables_task ON deliverables(task_id);
 CREATE INDEX IF NOT EXISTS idx_deliverables_status ON deliverables(status);
 
-CREATE TABLE IF NOT EXISTS marketplace_templates (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'community',
-  status TEXT NOT NULL DEFAULT 'draft',
-  version TEXT NOT NULL DEFAULT '1.0.0',
-  author_id TEXT,
-  author_name TEXT NOT NULL,
-  role_id TEXT NOT NULL,
-  agent_role TEXT NOT NULL DEFAULT 'worker',
-  skills TEXT NOT NULL DEFAULT '[]',
-  llm_provider TEXT,
-  tags TEXT NOT NULL DEFAULT '[]',
-  category TEXT NOT NULL,
-  icon TEXT,
-  heartbeat_interval_ms INTEGER,
-  starter_tasks TEXT DEFAULT '[]',
-  config TEXT DEFAULT '{}',
-  download_count INTEGER NOT NULL DEFAULT 0,
-  avg_rating INTEGER NOT NULL DEFAULT 0,
-  rating_count INTEGER NOT NULL DEFAULT 0,
-  visibility TEXT NOT NULL DEFAULT 'public',
-  forked_from TEXT,
-  fork_count INTEGER DEFAULT 0,
-  version_history TEXT DEFAULT '[]',
-  org_id TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  published_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_mkt_templates_source ON marketplace_templates(source, status);
-CREATE INDEX IF NOT EXISTS idx_mkt_templates_category ON marketplace_templates(category);
-
-CREATE TABLE IF NOT EXISTS marketplace_skills (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'community',
-  status TEXT NOT NULL DEFAULT 'draft',
-  version TEXT NOT NULL DEFAULT '1.0.0',
-  author_id TEXT,
-  author_name TEXT NOT NULL,
-  category TEXT NOT NULL,
-  tags TEXT NOT NULL DEFAULT '[]',
-  tools TEXT NOT NULL DEFAULT '[]',
-  readme TEXT,
-  required_permissions TEXT DEFAULT '[]',
-  required_env TEXT DEFAULT '[]',
-  config TEXT DEFAULT '{}',
-  download_count INTEGER NOT NULL DEFAULT 0,
-  avg_rating INTEGER NOT NULL DEFAULT 0,
-  rating_count INTEGER NOT NULL DEFAULT 0,
-  visibility TEXT NOT NULL DEFAULT 'public',
-  forked_from TEXT,
-  fork_count INTEGER DEFAULT 0,
-  version_history TEXT DEFAULT '[]',
-  org_id TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  published_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_mkt_skills_source ON marketplace_skills(source, status);
-CREATE INDEX IF NOT EXISTS idx_mkt_skills_category ON marketplace_skills(category);
-
-CREATE TABLE IF NOT EXISTS marketplace_ratings (
-  id TEXT PRIMARY KEY,
-  target_type TEXT NOT NULL,
-  target_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
-  rating INTEGER NOT NULL,
-  review TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_mkt_ratings_target ON marketplace_ratings(target_type, target_id);
-
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   org_id TEXT NOT NULL REFERENCES organizations(id),
@@ -473,17 +388,6 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_login_at TEXT
 );
-
-CREATE TABLE IF NOT EXISTS memory_embeddings (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL,
-  content TEXT NOT NULL,
-  type TEXT NOT NULL,
-  embedding BLOB,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_memory_embeddings_agent ON memory_embeddings(agent_id);
 
 CREATE TABLE IF NOT EXISTS external_agent_registrations (
   external_agent_id TEXT NOT NULL,
@@ -502,17 +406,6 @@ CREATE TABLE IF NOT EXISTS external_agent_registrations (
   PRIMARY KEY (external_agent_id, org_id)
 );
 
-CREATE TABLE IF NOT EXISTS gateway_message_queue (
-  id TEXT PRIMARY KEY,
-  target_agent_id TEXT NOT NULL,
-  from_agent_id TEXT NOT NULL,
-  from_agent_name TEXT,
-  content TEXT NOT NULL,
-  delivered INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_gw_msg_target ON gateway_message_queue(target_agent_id, delivered);
-
 CREATE TABLE IF NOT EXISTS agent_activities (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
@@ -522,6 +415,8 @@ CREATE TABLE IF NOT EXISTS agent_activities (
   task_id TEXT,
   started_at TEXT NOT NULL,
   ended_at TEXT,
+  -- C9-B：这一行属于哪一轮（可空）。老行为 NULL = 早于身份链（cut 7），不回填。
+  work_unit_ref TEXT,
   total_tokens INTEGER DEFAULT 0,
   total_tools INTEGER DEFAULT 0,
   success INTEGER DEFAULT 1,
@@ -534,6 +429,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_activities_agent ON agent_activities(agent_
 CREATE TABLE IF NOT EXISTS agent_activity_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   activity_id TEXT NOT NULL REFERENCES agent_activities(id) ON DELETE CASCADE,
+  -- C9-B：从所属 activity 继承，日志不可能属于与它不同的那轮工作。
+  work_unit_ref TEXT,
   seq INTEGER NOT NULL,
   type TEXT NOT NULL,
   content TEXT NOT NULL DEFAULT '',
@@ -551,6 +448,8 @@ CREATE TABLE IF NOT EXISTS execution_stream_logs (
   type TEXT NOT NULL,
   content TEXT NOT NULL DEFAULT '',
   metadata TEXT DEFAULT '{}',
+  -- C9-B：这一条事件属于哪一轮（可空；调用方给的是它已持有的身份，不反推）。
+  work_unit_ref TEXT,
   execution_round INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -572,7 +471,19 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   retry_count INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT,
   lease_until TEXT,
-  dedup_key TEXT
+  dedup_key TEXT,
+  -- 第六刀 C2：信封与投递状态（全部可空；旧行 NULL = 无信封，读路径 warn + fallback，不回填）
+  envelope TEXT,
+  work_unit_ref TEXT,
+  signal_class TEXT,
+  intent TEXT,
+  message_id TEXT,
+  -- 工作记录：实体键物化（旧库靠 migrations 里的 ALTER 补；新库在 DDL 里直接有）。
+  -- 旧行为 NULL = 未回填，读路径回退到原解析。
+  entity_kind TEXT,
+  entity_id TEXT,
+  drop_reason TEXT,
+  bounce_target TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 
@@ -598,7 +509,18 @@ CREATE TABLE IF NOT EXISTS data_migrations (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
+-- 工作记录分页：ORDER BY queued_at DESC LIMIT ? OFFSET ? 的支撑索引。
+--
+-- 缺它时实测查询计划是 SEARCH ... USING INDEX idx_mailbox_agent_source (agent_id=?)
+-- 加 USE TEMP B-TREE FOR ORDER BY —— 也就是说每翻一页都要把该 agent 的全部行
+-- （本机 24 万）拉进临时 B 树重排一次，越翻越慢。有了这个索引，SQLite 能沿索引
+-- 顺序边扫边取，不需要临时排序。IF NOT EXISTS 同时覆盖新库与旧库升级。
+CREATE INDEX IF NOT EXISTS idx_mailbox_agent_history ON mailbox_items(agent_id, queued_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_source ON mailbox_items(agent_id, source_type);
+-- 注意：不要把 entity_kind/entity_id 的索引写在这里。SCHEMA_SQL 在 migrations **之前**
+-- 执行，而这两列是新库靠 DDL、旧库靠 ALTER 才有的 —— 写在这里会让旧库建索引时
+-- 报「no such column」→ storage 初始化失败 → 启动报 storage not available。
+-- 该索引在 migrations 跑完之后单独创建（见下方 idx_mailbox_entity）。
 
 CREATE TABLE IF NOT EXISTS agent_decisions (
   id TEXT PRIMARY KEY,
@@ -608,6 +530,16 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
   context TEXT NOT NULL DEFAULT '{}',
   reasoning TEXT NOT NULL DEFAULT '',
   outcome TEXT,
+  -- 这条决定发生在哪个工作单元里。与 mailbox_items.work_unit_ref 同一轴：
+  -- 有了它才能反查「谁在哪个回合撤销了什么」。
+  -- 可空且不回填：加列之前的 22.7 万行属于旧纪元，NULL 是诚实的「不知道」。
+  work_unit_ref TEXT,
+  -- 谁拍板的：model / heuristic / rule / user。缺了它，规则的不可逆动作
+  -- 和模型深思后的判断在台账上长得一样，行为就不可解释。
+  -- 可空：加列（2026-11-18）之前的旧纪元 NULL 是诚实的「不知道」。
+  source TEXT,
+  -- 平台规则推翻了同一让点里的前一个判断时，记下被推翻的那个类型。
+  overrode TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_agent ON agent_decisions(agent_id, created_at);
@@ -701,6 +633,79 @@ CREATE TABLE IF NOT EXISTS status_transitions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_st_entity ON status_transitions(entity_type, entity_id, created_at);
+
+-- 第七刀 C7-A：WorkUnit —— 一条「活」的身份对象。
+--
+-- 注意：本段整体位于 SCHEMA_SQL 模板字面量内，注释里禁止出现反引号
+-- （反引号会提前终止模板字符串，报错位置指向几十行之后，极难定位）。
+--
+-- 字段严格按执行计划 §2，不建 thread 表、不给 ContextSession 加 status：
+-- 「这条活是谁、还在不在跑」只有一个权威答案，不引入第二个近似物。
+--
+-- ref 是幂等键（唯一索引兜底）：三个生产者（chat / task / a2a）只许用
+-- shared 包的 WORK_UNIT_REF 生成它 —— 两套命名 = 同一个执行纪元长出
+-- 两个 WU，之后谁也说不清哪条是它。
+--
+-- budget / used 沿用 iteration 语义（C7-A 只建列不解释，语义归 C7-B）；
+-- parent_id 自引用，C7-A 恒为 NULL（父子委派是 C7-B 的行为变更）。
+CREATE TABLE IF NOT EXISTS work_units (
+  id            TEXT PRIMARY KEY,
+  parent_id     TEXT REFERENCES work_units(id),
+  ref           TEXT NOT NULL,
+  agent_id      TEXT NOT NULL,
+  address_ref   TEXT,
+  task_id       TEXT,
+  model         TEXT,
+  status        TEXT NOT NULL,
+  budget        INTEGER,
+  used          INTEGER NOT NULL DEFAULT 0,
+  claimed_by    TEXT,
+  lease_until   TEXT,
+  stop_reason   TEXT,
+  result_ref    TEXT,
+  context_ref   TEXT,
+  archived_at   TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_work_units_ref ON work_units(ref);
+CREATE INDEX IF NOT EXISTS idx_work_units_agent_status ON work_units(agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_work_units_parent ON work_units(parent_id);
+
+-- 第九刀 C9-A：facts —— 结构化事实（「这件活证明了什么」）。
+--
+-- 一个事实由「主体 + 谓词 + 值」构成，并且必须带三件身份（work_unit_ref /
+-- asserted_by / source_refs_json）：空值在这里是**错误**，不是默认值。
+--
+-- 不可改写：只允许 supersede（写 superseded_by / superseded_at），任何触碰
+-- value_json / predicate / 主体 / 身份列的 UPDATE 由触发器 facts_no_rewrite 拒绝
+-- —— 不依赖代码纪律。（触发器不在本模板内：SCHEMA_SQL 按分号切分执行，
+-- BEGIN...END 里的分号会被切坏，故单独一段 FACTS_TRIGGERS_SQL。）
+--
+-- 一个 subject + predicate 同时只有一条 active（partial unique index 兜底）。
+-- verification_json 存在断言行上：验证也是一种事实，但「谁验证的」不能成为
+-- 同一个结论的第二个写者。
+--
+-- 注意：本段位于 SCHEMA_SQL 模板字面量内，注释里禁止出现反引号。
+CREATE TABLE IF NOT EXISTS facts (
+  id               TEXT PRIMARY KEY,
+  subject_kind     TEXT NOT NULL,
+  subject_id       TEXT NOT NULL,
+  predicate        TEXT NOT NULL,
+  value_json       TEXT NOT NULL,
+  work_unit_ref    TEXT NOT NULL,
+  asserted_by      TEXT NOT NULL,
+  source_refs_json TEXT NOT NULL,
+  verification_json TEXT,
+  confidence       REAL NOT NULL DEFAULT 1.0,
+  created_at       TEXT NOT NULL,
+  superseded_by    TEXT REFERENCES facts(id),
+  superseded_at    TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_facts_active
+  ON facts(subject_kind, subject_id, predicate) WHERE superseded_by IS NULL;
+CREATE INDEX IF NOT EXISTS ix_facts_subject
+  ON facts(subject_kind, subject_id) WHERE superseded_by IS NULL;
+CREATE INDEX IF NOT EXISTS ix_facts_predicate
+  ON facts(predicate) WHERE superseded_by IS NULL;
 
 CREATE TABLE IF NOT EXISTS user_read_cursors (
   user_id TEXT NOT NULL,
@@ -796,6 +801,11 @@ CREATE TABLE IF NOT EXISTS channel_bindings (
   native_id TEXT,
   kind TEXT,
   agent_id TEXT NOT NULL,
+  -- 邮箱地址绑定（第六刀 §2.1）：同一张表上的另一种「谁拥有这个入口」。
+  -- 可空 = 既有路由行；不接受回填（旧行 NULL 合法）。
+  address TEXT,
+  -- 撤销用时间戳表达，不删行（审计与「撤销后地址可重新认领」都需要历史）。
+  revoked_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(org_id, scope, instance_id, native_id)
 );
@@ -810,12 +820,74 @@ CREATE TABLE IF NOT EXISTS pending_callbacks (
   command TEXT,
   note TEXT,
   correlation_id TEXT,
+  origin_scenario TEXT,
+  work_unit_ref TEXT,
   wake_at INTEGER,
   recurring_ms INTEGER,
   registered_at INTEGER NOT NULL,
-  timeout_ms INTEGER NOT NULL DEFAULT 600000
+  timeout_ms INTEGER NOT NULL DEFAULT 600000,
+  claimed_by TEXT,
+  lease_until INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pending_callbacks_agent ON pending_callbacks(agent_id);
+
+-- C10-B：外部信号源（webhook / RSS）的持久配置 + kill switch。
+-- 有写者（SqliteExternalSourceRepo）+ 真流量（验收 ≥1 真事件）满足建表门。
+-- enabled = 持久 kill switch：每 tick / 每 POST 现读 DB（无内存缓存 = 无第二写者），
+-- 重启后状态保持。cursor = RSS 水位（重启不重扫全量）。新表走 CREATE IF NOT EXISTS
+-- （SCHEMA_SQL 每次 init 都跑）⇒ fresh 与 upgraded 逻辑 schema 天然一致，无需迁移数组。
+CREATE TABLE IF NOT EXISTS external_sources (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organizations(id),
+  agent_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  address TEXT NOT NULL,
+  config TEXT NOT NULL DEFAULT '{}',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  cursor TEXT,
+  last_event_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_external_sources_org ON external_sources(org_id);
+CREATE INDEX IF NOT EXISTS idx_external_sources_kind_enabled ON external_sources(kind, enabled);
+`;
+
+/**
+ * C9-A: `facts` 的两条 DB 层守卫 —— **不可改写** 与 **身份必填**。
+ *
+ * 为什么不放进 SCHEMA_SQL：那段模板按 `;` 切分逐条 exec，`BEGIN … END` 里的分号
+ * 会被切坏（切出来的碎片第一条就语法错）。触发器必须作为**完整语句**执行。
+ *
+ * 为什么是触发器而不是代码纪律：纪律要求"每个人都记得"，触发器只要求
+ * "库存在"。一个不变量只能有一个执行点，而"没人会绕过它"的那个点是这里。
+ *
+ * facts_no_rewrite 的 WHEN 子句只覆盖**结论性**列：supersede 本身要写
+ * superseded_by / superseded_at，那不是改写，是「新事实取代旧事实」的标记。
+ */
+const FACTS_TRIGGERS_SQL = `
+CREATE TRIGGER IF NOT EXISTS facts_no_rewrite
+BEFORE UPDATE ON facts
+WHEN OLD.value_json        <> NEW.value_json
+  OR OLD.predicate         <> NEW.predicate
+  OR OLD.subject_kind      <> NEW.subject_kind
+  OR OLD.subject_id        <> NEW.subject_id
+  OR OLD.asserted_by       <> NEW.asserted_by
+  OR OLD.work_unit_ref     <> NEW.work_unit_ref
+  OR OLD.source_refs_json  <> NEW.source_refs_json
+BEGIN
+  SELECT RAISE(ABORT, 'facts are immutable; supersede instead');
+END;
+
+CREATE TRIGGER IF NOT EXISTS facts_require_provenance
+BEFORE INSERT ON facts
+WHEN NEW.work_unit_ref IS NULL OR TRIM(NEW.work_unit_ref) = ''
+  OR NEW.asserted_by IS NULL OR TRIM(NEW.asserted_by) = ''
+  OR NEW.source_refs_json IS NULL OR TRIM(NEW.source_refs_json) = ''
+BEGIN
+  SELECT RAISE(ABORT, 'facts require provenance: work_unit_ref, asserted_by, source_refs_json');
+END;
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -829,6 +901,17 @@ export function openSqlite(dbPath: string): DatabaseSync {
   _db.exec('PRAGMA journal_mode = WAL');
   _db.exec('PRAGMA foreign_keys = ON');
   _db.exec('PRAGMA busy_timeout = 5000');
+  // 实测（2026-11-16）：库已经 12 GB，最大的三张日志表 447 万 / 379 万 / 295 万行，
+  // 而 SQLite 默认只给 2 MB 页缓存、且 mmap 关闭 —— 任何冷读都走磁盘。
+  // 这条页面自己的查询确实亚毫秒（索引覆盖），但一旦触到日志表就会反复读盘，
+  // 那就是用户感受到的“整体卡”。
+  //
+  // cache_size 负数 = KiB（-131072 = 128 MB）；mmap_size 让读走内存映射（256 MB）。
+  // 两者相加只有 384 MB，相对于 12 GB 库是保守值；不支持 mmap 的平台会忽略。
+  try {
+    _db.exec('PRAGMA cache_size = -131072');
+    _db.exec('PRAGMA mmap_size = 268435456');
+  } catch { /* 平台不支持时忽略，不阻塞启动 */ }
 
   // ── schema 自举：建表 / 加列 / 建索引全部包在**一个事务**里 ────────────────
   // 原先这三段每条 DDL 都是独立提交 = 每条一次 fsync。WAL + synchronous=FULL
@@ -844,6 +927,10 @@ export function openSqlite(dbPath: string): DatabaseSync {
       .filter(Boolean)) {
       _db.exec(stmt);
     }
+
+    // C9-A: facts 的两条守卫（不可改写 / 身份必填）。整段执行 —— 触发器体内有分号，
+    // 不能过上面的逐条切分。放在同一事务内，与建表同生同灭。
+    _db.exec(FACTS_TRIGGERS_SQL);
 
   // Migrations for existing databases: add columns that were introduced after initial schema
   const migrations: Array<{ table: string; column: string; sql: string }> = [
@@ -896,6 +983,13 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'mailbox_items', column: 'claimed_by', sql: "ALTER TABLE mailbox_items ADD COLUMN claimed_by TEXT" },
     { table: 'mailbox_items', column: 'lease_until', sql: "ALTER TABLE mailbox_items ADD COLUMN lease_until TEXT" },
     { table: 'mailbox_items', column: 'dedup_key', sql: "ALTER TABLE mailbox_items ADD COLUMN dedup_key TEXT" },
+    // P3 precondition: a persisted callback is loaded into EVERY process memory at
+    // startup, so without a claim two processes deliver the same wakeup twice. The
+    // sibling table mailbox_items already carries exactly this pair; this brings the
+    // callback queue to the same standard. Nullable, so existing rows stay readable
+    // and become claimable -- no data rewrite.
+    { table: 'pending_callbacks', column: 'claimed_by', sql: "ALTER TABLE pending_callbacks ADD COLUMN claimed_by TEXT" },
+    { table: 'pending_callbacks', column: 'lease_until', sql: "ALTER TABLE pending_callbacks ADD COLUMN lease_until INTEGER" },
     { table: 'users', column: 'avatar_url', sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT" },
     { table: 'users', column: 'invite_token', sql: "ALTER TABLE users ADD COLUMN invite_token TEXT" },
     { table: 'users', column: 'invite_expires_at', sql: "ALTER TABLE users ADD COLUMN invite_expires_at TEXT" },
@@ -912,6 +1006,23 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'users', column: 'hub_token', sql: 'ALTER TABLE users ADD COLUMN hub_token TEXT' },
     { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
     { table: 'agents', column: 'disabled', sql: 'ALTER TABLE agents ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0' },
+    // A5: 自主档位。ADD COLUMN 带 DEFAULT，SQLite 会让历史行读出来就是 'act'，
+    // 与加列之前的行为一致，因此不需要回填、也不需要迁移数据。
+    { table: 'agents', column: 'autonomy', sql: "ALTER TABLE agents ADD COLUMN autonomy TEXT NOT NULL DEFAULT 'act'" },
+    // C10-C: cross-org trust policy. The DEFAULT backfills existing rows at
+    // ALTER time — compatible read, no data rewrite. Elevation to 'auto' goes
+    // through OrganizationService (human approval + audit row), never raw SQL.
+    { table: 'organizations', column: 'cross_org_policy', sql: "ALTER TABLE organizations ADD COLUMN cross_org_policy TEXT NOT NULL DEFAULT 'observe'" },
+    // C10-F: org-level external ingress. ADD COLUMN + DEFAULT backfills existing
+    // rows to 'off' at ALTER time — no data rewrite, and the safe state is the
+    // one an upgrading install lands on. Flipping it is a human action
+    // (OrganizationService.setExternalIngress), never raw SQL.
+    { table: 'organizations', column: 'external_ingress', sql: "ALTER TABLE organizations ADD COLUMN external_ingress TEXT NOT NULL DEFAULT 'off'" },
+    // ①-2：决策行也要能回答「谁在哪个回合撤销了什么」。可空且不回填 ——
+    // 加列之前的 22.7 万行属于旧纪元，NULL 是诚实的「不知道」，不是缺失。
+    { table: 'agent_decisions', column: 'work_unit_ref', sql: 'ALTER TABLE agent_decisions ADD COLUMN work_unit_ref TEXT' },
+    { table: 'agent_decisions', column: 'source', sql: 'ALTER TABLE agent_decisions ADD COLUMN source TEXT' },
+    { table: 'agent_decisions', column: 'overrode', sql: 'ALTER TABLE agent_decisions ADD COLUMN overrode TEXT' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
     { table: 'deliverables', column: 'hub_share_id', sql: 'ALTER TABLE deliverables ADD COLUMN hub_share_id TEXT' },
     { table: 'deliverables', column: 'share_status', sql: 'ALTER TABLE deliverables ADD COLUMN share_status TEXT' },
@@ -932,11 +1043,53 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'pending_callbacks', column: 'correlation_id', sql: 'ALTER TABLE pending_callbacks ADD COLUMN correlation_id TEXT' },
     { table: 'pending_callbacks', column: 'wake_at', sql: 'ALTER TABLE pending_callbacks ADD COLUMN wake_at INTEGER' },
     { table: 'pending_callbacks', column: 'recurring_ms', sql: 'ALTER TABLE pending_callbacks ADD COLUMN recurring_ms INTEGER' },
+    // Callback lineage must survive restarts: the scenario + work-unit identity of
+    // the launching turn are the ONLY facts that let a completion continue the
+    // right entity with the right tool pack. Previously originScenario existed
+    // only in process memory (save/loadAll dropped it) — a restart silently
+    // downgraded every pending callback to the heartbeat reflex pack.
+    { table: 'pending_callbacks', column: 'origin_scenario', sql: 'ALTER TABLE pending_callbacks ADD COLUMN origin_scenario TEXT' },
+    { table: 'pending_callbacks', column: 'work_unit_ref', sql: 'ALTER TABLE pending_callbacks ADD COLUMN work_unit_ref TEXT' },
     // ─── 知识库（V2 数据模型：知识库文件 = deliverable source='knowledge' + project knowledge_base_paths）────────────
     { table: 'projects', column: 'knowledge_base_paths', sql: "ALTER TABLE projects ADD COLUMN knowledge_base_paths TEXT DEFAULT '[]'" },
     { table: 'deliverables', column: 'source', sql: "ALTER TABLE deliverables ADD COLUMN source TEXT NOT NULL DEFAULT 'agent'" },
     { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },
     { table: 'deliverables', column: 'content', sql: 'ALTER TABLE deliverables ADD COLUMN content TEXT' },
+    // ─── 第六刀 C1：地址绑定（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ──
+    // ─── 第六刀 C2：信封列（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ───
+    // `work_unit_ref` 只加列、**不写值**：C7 才有唯一写者，避免先建引用后建实体。
+    // `message_id` 是 `envelope.messageId` 的投影列：唯一性必须由**索引**裁决，
+    // 而 JSON blob 无法可靠索引 —— 投影 + 部分唯一索引，才能让「同一条消息投两次」
+    // 在结构上不可表达（V5）。
+    { table: 'mailbox_items', column: 'envelope', sql: 'ALTER TABLE mailbox_items ADD COLUMN envelope TEXT' },
+    { table: 'mailbox_items', column: 'work_unit_ref', sql: 'ALTER TABLE mailbox_items ADD COLUMN work_unit_ref TEXT' },
+    { table: 'mailbox_items', column: 'signal_class', sql: 'ALTER TABLE mailbox_items ADD COLUMN signal_class TEXT' },
+    { table: 'mailbox_items', column: 'intent', sql: 'ALTER TABLE mailbox_items ADD COLUMN intent TEXT' },
+    // 工作记录：把「这条记录属于哪个实体」物化下来（kind/id 两列）。
+    // 旧行这两列为 NULL —— 读路径继续走原解析兜底（兼容旧库），下一次扫描时惰性回填。
+    { table: 'mailbox_items', column: 'entity_kind', sql: 'ALTER TABLE mailbox_items ADD COLUMN entity_kind TEXT' },
+    { table: 'mailbox_items', column: 'entity_id', sql: 'ALTER TABLE mailbox_items ADD COLUMN entity_id TEXT' },
+    { table: 'mailbox_items', column: 'message_id', sql: 'ALTER TABLE mailbox_items ADD COLUMN message_id TEXT' },
+    { table: 'mailbox_items', column: 'drop_reason', sql: 'ALTER TABLE mailbox_items ADD COLUMN drop_reason TEXT' },
+    { table: 'mailbox_items', column: 'bounce_target', sql: 'ALTER TABLE mailbox_items ADD COLUMN bounce_target TEXT' },
+    // ─── 第六刀 C1：地址绑定（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ──
+    { table: 'channel_bindings', column: 'address', sql: 'ALTER TABLE channel_bindings ADD COLUMN address TEXT' },
+    { table: 'channel_bindings', column: 'revoked_at', sql: 'ALTER TABLE channel_bindings ADD COLUMN revoked_at TEXT' },
+    // ─── C10-A：身份列（计划 §A）。只加可空列；唯一的数据写入是下方 org_slug
+    // 的显式 backfill（org_<id>，绝不从 name 推导）。索引在迁移之后建。 ───
+    { table: 'organizations', column: 'org_slug', sql: 'ALTER TABLE organizations ADD COLUMN org_slug TEXT' },
+    // C10-D：hub 身份列。只加可空列、不回填 —— hub_org_id IS NULL 就是「从未
+    // 对齐过」，回填等于编造一份没发生过的历史。对齐只发生在登录时（bindHubOrg）。
+    { table: 'organizations', column: 'hub_org_id', sql: 'ALTER TABLE organizations ADD COLUMN hub_org_id TEXT' },
+    { table: 'organizations', column: 'hub_synced_at', sql: 'ALTER TABLE organizations ADD COLUMN hub_synced_at TEXT' },
+    { table: 'agents', column: 'agent_alias', sql: 'ALTER TABLE agents ADD COLUMN agent_alias TEXT' },
+    // ─── 第九刀 C9-B：观测四表加可空 work_unit_ref（契约见 docs/architecture/derived-views.md）──
+    // 只加列、不回填：~9M 历史行保持 NULL（= 早于身份链）。回填等于制造第二份历史真相。
+    // 索引在下面「依赖迁移列的索引」段创建 —— 老库上列还不存在时建索引会直接报错。
+    { table: 'agent_activities', column: 'work_unit_ref', sql: 'ALTER TABLE agent_activities ADD COLUMN work_unit_ref TEXT' },
+    { table: 'agent_activity_logs', column: 'work_unit_ref', sql: 'ALTER TABLE agent_activity_logs ADD COLUMN work_unit_ref TEXT' },
+    { table: 'execution_stream_logs', column: 'work_unit_ref', sql: 'ALTER TABLE execution_stream_logs ADD COLUMN work_unit_ref TEXT' },
+    { table: 'task_logs', column: 'work_unit_ref', sql: 'ALTER TABLE task_logs ADD COLUMN work_unit_ref TEXT' },
   ];
     const addedColumns: string[] = [];
     for (const m of migrations) {
@@ -963,8 +1116,57 @@ export function openSqlite(dbPath: string): DatabaseSync {
       }
     }
 
+    // C10-A / C10-D：org_slug 显式 backfill —— 由 registryOrgSlug 按 id 派生
+    // （`local-<hash>`），绝不从 name 推导。只在
+    // 「这一次升级刚好补上这列」时执行（与上面同一次性纪律）：重复打开库
+    // 不写任何一行，已声明的 slug 永远不会被覆盖。registryOrgSlug 是与
+    // createOrg 共用的唯一派生点。
+    if (addedColumns.includes('organizations.org_slug')) {
+      const rows = _db
+        .prepare('SELECT id FROM organizations WHERE org_slug IS NULL')
+        .all() as Array<{ id: string }>;
+      const assign = _db.prepare('UPDATE organizations SET org_slug = ? WHERE id = ?');
+      for (const r of rows) assign.run(registryOrgSlug(r.id), r.id);
+      if (rows.length > 0) {
+        log.info(`Migration: assigned org_slug = org_<id> to ${rows.length} organisation(s) (explicit, id-based)`);
+      }
+    }
+
+    // 历史 `dropped` 行的理由回填（一次性，随本次升级触发）。
+    //
+    // `dropped` 早已不在状态值域内，读路径归一为 `bounced`；写路径也确实停了
+    // （实测末条 2026-11-13，此后为 0）。但留下的 28,633 行**全部没有 drop_reason**：
+    // 它们不是「正在静默丢」，而是「丢了却没留理由」，永久不可解释。
+    //
+    // 回填一个诚实的标记，让「不可解释」成为可查询的事实而不是空白。不猜具体原因 ——
+    // 原始理由已经不存在，编一个出来比留空更坏。
+    if (addedColumns.includes('agent_decisions.source')) {
+      const labelled = _db
+        .prepare(
+          `UPDATE mailbox_items SET drop_reason = 'legacy_unexplained'
+           WHERE status = 'dropped' AND (drop_reason IS NULL OR drop_reason = '')`
+        )
+        .run();
+      if (labelled.changes > 0) {
+        log.info(`Migration: labelled legacy dropped rows without a reason (${labelled.changes} rows)`);
+      }
+    }
+
     // Indexes that depend on migrated columns (must run AFTER column migrations)
     _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
+    // C10-0E（G8）：agent_activities 是 append-only —— 结构上拒绝任何改写。
+    // 触发器与索引同类：幂等 DDL，打开旧库时补建，不动任何数据行。
+    // 「更正」是 agent_activity_logs 里新的 activity_end 事件，读侧派生当前态。
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS agent_activities_no_update
+      BEFORE UPDATE ON agent_activities
+      BEGIN SELECT RAISE(ABORT, 'agent_activities is append-only (C10-0E): corrections are new activity_end events'); END`);
+    // 派生读只关心 activity_end 事件：部分索引让窗口子查询走索引而不是扫全日志表。
+    _db.exec("CREATE INDEX IF NOT EXISTS idx_activity_logs_end ON agent_activity_logs(activity_id, seq DESC) WHERE type = 'activity_end'");
+    // C9-B：观测四表的 `work_unit_ref` 索引。必须在列迁移之后 —— 老库在 SCHEMA_SQL
+    // 阶段还没有这四列，把索引写进 SCHEMA_SQL 会让「打开旧库」直接 no such column。
+    for (const table of ['agent_activities', 'agent_activity_logs', 'execution_stream_logs', 'task_logs']) {
+      _db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_wu ON ${table}(work_unit_ref)`);
+    }
     _db.exec('CREATE INDEX IF NOT EXISTS idx_pending_callbacks_wake ON pending_callbacks(wake_at)');
     _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_source ON deliverables(source)');
     _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_knowledge_root ON deliverables(knowledge_root)');
@@ -972,9 +1174,65 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // 依赖 mailbox_items.lease_until 列，必须在列迁移（migrations）之后创建，
     // 否则既有数据库上 openSqlite 会在 SCHEMA_SQL 阶段报 no such column 导致 storage 初始化整体失败。
     _db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_agent_lease ON mailbox_items(agent_id, status, lease_until)');
+    // migrations 跑完之后才能建这条：列是新加的，旧库在上面的 ALTER 里才拥有它。
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_entity ON mailbox_items(agent_id, entity_kind, entity_id)');
     // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
     // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
     _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
+    // 第六刀 C2（V5）：同一 agent 下同一 `messageId` 至多一行 —— **幂等身份由索引裁决**，
+    // 不靠调用方自觉。`message_id` 为 NULL（C2 之前的旧行）不受约束：SQLite 视 NULL 互不相等。
+    // 退信行（`bounced` / `catch_all`）是「这次投递没进去」的**记录**，不是第二条消息，
+    // 所以它们不参与这一约束：同一 messageId 被重复投递时，恰好一行 queued + 一条退信行。
+    // 第六刀 C3：谓词从 `status <> 'bounced'` 扩为 `NOT IN ('bounced','catch_all')` ——
+    // 退信行归集到概览后状态变 `catch_all`，若不排除它，同一条消息的第二次退信
+    // 会撞唯一键（= 把「可重复记录的退信」判成「重复消息」）。
+    // 依赖 `message_id` 列，必须在列迁移之后创建。
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_message ' +
+        "ON mailbox_items(agent_id, message_id) WHERE message_id IS NOT NULL AND status NOT IN ('bounced','catch_all')",
+    );
+
+    // 第六刀 C1：地址绑定的两个结构对象，都依赖上面的 `address` / `revoked_at` 列，
+    // 因此必须在列迁移之后创建（否则既有库会在 SCHEMA_SQL 阶段报 no such column）。
+    //
+    // 1) **全局**部分唯一索引：键里只有 `address`，**不含 `org_id`**（§2.8 H4）。邮箱
+    //    地址是全局身份——把 org_id 放进键里，I1「一个 active 地址至多一个 target_ref」
+    //    就会退化成「同地址可以绑两次」。撤销行保留 address 供审计，故谓词是
+    //    `revoked_at IS NULL`；旧行 address 为 NULL，SQLite 视 NULL 互不相等，既不冲突
+    //    也不需要回填。
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_channel_bindings_address_active ' +
+        'ON channel_bindings(address) WHERE revoked_at IS NULL',
+    );
+    // C10-A：身份列的唯一约束，都在列迁移之后建（老库上列还不存在时建索引会报错）。
+    // org_slug 全局唯一（部分索引：NULL 互不相等，未声明的组织不受约束）。
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_organizations_org_slug ' +
+        'ON organizations(org_slug) WHERE org_slug IS NOT NULL',
+    );
+    // agent_alias 组织内唯一；未设置（NULL）= 无邮件地址，多个 NULL 共存。
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_agents_org_alias ' +
+        'ON agents(org_id, agent_alias) WHERE agent_alias IS NOT NULL',
+    );
+    // 2) 唯一读面：地址解析（C2 的 resolve）与 `address_list` 工具都只读这个视图，
+    //    不各自拼 SQL —— 一处定义「active 地址绑定长什么样」。`target_ref` 由
+    //    `agent_id` 派生（`agent:<id>`），不是第二列存储：目标只有一个写者，才不会漂移。
+    // C10-A：视图**重建**而不是 IF NOT EXISTS —— 老库的旧视图没有 kind 列，
+    //    IF NOT EXISTS 会把旧形状永远留在老库上。视图零行，DROP VIEW 非破坏性；
+    //    不 DROP 任何表/列。kind 暴露冻结闭集 {agent, role, platform}（仅元数据）。
+    _db.exec('DROP VIEW IF EXISTS address_bindings');
+    _db.exec(`CREATE VIEW address_bindings AS
+      SELECT id,
+             org_id,
+             address,
+             'agent:' || agent_id AS target_ref,
+             agent_id,
+             kind,
+             revoked_at,
+             created_at
+        FROM channel_bindings
+       WHERE address IS NOT NULL`);
 
     _db.exec('COMMIT');
   } catch (err) {
@@ -1281,6 +1539,24 @@ export function runInTransaction<T>(db: DatabaseSync, fn: () => T): T {
 
 // ─── Repo implementations ────────────────────────────────────────────────────
 
+/**
+ * org_slug 缺省值的**唯一派生点** —— `local-<hash>`（C10-A / C10-D）。
+ * 只有两个调用方：createOrg（新建组织）与升级时的一次性显式 backfill。
+ * 绝不从 name 推导：历史两组织同名 My Organization，name 推导必撞且不可逆。
+ *
+ * 为何是**合法地址段**（C10-D 变更）：占位 slug 会出现在用户看到的地址里
+ * （`<local>.local-ab12cd34@markus.global`）。它如果不合法，未连 hub 的用户拿到的
+ * 地址根本解析不了 —— 占位就变成噪声。改成 `local-<hash>` 后：
+ * - 仍然是**占位事实**而非声明：由 id 派生、不可挑选；
+ * - hub 对齐时被真 slug 覆盖（SqliteOrgRepo.bindHubOrg），已签发地址则保持不动；
+ * - 人显式声明 slug 的路径不存在：slug 的唯一写者是 markus.global（全局唯一名字
+ *   只能在 hub 裁决），本机只镜像。
+ * hash = sha256 前 8 位：同一 orgId 恒得同一 slug（幂等），不含随机/时序成分。
+ */
+export function registryOrgSlug(orgId: string): string {
+  return `local-${createHash('sha256').update(orgId).digest('hex').slice(0, 8)}`;
+}
+
 export class SqliteOrgRepo {
   constructor(private db: DatabaseSync) {}
 
@@ -1293,11 +1569,86 @@ export class SqliteOrgRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO organizations (id, name, owner_id, plan, settings, created_at, updated_at)
-       VALUES (?, ?, ?, ?, '{}', ?, ?)`
+        `INSERT OR IGNORE INTO organizations (id, name, owner_id, plan, settings, org_slug, created_at, updated_at)
+       VALUES (?, ?, ?, ?, '{}', ?, ?, ?)`
       )
-      .run(data.id, data.name, data.ownerId, data.plan ?? 'free', ts, ts);
+      .run(data.id, data.name, data.ownerId, data.plan ?? 'free', registryOrgSlug(data.id), ts, ts);
     return this.findOrgById(data.id)!;
+  }
+
+  /**
+   * C10-D：把本地组织对齐到它在 markus.global 的身份。**hub_org_id 的唯一写者。**
+   *
+   * 三条纪律：
+   * 1. **不替代主键**：organizations.id 不动（agents / teams / channel_bindings 全挂它）。
+   *    hub_org_id 只回答「这个本地组织在 hub 上是哪个 org」——身份映射的唯一事实。
+   * 2. **地址段跟 hub 走**：hub 的 slug 是全局唯一的地址段；不同步就会出现「hub 上
+   *    看到的地址本机解析不了」两个世界。
+   * 3. **已签发地址的组织不改 slug**：一旦有 channel_binding 指向旧 slug，改 slug 会让
+   *    已发出的地址悬空。此时只记 hub_org_id，slug 留待 hub 侧裁决。
+   *
+   * 幂等：同一 (hubOrgId, slug) 重复调用写入相同字节，不产生第二份历史。
+   */
+  bindHubOrg(
+    orgId: string,
+    hubOrgId: string,
+    hubSlug: string | null,
+  ):
+    | { ok: true; orgSlug: string | null; slugSkipped?: 'already_issued' | 'invalid_hub_slug' | 'conflict' }
+    | { ok: false; reason: 'org_not_found' } {
+    const org = this.findOrgById(orgId);
+    if (!org) return { ok: false, reason: 'org_not_found' };
+
+    let slugSkipped: 'already_issued' | 'invalid_hub_slug' | 'conflict' | undefined;
+    let nextSlug = org.orgSlug;
+
+    if (hubSlug && hubSlug !== org.orgSlug) {
+      if (!checkOrgSlug(hubSlug).ok) {
+        slugSkipped = 'invalid_hub_slug';
+      } else if (
+        this.db
+          .prepare('SELECT 1 FROM channel_bindings WHERE org_id = ? AND address IS NOT NULL LIMIT 1')
+          .get(orgId) !== undefined
+      ) {
+        // 地址已签发 —— 可绑性优先于同步（已发出的地址不能变成悬空引用）。
+        slugSkipped = 'already_issued';
+      } else {
+        nextSlug = hubSlug;
+      }
+    }
+
+    const ts = now();
+    try {
+      this.db
+        .prepare(
+          'UPDATE organizations SET hub_org_id = ?, hub_synced_at = ?, org_slug = COALESCE(?, org_slug), updated_at = ? WHERE id = ?',
+        )
+        .run(hubOrgId, ts, nextSlug, ts, orgId);
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      // 本地另有组织占着这个 slug（hub 侧已保证唯一，只可能是本地先手写）。
+      // 记下身份即可，slug 保持原值；改名只能在 hub 侧发起。
+      slugSkipped = 'conflict';
+      nextSlug = org.orgSlug;
+      this.db
+        .prepare('UPDATE organizations SET hub_org_id = ?, hub_synced_at = ?, updated_at = ? WHERE id = ?')
+        .run(hubOrgId, ts, ts, orgId);
+    }
+
+    return { ok: true, orgSlug: nextSlug, ...(slugSkipped ? { slugSkipped } : {}) };
+  }
+
+  /**
+   * 已签发的邮箱地址数（`org_info` / `org_list` 的读数）。
+   * 只数 `address IS NOT NULL` 且未撤销的行 —— 撤销过的地址属于历史，不是「现在有几个」。
+   */
+  countBoundAddresses(orgId: string): number {
+    const row = this.db
+      .prepare(
+        'SELECT COUNT(*) AS c FROM channel_bindings WHERE org_id = ? AND address IS NOT NULL AND revoked_at IS NULL',
+      )
+      .get(orgId) as { c?: number } | undefined;
+    return Number(row?.c ?? 0);
   }
 
   findOrgById(id: string) {
@@ -1339,6 +1690,28 @@ export class SqliteOrgRepo {
       .run(managerAgentId, now(), orgId);
   }
 
+  /**
+   * C10-C: the single column writer for cross_org_policy. An instrument of
+   * OrganizationService.setCrossOrgPolicy — the only path that may call it,
+   * after a human approval and with an audit row. Not a public elevation path.
+   */
+  setCrossOrgPolicy(orgId: string, policy: 'observe' | 'auto') {
+    this.db
+      .prepare('UPDATE organizations SET cross_org_policy = ?, updated_at = ? WHERE id = ?')
+      .run(policy, now(), orgId);
+  }
+
+  /**
+   * C10-F: the single column writer for external_ingress. An instrument of
+   * OrganizationService.setExternalIngress — the only path that may call it,
+   * after a human approval and with an audit row. Not a public elevation path.
+   */
+  setExternalIngress(orgId: string, policy: 'off' | 'observe' | 'accept') {
+    this.db
+      .prepare('UPDATE organizations SET external_ingress = ?, updated_at = ? WHERE id = ?')
+      .run(policy, now(), orgId);
+  }
+
   private _mapOrg(r: Record<string, unknown>) {
     return {
       id: r['id'] as string,
@@ -1346,6 +1719,11 @@ export class SqliteOrgRepo {
       ownerId: r['owner_id'] as string,
       plan: r['plan'] as string,
       managerAgentId: r['manager_agent_id'] as string | null,
+      orgSlug: (r['org_slug'] as string | null) ?? null,
+      crossOrgPolicy: (r['cross_org_policy'] as string | null) ?? 'observe',
+      externalIngress: (r['external_ingress'] as string | null) ?? 'off',
+      hubOrgId: (r['hub_org_id'] as string | null) ?? null,
+      hubSyncedAt: (r['hub_synced_at'] as string | null) ?? null,
       settings: fromJson(r['settings'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
@@ -1368,12 +1746,14 @@ export class SqliteAgentRepo {
     llmConfig?: unknown;
     computeConfig?: unknown;
     heartbeatIntervalMs?: number;
+    /** A5: 自主档位。缺省由 DB DEFAULT 'act' 决定。 */
+    autonomy?: 'observe' | 'act';
   }) {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO agents (id, name, org_id, team_id, role_id, role_name, agent_role, skills, llm_config, compute_config, heartbeat_interval_ms, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO agents (id, name, org_id, team_id, role_id, role_name, agent_role, skills, llm_config, compute_config, heartbeat_interval_ms, autonomy, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -1387,6 +1767,7 @@ export class SqliteAgentRepo {
         toJson(data.llmConfig ?? {}),
         toJson(data.computeConfig ?? {}),
         data.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+        data.autonomy ?? 'act',
         ts,
         ts
       );
@@ -1448,7 +1829,7 @@ export class SqliteAgentRepo {
     this.db.prepare('UPDATE agents SET avatar_url = ?, updated_at = ? WHERE id = ?').run(avatarUrl, now(), id);
   }
 
-  updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number; profile?: unknown }) {
+  updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number; autonomy?: 'observe' | 'act'; profile?: unknown }) {
     const sets: string[] = ['updated_at = ?'];
     const vals: SqlParams = [now()];
     if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name); }
@@ -1457,6 +1838,7 @@ export class SqliteAgentRepo {
     if (data.llmConfig !== undefined) { sets.push('llm_config = ?'); vals.push(toJson(data.llmConfig)); }
     if (data.computeConfig !== undefined) { sets.push('compute_config = ?'); vals.push(toJson(data.computeConfig)); }
     if (data.heartbeatIntervalMs !== undefined) { sets.push('heartbeat_interval_ms = ?'); vals.push(data.heartbeatIntervalMs); }
+    if (data.autonomy !== undefined) { sets.push('autonomy = ?'); vals.push(data.autonomy); }
     if (data.profile !== undefined) { sets.push('profile = ?'); vals.push(toJson(data.profile)); }
     vals.push(id);
     this.db.prepare(`UPDATE agents SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -1471,6 +1853,8 @@ export class SqliteAgentRepo {
       roleId: r['role_id'],
       roleName: r['role_name'],
       agentRole: r['agent_role'],
+      // A5: 历史行经 ADD COLUMN DEFAULT 'act' 读出 'act'，与加列前行为一致。
+      autonomy: (r['autonomy'] as string | null) ?? 'act',
       status: r['status'],
       skills: arrayFromJson(r['skills'] as string),
       llmConfig: fromJson(r['llm_config'] as string),
@@ -2208,12 +2592,14 @@ export class SqliteTaskLogRepo {
     content: string;
     metadata?: unknown;
     executionRound?: number;
+    /** C9-B：这一行属于哪一轮（调用方给的是它已持有的身份，不反推）。 */
+    workUnitRef?: string | null;
   }) {
     const id = generateId('tlog');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO task_logs (id, task_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO task_logs (id, task_id, agent_id, seq, type, content, metadata, work_unit_ref, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         id,
@@ -2223,6 +2609,7 @@ export class SqliteTaskLogRepo {
         data.type,
         data.content,
         projectJson(toJson(data.metadata ?? {})),
+        data.workUnitRef ?? null,
         data.executionRound ?? 1,
         ts
       );
@@ -2443,60 +2830,6 @@ export class SqliteRequirementCommentRepo {
 
   deleteByRequirement(requirementId: string) {
     this.db.prepare('DELETE FROM requirement_comments WHERE requirement_id = ?').run(requirementId);
-  }
-}
-
-export class SqliteMessageRepo {
-  constructor(private db: DatabaseSync) {}
-
-  create(data: {
-    id: string;
-    platform: string;
-    direction: string;
-    channelId: string;
-    senderId: string;
-    senderName?: string;
-    agentId?: string;
-    content: unknown;
-    replyToId?: string;
-    threadId?: string;
-  }) {
-    this.db
-      .prepare(
-        'INSERT INTO messages (id, platform, direction, channel_id, sender_id, sender_name, agent_id, content, reply_to_id, thread_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        data.id,
-        data.platform,
-        data.direction,
-        data.channelId,
-        data.senderId,
-        data.senderName ?? null,
-        data.agentId ?? null,
-        toJson(data.content),
-        data.replyToId ?? null,
-        data.threadId ?? null,
-        now()
-      );
-    return this.db.prepare('SELECT * FROM messages WHERE id = ?').get(data.id);
-  }
-
-  findByChannel(channelId: string, limit = 50) {
-    return this.db
-      .prepare('SELECT * FROM messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?')
-      .all(channelId, limit);
-  }
-
-  findByAgent(agentId: string, limit = 50) {
-    return this.db
-      .prepare('SELECT * FROM messages WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?')
-      .all(agentId, limit);
-  }
-
-  findByThread(threadId: string) {
-    return this.db
-      .prepare('SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC')
-      .all(threadId);
   }
 }
 
@@ -3304,6 +3637,23 @@ export class SqliteChannelMessageRepo {
 export class SqliteUserRepo {
   constructor(private db: DatabaseSync) {}
 
+  /**
+   * A4 人类邮箱隔离：`users.email` 只放人类邮箱，不得占用组织邮箱格式
+   * `<local>.<org>@markus.global`（平台保留地址、外部域地址不受限）。
+   *
+   * 唯一执行点：所有写 email 的路径（create / upsert / updateProfile）都经过这里。
+   * 拒绝而不是自动改写 —— 自动 slugify/小写化会让「写进去的」与「查得到的」
+   * 变成两个事实，并且让人永远不知道自己写错了。
+   */
+  private assertHumanEmail(email: string | undefined): void {
+    if (!email || !isMarkusOrgAddress(email)) return;
+    throw new Error(
+      `users.email cannot be an organisation address (${email}). ` +
+        `Organisation mailboxes are <local>.<org>@markus.global and are claimed via bind_address; ` +
+        `use the person's own mailbox instead.`,
+    );
+  }
+
   create(data: {
     id: string;
     orgId: string;
@@ -3315,6 +3665,7 @@ export class SqliteUserRepo {
     hubUserId?: string;
     avatarUrl?: string;
   }) {
+    this.assertHumanEmail(data.email);
     this.db
       .prepare(
         'INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, hub_user_id, avatar_url, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
@@ -3344,6 +3695,7 @@ export class SqliteUserRepo {
     passwordHash?: string;
     hubUserId?: string;
   }) {
+    this.assertHumanEmail(data.email);
     this.db
       .prepare(
         `INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, hub_user_id, created_at)
@@ -3435,6 +3787,7 @@ export class SqliteUserRepo {
   }
 
   updateProfile(id: string, data: { name?: string; email?: string; role?: string; avatarUrl?: string | null }) {
+    this.assertHumanEmail(data.email);
     const sets: string[] = [];
     const vals: SqlParams = [];
     if (data.name !== undefined) {
@@ -3638,665 +3991,6 @@ export class SqliteTeamRepo {
       managerType: r['manager_type'],
       avatarUrl: r['avatar_url'] as string | null,
       createdAt: toDate(r['created_at'] as string),
-    };
-  }
-}
-
-export class SqliteMarketplaceTemplateRepo {
-  constructor(private db: DatabaseSync) {}
-
-  create(data: {
-    id: string;
-    name: string;
-    description: string;
-    source?: string;
-    status?: string;
-    version?: string;
-    authorId?: string;
-    authorName: string;
-    roleId: string;
-    agentRole?: string;
-    skills?: string[];
-    llmProvider?: string;
-    tags?: string[];
-    category: string;
-    icon?: string;
-    heartbeatIntervalMs?: number;
-    starterTasks?: unknown[];
-    config?: Record<string, unknown>;
-  }) {
-    const ts = now();
-    const status = data.status ?? 'draft';
-    this.db
-      .prepare(
-        `INSERT INTO marketplace_templates (id, name, description, source, status, version, author_id, author_name, role_id, agent_role, skills, llm_provider, tags, category, icon, heartbeat_interval_ms, starter_tasks, config, published_at, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run(
-        data.id,
-        data.name,
-        data.description,
-        data.source ?? 'community',
-        status,
-        data.version ?? '1.0.0',
-        data.authorId ?? null,
-        data.authorName,
-        data.roleId,
-        data.agentRole ?? 'worker',
-        arrayToJson(data.skills),
-        data.llmProvider ?? null,
-        arrayToJson(data.tags),
-        data.category,
-        data.icon ?? null,
-        data.heartbeatIntervalMs ?? null,
-        toJson(data.starterTasks ?? []),
-        toJson(data.config ?? {}),
-        status === 'published' ? ts : null,
-        ts,
-        ts
-      );
-    return this.findById(data.id)!;
-  }
-
-  findById(id: string) {
-    const r = this.db.prepare('SELECT * FROM marketplace_templates WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined;
-    return r ? this._map(r) : undefined;
-  }
-
-  list(opts?: {
-    source?: string;
-    status?: string;
-    category?: string;
-    limit?: number;
-    offset?: number;
-  }) {
-    let q = 'SELECT * FROM marketplace_templates WHERE 1=1';
-    const vals: SqlParams = [];
-    if (opts?.source) {
-      q += ' AND source = ?';
-      vals.push(opts.source);
-    }
-    if (opts?.status) {
-      q += ' AND status = ?';
-      vals.push(opts.status);
-    }
-    if (opts?.category) {
-      q += ' AND category = ?';
-      vals.push(opts.category);
-    }
-    q += ' ORDER BY download_count DESC, avg_rating DESC LIMIT ? OFFSET ?';
-    vals.push(opts?.limit ?? 50, opts?.offset ?? 0);
-    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  search(query: string, opts?: { source?: string; category?: string; limit?: number }) {
-    let q = 'SELECT * FROM marketplace_templates WHERE (name LIKE ? OR description LIKE ?)';
-    const vals: SqlParams = [`%${query}%`, `%${query}%`];
-    if (opts?.source) {
-      q += ' AND source = ?';
-      vals.push(opts.source);
-    }
-    if (opts?.category) {
-      q += ' AND category = ?';
-      vals.push(opts.category);
-    }
-    q += ' ORDER BY download_count DESC LIMIT ?';
-    vals.push(opts?.limit ?? 20);
-    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  updateStatus(id: string, status: string) {
-    const pubAt = status === 'published' ? now() : null;
-    this.db
-      .prepare(
-        'UPDATE marketplace_templates SET status = ?, published_at = COALESCE(?, published_at), updated_at = ? WHERE id = ?'
-      )
-      .run(status, pubAt, now(), id);
-  }
-
-  incrementDownloads(id: string) {
-    this.db
-      .prepare('UPDATE marketplace_templates SET download_count = download_count + 1 WHERE id = ?')
-      .run(id);
-  }
-
-  updateRating(id: string, avgRating: number, ratingCount: number) {
-    this.db
-      .prepare(
-        'UPDATE marketplace_templates SET avg_rating = ?, rating_count = ?, updated_at = ? WHERE id = ?'
-      )
-      .run(avgRating, ratingCount, now(), id);
-  }
-
-  update(
-    id: string,
-    data: Partial<{
-      name: string;
-      description: string;
-      version: string;
-      skills: string[];
-      tags: string[];
-      category: string;
-      icon: string;
-      config: Record<string, unknown>;
-    }>
-  ) {
-    const sets: string[] = [];
-    const vals: SqlParams = [];
-    if (data.name !== undefined) {
-      sets.push('name = ?');
-      vals.push(data.name);
-    }
-    if (data.description !== undefined) {
-      sets.push('description = ?');
-      vals.push(data.description);
-    }
-    if (data.version !== undefined) {
-      sets.push('version = ?');
-      vals.push(data.version);
-    }
-    if (data.skills !== undefined) {
-      sets.push('skills = ?');
-      vals.push(arrayToJson(data.skills));
-    }
-    if (data.tags !== undefined) {
-      sets.push('tags = ?');
-      vals.push(arrayToJson(data.tags));
-    }
-    if (data.category !== undefined) {
-      sets.push('category = ?');
-      vals.push(data.category);
-    }
-    if (data.icon !== undefined) {
-      sets.push('icon = ?');
-      vals.push(data.icon);
-    }
-    if (data.config !== undefined) {
-      sets.push('config = ?');
-      vals.push(toJson(data.config));
-    }
-    if (sets.length === 0) return;
-    sets.push('updated_at = ?');
-    vals.push(now());
-    vals.push(id);
-    this.db
-      .prepare(`UPDATE marketplace_templates SET ${sets.join(', ')} WHERE id = ?`)
-      .run(...vals);
-  }
-
-  delete(id: string) {
-    this.db.prepare('DELETE FROM marketplace_templates WHERE id = ?').run(id);
-  }
-
-  countBySource() {
-    const rows = this.db
-      .prepare('SELECT source, COUNT(*) as cnt FROM marketplace_templates GROUP BY source')
-      .all() as Array<{ source: string; cnt: number }>;
-    const result: Record<string, number> = {};
-    for (const r of rows) result[r.source] = r.cnt;
-    return result;
-  }
-
-  private _map(r: Record<string, unknown>) {
-    return {
-      id: r['id'],
-      name: r['name'],
-      description: r['description'],
-      source: r['source'],
-      status: r['status'],
-      version: r['version'],
-      authorId: r['author_id'],
-      authorName: r['author_name'],
-      roleId: r['role_id'],
-      agentRole: r['agent_role'],
-      skills: arrayFromJson(r['skills'] as string),
-      llmProvider: r['llm_provider'],
-      tags: arrayFromJson(r['tags'] as string),
-      category: r['category'],
-      icon: r['icon'],
-      heartbeatIntervalMs: r['heartbeat_interval_ms'],
-      starterTasks: fromJson(r['starter_tasks'] as string),
-      config: fromJson(r['config'] as string),
-      downloadCount: r['download_count'],
-      avgRating: r['avg_rating'],
-      ratingCount: r['rating_count'],
-      createdAt: toDate(r['created_at'] as string),
-      updatedAt: toDate(r['updated_at'] as string),
-      publishedAt: toDate(r['published_at'] as string),
-    };
-  }
-}
-
-export class SqliteMarketplaceSkillRepo {
-  constructor(private db: DatabaseSync) {}
-
-  create(data: {
-    id: string;
-    name: string;
-    description: string;
-    source?: string;
-    status?: string;
-    version?: string;
-    authorId?: string;
-    authorName: string;
-    category: string;
-    tags?: string[];
-    tools?: unknown[];
-    readme?: string;
-    requiredPermissions?: string[];
-    requiredEnv?: string[];
-    config?: Record<string, unknown>;
-  }) {
-    const ts = now();
-    const status = data.status ?? 'draft';
-    this.db
-      .prepare(
-        `INSERT INTO marketplace_skills (id, name, description, source, status, version, author_id, author_name, category, tags, tools, readme, required_permissions, required_env, config, published_at, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run(
-        data.id,
-        data.name,
-        data.description,
-        data.source ?? 'community',
-        status,
-        data.version ?? '1.0.0',
-        data.authorId ?? null,
-        data.authorName,
-        data.category,
-        arrayToJson(data.tags),
-        toJson(data.tools ?? []),
-        data.readme ?? null,
-        toJson(data.requiredPermissions ?? []),
-        toJson(data.requiredEnv ?? []),
-        toJson(data.config ?? {}),
-        status === 'published' ? ts : null,
-        ts,
-        ts
-      );
-    return this.findById(data.id)!;
-  }
-
-  findById(id: string) {
-    const r = this.db.prepare('SELECT * FROM marketplace_skills WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined;
-    return r ? this._map(r) : undefined;
-  }
-
-  list(opts?: {
-    source?: string;
-    status?: string;
-    category?: string;
-    limit?: number;
-    offset?: number;
-  }) {
-    let q = 'SELECT * FROM marketplace_skills WHERE 1=1';
-    const vals: SqlParams = [];
-    if (opts?.source) {
-      q += ' AND source = ?';
-      vals.push(opts.source);
-    }
-    if (opts?.status) {
-      q += ' AND status = ?';
-      vals.push(opts.status);
-    }
-    if (opts?.category) {
-      q += ' AND category = ?';
-      vals.push(opts.category);
-    }
-    q += ' ORDER BY download_count DESC, avg_rating DESC LIMIT ? OFFSET ?';
-    vals.push(opts?.limit ?? 50, opts?.offset ?? 0);
-    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  search(query: string, opts?: { source?: string; category?: string; limit?: number }) {
-    let q = 'SELECT * FROM marketplace_skills WHERE (name LIKE ? OR description LIKE ?)';
-    const vals: SqlParams = [`%${query}%`, `%${query}%`];
-    if (opts?.source) {
-      q += ' AND source = ?';
-      vals.push(opts.source);
-    }
-    if (opts?.category) {
-      q += ' AND category = ?';
-      vals.push(opts.category);
-    }
-    q += ' ORDER BY download_count DESC LIMIT ?';
-    vals.push(opts?.limit ?? 20);
-    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  updateStatus(id: string, status: string) {
-    const pubAt = status === 'published' ? now() : null;
-    this.db
-      .prepare(
-        'UPDATE marketplace_skills SET status = ?, published_at = COALESCE(?, published_at), updated_at = ? WHERE id = ?'
-      )
-      .run(status, pubAt, now(), id);
-  }
-
-  incrementDownloads(id: string) {
-    this.db
-      .prepare('UPDATE marketplace_skills SET download_count = download_count + 1 WHERE id = ?')
-      .run(id);
-  }
-
-  updateRating(id: string, avgRating: number, ratingCount: number) {
-    this.db
-      .prepare(
-        'UPDATE marketplace_skills SET avg_rating = ?, rating_count = ?, updated_at = ? WHERE id = ?'
-      )
-      .run(avgRating, ratingCount, now(), id);
-  }
-
-  delete(id: string) {
-    this.db.prepare('DELETE FROM marketplace_skills WHERE id = ?').run(id);
-  }
-
-  private _map(r: Record<string, unknown>) {
-    return {
-      id: r['id'],
-      name: r['name'],
-      description: r['description'],
-      source: r['source'],
-      status: r['status'],
-      version: r['version'],
-      authorId: r['author_id'],
-      authorName: r['author_name'],
-      category: r['category'],
-      tags: arrayFromJson(r['tags'] as string),
-      tools: fromJson(r['tools'] as string),
-      readme: r['readme'],
-      requiredPermissions: arrayFromJson(r['required_permissions'] as string),
-      requiredEnv: arrayFromJson(r['required_env'] as string),
-      config: fromJson(r['config'] as string),
-      downloadCount: r['download_count'],
-      avgRating: r['avg_rating'],
-      ratingCount: r['rating_count'],
-      createdAt: toDate(r['created_at'] as string),
-      updatedAt: toDate(r['updated_at'] as string),
-      publishedAt: toDate(r['published_at'] as string),
-    };
-  }
-}
-
-export class SqliteMarketplaceRatingRepo {
-  constructor(private db: DatabaseSync) {}
-
-  create(data: {
-    id: string;
-    targetType: string;
-    targetId: string;
-    userId: string;
-    rating: number;
-    review?: string;
-  }) {
-    const ts = now();
-    this.db
-      .prepare(
-        'INSERT INTO marketplace_ratings (id, target_type, target_id, user_id, rating, review, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        data.id,
-        data.targetType,
-        data.targetId,
-        data.userId,
-        data.rating,
-        data.review ?? null,
-        ts,
-        ts
-      );
-    return this.findByTarget(data.targetType as 'template' | 'skill', data.targetId)[0];
-  }
-
-  findByTarget(targetType: string, targetId: string, opts?: { limit?: number; offset?: number }) {
-    return (
-      this.db
-        .prepare(
-          'SELECT * FROM marketplace_ratings WHERE target_type = ? AND target_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
-        )
-        .all(targetType, targetId, opts?.limit ?? 50, opts?.offset ?? 0) as Record<
-        string,
-        unknown
-      >[]
-    ).map(r => this._map(r));
-  }
-
-  findByUser(userId: string, targetType?: string) {
-    if (targetType) {
-      return (
-        this.db
-          .prepare('SELECT * FROM marketplace_ratings WHERE user_id = ? AND target_type = ?')
-          .all(userId, targetType) as Record<string, unknown>[]
-      ).map(r => this._map(r));
-    }
-    return (
-      this.db.prepare('SELECT * FROM marketplace_ratings WHERE user_id = ?').all(userId) as Record<
-        string,
-        unknown
-      >[]
-    ).map(r => this._map(r));
-  }
-
-  findUserRating(userId: string, targetType: string, targetId: string) {
-    const r = this.db
-      .prepare(
-        'SELECT * FROM marketplace_ratings WHERE user_id = ? AND target_type = ? AND target_id = ?'
-      )
-      .get(userId, targetType, targetId) as Record<string, unknown> | undefined;
-    return r ? this._map(r) : undefined;
-  }
-
-  update(id: string, data: { rating?: number; review?: string }) {
-    const sets: string[] = [];
-    const vals: SqlParams = [];
-    if (data.rating !== undefined) {
-      sets.push('rating = ?');
-      vals.push(data.rating);
-    }
-    if (data.review !== undefined) {
-      sets.push('review = ?');
-      vals.push(data.review);
-    }
-    if (sets.length === 0) return;
-    sets.push('updated_at = ?');
-    vals.push(now());
-    vals.push(id);
-    this.db.prepare(`UPDATE marketplace_ratings SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  }
-
-  delete(id: string) {
-    this.db.prepare('DELETE FROM marketplace_ratings WHERE id = ?').run(id);
-  }
-
-  getAggregation(targetType: string, targetId: string) {
-    const r = this.db
-      .prepare(
-        'SELECT AVG(rating) as avg, COUNT(*) as count FROM marketplace_ratings WHERE target_type = ? AND target_id = ?'
-      )
-      .get(targetType, targetId) as { avg: number | null; count: number };
-    return { avg: Math.round(r.avg ?? 0), count: r.count };
-  }
-
-  private _map(r: Record<string, unknown>) {
-    return {
-      id: r['id'],
-      targetType: r['target_type'],
-      targetId: r['target_id'],
-      userId: r['user_id'],
-      rating: r['rating'],
-      review: r['review'],
-      createdAt: toDate(r['created_at'] as string),
-      updatedAt: toDate(r['updated_at'] as string),
-    };
-  }
-}
-
-export class SqliteAgentKnowledgeRepo {
-  constructor(private db: DatabaseSync) {}
-
-  create(data: {
-    id: string;
-    agentId: string;
-    orgId: string;
-    category: string;
-    title: string;
-    content: string;
-    tags?: string[];
-    source?: string;
-    metadata?: Record<string, unknown>;
-    importance?: number;
-  }) {
-    const ts = now();
-    this.db
-      .prepare(
-        `INSERT INTO agent_knowledge (id, agent_id, org_id, category, title, content, tags, source, metadata, importance, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run(
-        data.id,
-        data.agentId,
-        data.orgId,
-        data.category,
-        data.title,
-        data.content,
-        arrayToJson(data.tags),
-        data.source ?? 'agent',
-        toJson(data.metadata ?? {}),
-        data.importance ?? 50,
-        ts,
-        ts
-      );
-    return this.findById(data.id)!;
-  }
-
-  findById(id: string) {
-    const r = this.db.prepare('SELECT * FROM agent_knowledge WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined;
-    return r ? this._map(r) : undefined;
-  }
-
-  findByAgent(agentId: string, opts?: { category?: string; limit?: number }) {
-    let q = 'SELECT * FROM agent_knowledge WHERE agent_id = ?';
-    const vals: SqlParams = [agentId];
-    if (opts?.category) {
-      q += ' AND category = ?';
-      vals.push(opts.category);
-    }
-    q += ' ORDER BY updated_at DESC LIMIT ?';
-    vals.push(opts?.limit ?? 50);
-    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  search(agentId: string, query: string, limit = 10) {
-    return (
-      this.db
-        .prepare(
-          'SELECT * FROM agent_knowledge WHERE agent_id = ? AND (title LIKE ? OR content LIKE ?) ORDER BY importance DESC, updated_at DESC LIMIT ?'
-        )
-        .all(agentId, `%${query}%`, `%${query}%`, limit) as Record<string, unknown>[]
-    ).map(r => this._map(r));
-  }
-
-  searchByTags(agentId: string, tags: string[], limit = 10) {
-    if (tags.length === 0) return [];
-    const conditions = tags.map(() => `tags LIKE ?`).join(' OR ');
-    const vals = [agentId, ...tags.map(t => `%"${t}"%`), limit];
-    return (
-      this.db
-        .prepare(
-          `SELECT * FROM agent_knowledge WHERE agent_id = ? AND (${conditions}) ORDER BY importance DESC LIMIT ?`
-        )
-        .all(...vals) as Record<string, unknown>[]
-    ).map(r => this._map(r));
-  }
-
-  recordAccess(id: string) {
-    this.db
-      .prepare(
-        'UPDATE agent_knowledge SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?'
-      )
-      .run(now(), id);
-  }
-
-  update(
-    id: string,
-    data: Partial<{
-      title: string;
-      content: string;
-      category: string;
-      tags: string[];
-      importance: number;
-      metadata: Record<string, unknown>;
-    }>
-  ) {
-    const sets: string[] = [];
-    const vals: SqlParams = [];
-    if (data.title !== undefined) {
-      sets.push('title = ?');
-      vals.push(data.title);
-    }
-    if (data.content !== undefined) {
-      sets.push('content = ?');
-      vals.push(data.content);
-    }
-    if (data.category !== undefined) {
-      sets.push('category = ?');
-      vals.push(data.category);
-    }
-    if (data.tags !== undefined) {
-      sets.push('tags = ?');
-      vals.push(arrayToJson(data.tags));
-    }
-    if (data.importance !== undefined) {
-      sets.push('importance = ?');
-      vals.push(data.importance);
-    }
-    if (data.metadata !== undefined) {
-      sets.push('metadata = ?');
-      vals.push(toJson(data.metadata));
-    }
-    if (sets.length === 0) return;
-    sets.push('updated_at = ?');
-    vals.push(now());
-    vals.push(id);
-    this.db.prepare(`UPDATE agent_knowledge SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  }
-
-  delete(id: string) {
-    this.db.prepare('DELETE FROM agent_knowledge WHERE id = ?').run(id);
-  }
-
-  deleteByAgent(agentId: string) {
-    this.db.prepare('DELETE FROM agent_knowledge WHERE agent_id = ?').run(agentId);
-  }
-
-  countByAgent(agentId: string): number {
-    const r = this.db
-      .prepare('SELECT COUNT(*) as cnt FROM agent_knowledge WHERE agent_id = ?')
-      .get(agentId) as { cnt: number };
-    return r.cnt;
-  }
-
-  private _map(r: Record<string, unknown>) {
-    return {
-      id: r['id'],
-      agentId: r['agent_id'],
-      orgId: r['org_id'],
-      category: r['category'],
-      title: r['title'],
-      content: r['content'],
-      tags: arrayFromJson(r['tags'] as string),
-      source: r['source'],
-      metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
-      importance: r['importance'],
-      accessCount: r['access_count'],
-      lastAccessedAt: toDate(r['last_accessed_at'] as string),
-      createdAt: toDate(r['created_at'] as string),
-      updatedAt: toDate(r['updated_at'] as string),
     };
   }
 }
@@ -4565,6 +4259,8 @@ export interface ActivityRecord {
   taskId?: string | null;
   startedAt: string;
   endedAt?: string | null;
+  /** C9-B：产生这一行的那轮工作（可空 —— 早于身份链的历史行合法）。 */
+  workUnitRef?: string | null;
   totalTokens: number;
   totalTools: number;
   success: boolean;
@@ -4583,9 +4279,46 @@ export interface ActivityLogRecord {
   createdAt: string;
 }
 
+// C10-0E（G8）：activity 的「当前态」是派生值，定义只此一份，所有读方法包一层。
+// 基础行只写一次（insertActivity）；结束/更正 = agent_activity_logs 里新的
+// activity_end 事件（payload 在 metadata）。旧行（C10-0E 之前）结束数据在行上、
+// 没有 end 事件 ⇒ COALESCE 落回原值，派生是恒等映射，无需迁移。
+// 多个 end 事件取最新（seq DESC, id DESC）—— 与旧 UPDATE 的 last-wins 语义一致。
+const ACTIVITY_CURRENT_SELECT = `SELECT a.id, a.agent_id, a.mailbox_item_id, a.type, a.label, a.task_id,
+       a.started_at, a.work_unit_ref, a.created_at,
+       COALESCE(json_extract(e.metadata, '$.endedAt'), a.ended_at) AS ended_at,
+       COALESCE(json_extract(e.metadata, '$.totalTokens'), a.total_tokens) AS total_tokens,
+       COALESCE(json_extract(e.metadata, '$.totalTools'), a.total_tools) AS total_tools,
+       COALESCE(json_extract(e.metadata, '$.success'), a.success) AS success,
+       COALESCE(json_extract(e.metadata, '$.summary'), a.summary) AS summary,
+       COALESCE(json_extract(e.metadata, '$.keywords'), a.keywords) AS keywords
+FROM agent_activities a
+LEFT JOIN (
+  SELECT activity_id, metadata,
+         ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY seq DESC, id DESC) AS rn
+  FROM agent_activity_logs
+  WHERE type = 'activity_end'
+) e ON e.activity_id = a.id AND e.rn = 1`;
+
 export class SqliteActivityRepo {
   constructor(private db: DatabaseSync) {}
 
+  /**
+   * C8-P2：收口「僵尸活动」——`ended_at` 仍为空、但**触发它的 mailbox 行已终态**的行。
+   *
+   * 判据与 WorkUnit 纠偏同源：触发这件事的东西已经结束了，它就不可能“还在进行”。
+   * 2026-11-14 真机：这类行积了 3269 条，UI 一度拿它们派生“进行中”——那是在用
+   * 第二套事实回答一个已经由台账回答的问题。现在它们会被收口，"在跑"只认台账。
+   *
+   * @returns 收口条数（供启动日志，不静默）
+   */
+  /**
+   * C9-B（删机制）：这里曾经有一个 C8-P2 的「僵尸活动收口」方法（`closeOrphansAgainstTerminalMailbox`，已删）—— 给
+   * 「触发它的 mailbox 行已终态」的未收口 activity 补写 `ended_at`，好让
+   * 「`ended_at` 为空 = 还在跑」这个错误读法看起来成立。那个读法已全仓删掉
+   * （「在跑」只认 `work_units`），于是“帮事件扮成状态”的后台写也一并删掉：
+   * **没有结束就是没有结束**。契约见 docs/architecture/derived-views.md。
+   */
   insertActivity(data: {
     id: string;
     agentId: string;
@@ -4594,29 +4327,41 @@ export class SqliteActivityRepo {
     taskId?: string;
     mailboxItemId?: string;
     startedAt: string;
+    workUnitRef?: string | null;
   }): void {
     this.db
       .prepare(
-        'INSERT INTO agent_activities (id, agent_id, mailbox_item_id, type, label, task_id, started_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO agent_activities (id, agent_id, mailbox_item_id, type, label, task_id, started_at, work_unit_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(data.id, data.agentId, data.mailboxItemId ?? null, data.type, data.label, data.taskId ?? null, data.startedAt, now());
+      .run(
+        data.id,
+        data.agentId,
+        data.mailboxItemId ?? null,
+        data.type,
+        data.label,
+        data.taskId ?? null,
+        data.startedAt,
+        data.workUnitRef ?? null,
+        now(),
+      );
   }
 
-  updateActivity(
+  /**
+   * C10-0E（G8）：「活动结束/更正」的唯一写路径 —— 追加一条 activity_end 事件。
+   * seq 与 work_unit_ref 都由子查询派生（与 insertActivityLog 同源），调用方不再传一遍。
+   * metadata 用内联 JSON、**不做 blob 外置**：读侧派生靠 json_extract 取字段，
+   * 外置指针会让派生静默落空；payload 有界（core 把 summary 截到 500 字符）。
+   */
+  appendActivityEnd(
     activityId: string,
-    update: { endedAt?: string; totalTokens?: number; totalTools?: number; success?: boolean; summary?: string; keywords?: string }
+    end: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }
   ): void {
-    const sets: string[] = [];
-    const vals: SqlParams = [];
-    if (update.endedAt !== undefined) { sets.push('ended_at = ?'); vals.push(update.endedAt); }
-    if (update.totalTokens !== undefined) { sets.push('total_tokens = ?'); vals.push(update.totalTokens); }
-    if (update.totalTools !== undefined) { sets.push('total_tools = ?'); vals.push(update.totalTools); }
-    if (update.success !== undefined) { sets.push('success = ?'); vals.push(update.success ? 1 : 0); }
-    if (update.summary !== undefined) { sets.push('summary = ?'); vals.push(update.summary); }
-    if (update.keywords !== undefined) { sets.push('keywords = ?'); vals.push(update.keywords); }
-    if (sets.length === 0) return;
-    vals.push(activityId);
-    this.db.prepare(`UPDATE agent_activities SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+    this.db
+      .prepare(
+        'INSERT INTO agent_activity_logs (activity_id, seq, type, content, metadata, work_unit_ref, created_at) ' +
+          'VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_activity_logs WHERE activity_id = ?), ?, ?, ?, (SELECT work_unit_ref FROM agent_activities WHERE id = ?), ?)'
+      )
+      .run(activityId, activityId, 'activity_end', end.summary ?? '', toJson(end), activityId, now());
   }
 
   insertActivityLog(data: {
@@ -4628,9 +4373,21 @@ export class SqliteActivityRepo {
   }): void {
     this.db
       .prepare(
-        'INSERT INTO agent_activity_logs (activity_id, seq, type, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        // C9-B：日志的 `work_unit_ref` 从**所属 activity 行**继承 —— 一条日志不可能属于
+        // 与开启它的那轮不同的工作。用子查询取值而不是让调用方再传一遍：同一事实只有
+        // 一个写者，两边永远不会漂。
+        'INSERT INTO agent_activity_logs (activity_id, seq, type, content, metadata, work_unit_ref, created_at) ' +
+          'VALUES (?, ?, ?, ?, ?, (SELECT work_unit_ref FROM agent_activities WHERE id = ?), ?)'
       )
-      .run(data.activityId, data.seq, data.type, data.content, projectJson(toJson(data.metadata ?? {})), now());
+      .run(
+        data.activityId,
+        data.seq,
+        data.type,
+        data.content,
+        projectJson(toJson(data.metadata ?? {})),
+        data.activityId,
+        now(),
+      );
   }
 
   queryActivities(
@@ -4659,7 +4416,7 @@ export class SqliteActivityRepo {
     const limit = opts?.limit ?? 30;
     params.push(limit);
 
-    const sql = `SELECT * FROM agent_activities WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
+    const sql = `SELECT * FROM (${ACTIVITY_CURRENT_SELECT}) WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
     const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
     return rows.map(r => this.mapActivity(r));
   }
@@ -4680,12 +4437,12 @@ export class SqliteActivityRepo {
   }
 
   getActivity(activityId: string): ActivityRecord | null {
-    const r = this.db.prepare('SELECT * FROM agent_activities WHERE id = ?').get(activityId) as Record<string, unknown> | undefined;
+    const r = this.db.prepare(`SELECT * FROM (${ACTIVITY_CURRENT_SELECT}) WHERE id = ?`).get(activityId) as Record<string, unknown> | undefined;
     return r ? this.mapActivity(r) : null;
   }
 
   getByMailboxItemId(mailboxItemId: string): ActivityRecord | null {
-    const r = this.db.prepare('SELECT * FROM agent_activities WHERE mailbox_item_id = ? LIMIT 1').get(mailboxItemId) as Record<string, unknown> | undefined;
+    const r = this.db.prepare(`SELECT * FROM (${ACTIVITY_CURRENT_SELECT}) WHERE mailbox_item_id = ? LIMIT 1`).get(mailboxItemId) as Record<string, unknown> | undefined;
     return r ? this.mapActivity(r) : null;
   }
 
@@ -4694,7 +4451,7 @@ export class SqliteActivityRepo {
     if (ids.length === 0) return result;
     const placeholders = ids.map(() => '?').join(',');
     const rows = this.db
-      .prepare(`SELECT * FROM agent_activities WHERE mailbox_item_id IN (${placeholders})`)
+      .prepare(`SELECT * FROM (${ACTIVITY_CURRENT_SELECT}) WHERE mailbox_item_id IN (${placeholders})`)
       .all(...ids) as Record<string, unknown>[];
     for (const r of rows) {
       const rec = this.mapActivity(r);
@@ -4724,7 +4481,7 @@ export class SqliteActivityRepo {
     }
 
     params.push(limit);
-    const sql = `SELECT * FROM agent_activities WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
+    const sql = `SELECT * FROM (${ACTIVITY_CURRENT_SELECT}) WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
     const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
     return rows.map(r => this.mapActivity(r));
   }
@@ -4739,6 +4496,7 @@ export class SqliteActivityRepo {
       taskId: r['task_id'] as string | null,
       startedAt: r['started_at'] as string,
       endedAt: r['ended_at'] as string | null,
+      workUnitRef: (r['work_unit_ref'] as string | null) ?? null,
       totalTokens: (r['total_tokens'] as number) ?? 0,
       totalTools: (r['total_tools'] as number) ?? 0,
       success: (r['success'] as number) !== 0,
@@ -4761,6 +4519,8 @@ export interface ExecutionStreamRow {
   content: string;
   metadata: Record<string, unknown>;
   executionRound: number | null;
+  /** C9-B：这一条事件属于哪一轮（可空）。 */
+  workUnitRef?: string | null;
   createdAt: string;
 }
 
@@ -4774,6 +4534,8 @@ interface BufferedStreamRow {
   content: string;
   metadataJson: string;
   executionRound: number | null;
+  /** C9-B：这一条事件属于哪一轮（可空）。 */
+  workUnitRef: string | null;
   createdAt: string;
 }
 
@@ -4793,14 +4555,14 @@ export class SqliteExecutionStreamRepo {
   private writeBatch(rows: BufferedStreamRow[]): void {
     if (rows.length === 0) return;
     const stmt = this.db.prepare(
-      'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, work_unit_ref, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     let began = false;
     try {
       // Join an already-open outer transaction instead of nesting into it.
       try { this.db.exec('BEGIN IMMEDIATE'); began = true; } catch { began = false; }
       for (const r of rows) {
-        stmt.run(r.id, r.sourceType, r.sourceId, r.agentId, r.seq, r.type, r.content, r.metadataJson, r.executionRound, r.createdAt);
+        stmt.run(r.id, r.sourceType, r.sourceId, r.agentId, r.seq, r.type, r.content, r.metadataJson, r.workUnitRef, r.executionRound, r.createdAt);
       }
       if (began) this.db.exec('COMMIT');
     } catch (err) {
@@ -4833,6 +4595,8 @@ export class SqliteExecutionStreamRepo {
     content: string;
     metadata?: unknown;
     executionRound?: number;
+    /** C9-B：调用方已持有的身份（`Agent.turnWorkUnitRef()` / `WORK_UNIT_REF.task`）；不反推。 */
+    workUnitRef?: string | null;
   }): ExecutionStreamRow {
     const id = generateId('esl');
     const ts = now();
@@ -4848,6 +4612,7 @@ export class SqliteExecutionStreamRepo {
       content: data.content,
       metadataJson: toJson(data.metadata ?? {}),
       executionRound: data.executionRound ?? null,
+      workUnitRef: data.workUnitRef ?? null,
       createdAt: ts,
     });
     return {
@@ -4860,6 +4625,7 @@ export class SqliteExecutionStreamRepo {
       content: data.content,
       metadata: (data.metadata as Record<string, unknown>) ?? {},
       executionRound: data.executionRound ?? null,
+      workUnitRef: data.workUnitRef ?? null,
       createdAt: ts,
     };
   }
@@ -4964,6 +4730,20 @@ export interface MailboxItemRow {
   leaseUntil?: string | null;
   /** P0：幂等键（无幂等语义的项为 null）。 */
   dedupKey?: string | null;
+  /** C2：信封（JSON 原文；旧行为 null）。 */
+  envelope?: string | null;
+  /** C2：`envelope.messageId` 的投影（唯一性由 `uq_mailbox_agent_message` 裁决）。 */
+  messageId?: string | null;
+  /** C2：信号类别（六类闭集）。 */
+  signalClass?: string | null;
+  /** C2：投递意图。 */
+  intent?: string | null;
+  /** C2：`work_unit_ref`（本卡恒 null，C7 才有写者）。 */
+  workUnitRef?: string | null;
+  /** C2：退信原因（`status='bounced'` 时必填）。 */
+  dropReason?: string | null;
+  /** C2：catch-all 概览项 id（C3 写值）。 */
+  bounceTarget?: string | null;
 }
 
 /**
@@ -4978,6 +4758,26 @@ export interface MailboxDedupRow {
   claimedBy: string | null;
   leaseUntil: string | null;
   queuedAt: string;
+}
+
+/**
+ * 第六刀 C3：`message_route()` / catch-all 概览的行形状。
+ *
+ * 只含结构列，不含 `payload` —— 取证问的是「投到哪 / 为什么没投到」，
+ * 那是信封与状态列回答的问题，不是内容回答的。
+ */
+export interface MailboxRouteRow {
+  id: string;
+  agentId: string;
+  status: string;
+  envelope: string | null;
+  messageId: string | null;
+  signalClass: string | null;
+  intent: string | null;
+  dropReason: string | null;
+  bounceTarget: string | null;
+  queuedAt: string;
+  completedAt: string | null;
 }
 
 export class SqliteMailboxRepo {
@@ -5004,19 +4804,150 @@ export class SqliteMailboxRepo {
     queuedAt: string;
     /** P0 幂等键；缺省 / undefined 表示不加约束（落库为 NULL）。 */
     dedupKey?: string;
+    /** C2：信封原文（JSON）。缺省 = 无信封（旧调用方）。 */
+    envelope?: string | null;
+    /** C2：`envelope.messageId` 投影，供 `uq_mailbox_agent_message` 幂等裁决。 */
+    messageId?: string | null;
+    /** C2：信号类别 / 投递意图（信封的结构投影，供聚合与路由查询）。 */
+    signalClass?: string | null;
+    intent?: string | null;
+    /** C2：退信原因（仅 `status='bounced'` 写）。 */
+    dropReason?: string | null;
+    /** C3：catch-all 概览桶 id（退信行归集目标）。 */
+    bounceTarget?: string | null;
+    /**
+     * C8：入队即已知的身份（与行同时写入）。
+     *
+     * C10-0B：**入队是这一列的唯一写者**。曾经存在一条「后补身份」的 UPDATE
+     * 路径（先入队、再改写这列），它不碰内存里的 item —— 而决策台账读的是内存，
+     * 于是同一行在库里带身份、在台账里永远 NULL。那条路径已删除。
+     */
+    workUnitRef?: string | null;
   }): boolean {
     const res = this.db
       .prepare(
-        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        // `work_unit_ref` 在这里**也要写**：C8 之后它是入队参数，入队那一刻就已知。
+        // 2026-11-14 真机证据：生产者（task/requirement/mention/review_request）
+        // 都传了 `workUnitRef`，但 INSERT 不写这一列，于是取消投递带上了
+        // `invalidatesPremise:true` 却 `ref=NULL` —— 事实有标志、没身份，
+        // `turn-delta` 按 ref 匹配永远匹配不到，矛盾分支依旧不可达。
+        //
+        // C10-0B：INSERT 是这一列的**唯一**写点；任何“入队后再 UPDATE 这一列”的
+        // 路径都是第二个建适点（已全部删除）。
+        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
+                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target, work_unit_ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT DO NOTHING`
       )
       .run(
         item.id, item.agentId, item.sourceType, item.priority,
         item.status, projectJson(toJson(item.payload)), projectJson(toJson(item.metadata ?? {})),
         item.queuedAt, item.dedupKey ?? null,
+        item.envelope ?? null, item.messageId ?? null,
+        item.signalClass ?? null, item.intent ?? null, item.dropReason ?? null,
+        item.bounceTarget ?? null,
+        item.workUnitRef ?? null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;
+  }
+
+  /**
+   * C2（V5）：按 `(agent, messageId)` 查既有的**非退信**行。
+   *
+   * 只回传判定需要的最小字段（不拉 payload）——它在入队热路径上被调用。
+   * 退信行被排除：它们记录的是「这次没投进去」，不是同一消息的第二份。
+   */
+  findByMessageId(agentId: string, messageId: string): MailboxDedupRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, status, claimed_by AS claimedBy, lease_until AS leaseUntil, queued_at AS queuedAt
+           FROM mailbox_items
+          WHERE agent_id = ? AND message_id = ? AND status NOT IN ('bounced','catch_all')
+          LIMIT 1`,
+      )
+      .get(agentId, messageId) as MailboxDedupRow | undefined;
+    return row;
+  }
+
+  /**
+   * 第六刀 C3：`message_route(messageId)` 的**只读**取证入口。
+   *
+   * 不区分退信行与非退信行：取证要的就是「这条消息最后怎么了」。同一 messageId 可能同时有
+   * 1 条正经行 + N 条退信行（重投多次），所以返回数组而不是单行：只返回一行会让人误以为「只发生过一次」。
+   * 新→旧排序，调用方取第一条即最近一次。
+   *
+   * 不拉 `payload`：路由事实全在结构列上（信封 / signal_class / intent / 状态 / 原因）。
+   */
+  findRouteByMessageId(agentId: string, messageId: string, limit = 10): MailboxRouteRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, agent_id AS agentId, status, envelope, message_id AS messageId,
+                signal_class AS signalClass, intent, drop_reason AS dropReason,
+                bounce_target AS bounceTarget, queued_at AS queuedAt, completed_at AS completedAt
+           FROM mailbox_items
+          WHERE agent_id = ? AND message_id = ?
+          ORDER BY queued_at DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(agentId, messageId, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r['id'] as string,
+      agentId: r['agentId'] as string,
+      status: normalizeSignalStatus(r['status'] as string),
+      envelope: (r['envelope'] as string | null) ?? null,
+      messageId: (r['messageId'] as string | null) ?? null,
+      signalClass: (r['signalClass'] as string | null) ?? null,
+      intent: (r['intent'] as string | null) ?? null,
+      dropReason: (r['dropReason'] as string | null) ?? null,
+      bounceTarget: (r['bounceTarget'] as string | null) ?? null,
+      queuedAt: r['queuedAt'] as string,
+      completedAt: (r['completedAt'] as string | null) ?? null,
+    }));
+  }
+
+  /**
+   * 第六刀 C3：catch-all 概览**唯一读入口**。
+   *
+   * 判据是 `bounce_target = ?` 而不是 `status = 'catch_all'`：归集桶是结构事实，
+   * 状态只是它的一个簇。这样即便归集前（`bounced`）也已经能查出「它将被归到哪个概览」，
+   * 且归集是幂等的（重复归集不改行数）。
+   *
+   * `legacyDropped` 计数单独回：历史 `dropped` 行没有 `bounce_target`，不在归集桶里 ——
+   * 它们保留只读且不被回填，所以概览看不到它们。这是**诚实的缺陷记录**：旧行的原因
+   * 已经永久丢失，把它伪装成归集行只会造出第二份谎言。
+   */
+  listCatchAll(agentId: string, limit = 100): { items: MailboxRouteRow[]; legacyDropped: number } {
+    const catchAll = catchAllTargetOf(agentId);
+    const rows = this.db
+      .prepare(
+        `SELECT id, agent_id AS agentId, status, envelope, message_id AS messageId,
+                signal_class AS signalClass, intent, drop_reason AS dropReason,
+                bounce_target AS bounceTarget, queued_at AS queuedAt, completed_at AS completedAt
+           FROM mailbox_items
+          WHERE agent_id = ? AND bounce_target = ?
+          ORDER BY queued_at DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(agentId, catchAll, limit) as Array<Record<string, unknown>>;
+    const legacy = this.db
+      .prepare("SELECT COUNT(*) AS n FROM mailbox_items WHERE agent_id = ? AND status = 'dropped'")
+      .get(agentId) as { n: number } | undefined;
+    return {
+      items: rows.map((r) => ({
+        id: r['id'] as string,
+        agentId: r['agentId'] as string,
+        status: normalizeSignalStatus(r['status'] as string),
+        envelope: (r['envelope'] as string | null) ?? null,
+        messageId: (r['messageId'] as string | null) ?? null,
+        signalClass: (r['signalClass'] as string | null) ?? null,
+        intent: (r['intent'] as string | null) ?? null,
+        dropReason: (r['dropReason'] as string | null) ?? null,
+        bounceTarget: (r['bounceTarget'] as string | null) ?? null,
+        queuedAt: r['queuedAt'] as string,
+        completedAt: (r['completedAt'] as string | null) ?? null,
+      })),
+      legacyDropped: legacy?.n ?? 0,
+    };
   }
 
   /**
@@ -5036,7 +4967,22 @@ export class SqliteMailboxRepo {
             AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?)`
       )
       .run(nowIso, ownerId, leaseUntil, itemId, nowIso);
-    if (((res as { changes?: number }).changes ?? 0) === 1) return true;
+    if (((res as { changes?: number }).changes ?? 0) === 1) {
+      // 认领成功 = **这个回合开始了**，所以台账必须在同一个执行点说 running。
+      //
+      // 实测根因（2026-11-26 活探针 razor-verify-0006）：外部信号的回合真跑了 7 次模型
+      // 调用 + 7 组工具调用，而 `work_units` 那行仍是 `idle`、`claimed_by` 空 ——
+      // `work_status` 把正在输出的回合报成「没人在干活」。台账撒谎与回合空转是同一类
+      // 缺陷：事实被声明、执行点缺失。
+      //
+      // 为什么在这里而不是某个 sourceType 分支：本方法是「回合开始」的唯一写者
+      // （status/started_at/claimed_by/lease_until 同一条件写）。认领即开始，
+      // 所以这一处覆盖**所有**邮箱类型，不必给外部信号开特例。
+      // 口径与 chat 路径一致：`ensure` 对已存在的行什么都不做，撞上已收口的 idle 行
+      // 必须显式拉回，否则重试 / 同轮重入会让台账停在 idle。
+      this.markTurnRunning(itemId, ownerId);
+      return true;
+    }
 
     // 未胜出有两种可能，必须区分开：
     //  a) 行存在、但被有效租约持有或状态不允许 → 认领失败（唯一胜者语义，必须拒绝）；
@@ -5052,6 +4998,40 @@ export class SqliteMailboxRepo {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 回合开始 ⇒ 台账说 running。`claimItem` 胜出后的同一步，不对外暴露第二个入口。
+   *
+   * 复用 `SqliteWorkUnitRepo`（work_units 的唯一写者），绝不在这里另写 UPDATE ——
+   * 状态机校验、status_transitions 留痕、并发条件写都在那边，绕过去就是第二写者。
+   *
+   * 失败不吞掉真相也不丢消息：认领已经成功，回合必须继续跑；台账写不进去是**可行动的
+   * 结构化告警**（带 itemId / ref），不是静默降级。
+   */
+  private markTurnRunning(itemId: string, ownerId: string): void {
+    try {
+      const row = this.db
+        .prepare('SELECT work_unit_ref AS ref FROM mailbox_items WHERE id = ?')
+        .get(itemId) as { ref?: string | null } | undefined;
+      const ref = row?.ref;
+      // 只记录、不欠回合的信号没有 work unit —— 那是路径事实，不是缺陷。
+      if (!ref) return;
+      const units = new SqliteWorkUnitRepo(this.db);
+      const current = units.getByRef(ref);
+      if (!current) {
+        // ref 已写进行、台账却没有对应行：生产方漏了 ensure。补建而不是假装成功。
+        units.ensure({ ref, agentId: ownerId, status: 'running' } as never);
+        return;
+      }
+      if (current.status !== 'running') units.transition(ref, 'running');
+    } catch (err) {
+      log.warn('Turn claimed but work unit could not be marked running — ledger may under-report', {
+        itemId,
+        ownerId,
+        error: String(err),
+      });
+    }
   }
 
   /**
@@ -5100,8 +5080,8 @@ export class SqliteMailboxRepo {
       .prepare(
         `UPDATE mailbox_items
             SET status = 'queued', queued_at = ?, started_at = NULL, completed_at = NULL,
-                claimed_by = NULL, lease_until = NULL
-          WHERE id = ? AND status IN ('queued', 'processing', 'dropped', 'failed')`
+                claimed_by = NULL, lease_until = NULL, drop_reason = NULL, bounce_target = NULL
+          WHERE id = ? AND status IN ('queued', 'processing', 'dropped', 'failed', 'bounced')`
       )
       .run(options?.queuedAt ?? now(), itemId);
     return ((res as { changes?: number }).changes ?? 0) === 1;
@@ -5187,7 +5167,54 @@ export class SqliteMailboxRepo {
    *
    * @returns 被判 `dropped` 的条数（回队的 strict-state 行不计入）。
    */
-  markStaleProcessingAsDropped(agentId: string, nowIso?: string, currentOwnerId?: string): number {
+  /**
+   * 把陈旧 `processing` 行结案 —— **写 `bounced` + `drop_reason='lease_expired'`**（第六刀 C3）。
+   *
+   * 名字从 `markStaleProcessingAsDropped` 改掉：`dropped` 已不是取值域，留着旧名就是
+   * 一个当场说谎的标识符（它写的是 bounced，名字说 dropped）。
+   *
+   * 为什么原因必须**同一条 UPDATE** 写入：分两步会产生「终态已定、原因未到」的中间态，
+   * 而那正是旧 `dropped` 的病理（≥28,621 行终态没有原因、也没有回声）。
+   *
+   * `bounce_target` 直接指向本 agent 的 catch-all 概览桶 —— 租约失效是「没投进去」的一种，
+   * 必须同样在概览里恰好可见一次，而不是只活在日志里。
+   *
+   * @returns 被判 `bounced` 的条数（回队的 strict-state 行不计入）。
+   */
+  /**
+   * 陈旧 `processing` 行的**唯一判据**（共享实现：写口 `markStaleProcessingAsBounced`
+   * 与只读口 `countStaleProcessing` 必须回答同一个问题）。复制一份判据就是让「什么算陈旧」
+   * 出现第二个写者 —— 两个调用点一旦漂移，UI 的警告条与「清理」按钮就会对不上。
+   */
+  private staleProcessingWhere(currentOwnerId?: string): { where: string; params: (where: string) => string[] } {
+    const where =
+      `agent_id = ? AND status = 'processing'
+        AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?`
+      + (currentOwnerId ? ' OR (claimed_by IS NOT NULL AND claimed_by <> ?)' : '')
+      + ')';
+    return {
+      where,
+      params: (agentId: string) => (currentOwnerId ? [agentId, new Date().toISOString(), currentOwnerId] : [agentId, new Date().toISOString()]),
+    };
+  }
+
+  /**
+   * 只读：这个 agent 有多少条**陈旧** `processing` 行（同一判据见上）。
+   *
+   * 为什么需要它：概览页的「存在异常处理中项目」告警条此前是从**前端当前可见的那一页
+   * 记录**里数 `status === 'processing'` 得到的 —— 那是「一个实体的、被筛选过的一页」，
+   * 却被当成「这个 agent 的邮箱状态」来回答。于是同一条事实按你点哪个实体给出不同答案。
+   * 归口到服务端后，答案与「清理」按钮的作用域完全一致（清理的就是这些行）。
+   */
+  countStaleProcessing(agentId: string, currentOwnerId?: string): number {
+    const { where, params } = this.staleProcessingWhere(currentOwnerId);
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS cnt FROM mailbox_items WHERE ${where}`)
+      .get(...params(agentId)) as { cnt: number } | undefined;
+    return row?.cnt ?? 0;
+  }
+
+  markStaleProcessingAsBounced(agentId: string, nowIso?: string, currentOwnerId?: string): number {
     const now = nowIso ?? new Date().toISOString();
 
     // 陈旧判据（SELECT 与 UPDATE 共用同一实现，不复制）：无认领 / 无租约 / 租约过期，
@@ -5220,10 +5247,16 @@ export class SqliteMailboxRepo {
       });
     }
 
-    // 原判据逐字保留（同一实现）：非 strict-state 行（及未被回队的行）继续 drop。
+    // 原判据逐字保留（同一实现）：非 strict-state 行（及未被回队的行）继续结案。
+    // 第六刀 C3：终态从 `dropped` 改为 `bounced`，并同一条语句写入原因与概览桶。
+    const catchAll = catchAllTargetOf(agentId);
     const result = this.db
-      .prepare(`UPDATE mailbox_items SET status = 'dropped' WHERE ${staleWhere}`)
-      .run(...params);
+      .prepare(
+        `UPDATE mailbox_items
+            SET status = 'bounced', drop_reason = 'lease_expired', bounce_target = ?
+          WHERE ${staleWhere}`,
+      )
+      .run(catchAll, ...params);
     return (result as { changes?: number }).changes ?? 0;
   }
 
@@ -5237,6 +5270,10 @@ export class SqliteMailboxRepo {
     if (extra?.retryCount !== undefined) { parts.push('retry_count = ?'); params.push(extra.retryCount as number); }
     // P0：priority 走 updateStatus（save 为幂等插入语义，不再覆盖既有行）。
     if (extra?.priority !== undefined) { parts.push('priority = ?'); params.push(extra.priority as number); }
+    // 第六刀 C3：退信的两列必须能**随状态一起**写。分开写会出现「状态已是 bounced、
+    // 原因还没到」的中间态，而那正是旧 `dropped` 的病理（终态行没有原因）。
+    if (extra?.dropReason !== undefined) { parts.push('drop_reason = ?'); params.push((extra.dropReason as string) ?? null); }
+    if (extra?.bounceTarget !== undefined) { parts.push('bounce_target = ?'); params.push((extra.bounceTarget as string) ?? null); }
     params.push(itemId);
     this.db.prepare(`UPDATE mailbox_items SET ${parts.join(', ')} WHERE id = ?`).run(...params);
   }
@@ -5255,12 +5292,78 @@ export class SqliteMailboxRepo {
     return row ? this.mapRow(row) : undefined;
   }
 
+  /**
+   * 工作记录：把已解析出的「这条记录属于哪个实体」落库。
+   *
+   * 只在扫描时惰性回填（`AND entity_id IS NULL`），所以：
+   * - 旧库无需迁移脚本，第一次扫描后自己就填上了；
+   * - 不覆盖已有值，避免读路径反向成为实体归属的第二个写者。
+   */
+  setEntityKeys(entries: Array<{ id: string; kind: string; entityId: string }>): void {
+    if (entries.length === 0) return;
+    const stmt = this.db.prepare('UPDATE mailbox_items SET entity_kind = ?, entity_id = ? WHERE id = ? AND entity_id IS NULL');
+    // `node:sqlite` 的 DatabaseSync 没有 better-sqlite3 那种 transaction() 包装，
+    // 批量更新自己开显式事务。
+    this.db.exec('BEGIN');
+    try {
+      for (const r of entries) stmt.run(r.kind, r.entityId, r.id);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try { this.db.exec('ROLLBACK'); } catch { /* 回滚失败也要把原错误抛出去 */ }
+      throw err;
+    }
+  }
+
+  /** 工作记录：按实体键取（走 idx_mailbox_entity）。 */
+  getByEntityKey(agentId: string, kind: string, entityId: string, limit = 2000): MailboxItemRow[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM mailbox_items WHERE agent_id = ? AND entity_kind = ? AND entity_id = ? ORDER BY queued_at DESC LIMIT ?',
+    ).all(agentId, kind, entityId, limit) as Array<Record<string, unknown>>;
+    return rows.map(r => this.mapRow(r));
+  }
+
+  /** 工作记录：尚未回填实体键的行（旧数据），读路径兼底用。 */
+  getUnindexed(agentId: string, limit = 2000): MailboxItemRow[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM mailbox_items WHERE agent_id = ? AND entity_id IS NULL ORDER BY queued_at DESC LIMIT ?',
+    ).all(agentId, limit) as Array<Record<string, unknown>>;
+    return rows.map(r => this.mapRow(r));
+  }
+
+  /**
+   * C3：只读一行的当前状态（ghost 路径让矩阵裁决用）。
+   *
+   * 单独一条轻量查询：调用方（`AgentMailbox.drop` 对不在内存队列的 id）只需要
+   * `from` 状态来判迁移合法性，拉整行（payload/envelope）是浪费，而且会把热路径
+   * 变成“为了判一条规则读一整行”。归一与 `mapRow` 同源（`normalizeSignalStatus`）。
+   */
+  getStatus(id: string): string | undefined {
+    const row = this.db.prepare('SELECT status FROM mailbox_items WHERE id = ?').get(id) as
+      | { status: string }
+      | undefined;
+    return row ? normalizeSignalStatus(row.status) : undefined;
+  }
+
+  /**
+   * 状态计数（读路径归一）。
+   *
+   * 为什么不能直接 `GROUP BY status` 返回原始列：C3 删掉 `dropped` 终态后，历史行
+   * 仍是 `dropped`，而新行是 `bounced`。直接分组会让调用方（UI 状态筛选片）同时看到
+   * 「dropped」与「bounced」两个键 —— 同一个事实两个名字，且旧键的计数会永远停在
+   * 历史量级不再增长，读的人无法判断现在到底还有没有退信。
+   *
+   * 归一放在这里（而不是每个消费者各做一次）：拿到计数的地方就是聚合读者，
+   * 与 `mapRow()` 对**单行**的归一构成同一策略的两个侧面。
+   */
   getStatusCounts(agentId: string): Record<string, number> {
     const rows = this.db
       .prepare('SELECT status, COUNT(*) as cnt FROM mailbox_items WHERE agent_id = ? GROUP BY status')
       .all(agentId) as Array<{ status: string; cnt: number }>;
     const counts: Record<string, number> = {};
-    for (const r of rows) counts[r.status] = r.cnt;
+    for (const r of rows) {
+      const status = normalizeSignalStatus(r.status);
+      counts[status] = (counts[status] ?? 0) + r.cnt;
+    }
     return counts;
   }
 
@@ -5281,8 +5384,20 @@ export class SqliteMailboxRepo {
       params.push(...opts.sourceTypes);
     }
     if (opts?.status) {
-      conditions.push('status = ?');
-      params.push(opts.status);
+      // 读归一的第二个面：**筛选键也要归一**。
+      //
+      // 只归一 `mapRow()` 的返回值是不够的：行被 `status = ?` 过滤掉了就永远走不到
+      // mapRow，调用方（UI 状态筛选片）会看到「按 bounced 筛为空」，而库里明明躺着
+      // 一批历史 `dropped` 退信行。反过来，按旧名 `dropped` 筛也必须能命中当前
+      // `bounced` 行 —— 两个名字指向同一个事实，筛选不能只在其中一个上生效。
+      const wanted = normalizeSignalStatus(opts.status);
+      if (wanted === 'bounced') {
+        // 历史 `dropped` 与当前 `bounced` 都属于「这条信号没投进去」。
+        conditions.push("status IN ('bounced', 'dropped')");
+      } else {
+        conditions.push('status = ?');
+        params.push(wanted);
+      }
     }
     const limit = opts?.limit ?? 50;
     const offset = opts?.offset ?? 0;
@@ -5298,7 +5413,13 @@ export class SqliteMailboxRepo {
       agentId: r['agent_id'] as string,
       sourceType: r['source_type'] as string,
       priority: r['priority'] as number,
-      status: r['status'] as string,
+      /**
+       * 第六刀 C3：**读路径唯一归一**。历史 `dropped` 行（真实库 ≥28,621 行、
+       * 没有 `drop_reason`）只读保留，在这里映射为 `bounced`，**不 UPDATE 任何行**。
+       * 归一放在 mapRow 而不是每个消费者：拿到 row 的地方就一定是读取方，
+       * 让「同一状态两种写法」在持久层就消失。
+       */
+      status: normalizeSignalStatus(r['status'] as string),
       payload: fromJson<Record<string, unknown>>(r['payload'] as string) ?? {},
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string) ?? {},
       queuedAt: r['queued_at'] as string,
@@ -5310,6 +5431,13 @@ export class SqliteMailboxRepo {
       claimedBy: (r['claimed_by'] as string | null) ?? null,
       leaseUntil: (r['lease_until'] as string | null) ?? null,
       dedupKey: (r['dedup_key'] as string | null) ?? null,
+      envelope: (r['envelope'] as string | null) ?? null,
+      messageId: (r['message_id'] as string | null) ?? null,
+      signalClass: (r['signal_class'] as string | null) ?? null,
+      intent: (r['intent'] as string | null) ?? null,
+      workUnitRef: (r['work_unit_ref'] as string | null) ?? null,
+      dropReason: (r['drop_reason'] as string | null) ?? null,
+      bounceTarget: (r['bounce_target'] as string | null) ?? null,
     };
   }
 }
@@ -5322,6 +5450,12 @@ export interface DecisionRow {
   context: Record<string, unknown>;
   reasoning: string;
   outcome: string | null;
+  /** ①-2：这条决定属于哪个工作单元。NULL = 加列之前的旧纪元。 */
+  workUnitRef: string | null;
+  /** 谁拍板的：model / heuristic / rule / user。NULL = 加列（2026-11-18）之前的旧纪元。 */
+  source: string | null;
+  /** 平台规则在同一让点推翻的前一个判断类型。 */
+  overrode: string | null;
   createdAt: string;
 }
 
@@ -5336,16 +5470,20 @@ export class SqliteDecisionRepo {
     context: Record<string, unknown>;
     reasoning: string;
     outcome?: string;
+    workUnitRef?: string | null;
+    source?: string;
+    overrode?: string;
     createdAt: string;
   }): void {
     this.db
       .prepare(
-        'INSERT INTO agent_decisions (id, agent_id, decision_type, mailbox_item_id, context, reasoning, outcome, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO agent_decisions (id, agent_id, decision_type, mailbox_item_id, context, reasoning, outcome, work_unit_ref, source, overrode, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         decision.id, decision.agentId, decision.decisionType,
         decision.mailboxItemId, toJson(decision.context), decision.reasoning,
-        decision.outcome ?? null, decision.createdAt,
+        decision.outcome ?? null, decision.workUnitRef ?? null,
+        decision.source ?? null, decision.overrode ?? null, decision.createdAt,
       );
   }
 
@@ -5385,6 +5523,9 @@ export class SqliteDecisionRepo {
       context: fromJson<Record<string, unknown>>(r['context'] as string) ?? {},
       reasoning: r['reasoning'] as string,
       outcome: r['outcome'] as string | null,
+      workUnitRef: (r['work_unit_ref'] as string | null) ?? null,
+      source: (r['source'] as string | null) ?? null,
+      overrode: (r['overrode'] as string | null) ?? null,
       createdAt: r['created_at'] as string,
     };
   }
@@ -5691,7 +5832,7 @@ export class SqliteApprovalRepo {
 
 // ─── Group Chat Repo ──────────────────────────────────────────────────────────
 
-import type { GroupChat, GroupChatMember, IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
+import type { AddressBindingRow, GroupChat, GroupChatMember, IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
 
 export class SqliteGroupChatRepo {
   constructor(private db: DatabaseSync) {}
@@ -5846,7 +5987,8 @@ export class SqliteStatusTransitionRepo {
   constructor(private db: DatabaseSync) {}
 
   record(data: {
-    entityType: 'task' | 'requirement';
+    /** C7-A：`work_unit`；C3：`signal`；C10-A：`address`（地址签发/撤销生命周期）。 */
+    entityType: 'task' | 'requirement' | 'signal' | 'work_unit' | 'address';
     entityId: string;
     fromStatus: string;
     toStatus: string;
@@ -5871,7 +6013,11 @@ export class SqliteStatusTransitionRepo {
     );
   }
 
-  getByEntity(entityType: 'task' | 'requirement', entityId: string, limit = 50): StatusTransitionRow[] {
+  getByEntity(
+    entityType: 'task' | 'requirement' | 'signal' | 'work_unit' | 'address',
+    entityId: string,
+    limit = 50,
+  ): StatusTransitionRow[] {
     return this.db.prepare(
       `SELECT id,
               entity_type  AS entityType,
@@ -5890,9 +6036,328 @@ export class SqliteStatusTransitionRepo {
   }
 }
 
+// ─── 第七刀 C7-A：WorkUnit（唯一写者）────────────────────────────────────────
+
+/** `ensure()` 的入参：调用方只交出它真正知道的事，其余留空。 */
+export interface WorkUnitSeed {
+  ref: string;
+  agentId: string;
+  status?: WorkUnitStatus;
+  parentId?: string | null;
+  addressRef?: string | null;
+  taskId?: string | null;
+  model?: string | null;
+  budget?: number | null;
+  contextRef?: string | null;
+  claimedBy?: string | null;
+  leaseUntil?: string | null;
+}
+
+export interface WorkUnitTransitionOptions {
+  changedById?: string | null;
+  changedByType?: 'human' | 'agent' | 'system';
+  changedByName?: string | null;
+  reason?: string | null;
+  claimedBy?: string | null;
+  leaseUntil?: string | null;
+  stopReason?: string | null;
+  resultRef?: string | null;
+}
+
+export interface WorkUnitEnsureResult {
+  row: WorkUnitRecord;
+  /** `true` = 本次调用真的插入了行；`false` = 命中既有 ref（幂等）。 */
+  created: boolean;
+}
+
+/**
+ * WorkUnit 的**唯一 SQL 写者**。
+ *
+ * 「唯一」是被 `scripts/architecture-guard.mjs` 的 `work-unit-single-writer`
+ * 契约强制的：`INSERT INTO work_units` / `UPDATE work_units` 只允许出现在本文件，
+ * 且只允许由 `WorkUnitService` 调用（契约同时检查 service 是唯一调用方）。
+ *
+ * 为什么不把矩阵判定也写在这里：矩阵属于**概念**（`@markus/shared/work-unit`），
+ * SQL 属于**存储**。两者分开，测试才能不起库直接断言矩阵，而库里只有一处兜底断言。
+ */
+export class SqliteWorkUnitRepo {
+  /** 迁移记录的唯一执行点：把状态迁移写成 `status_transitions` 行。 */
+  private readonly transitions: SqliteStatusTransitionRepo;
+
+  constructor(private db: DatabaseSync) {
+    this.transitions = new SqliteStatusTransitionRepo(db);
+  }
+
+  /**
+   * 幂等建（或取回）一个 WorkUnit。
+   *
+   * **并发同一 ref 必须恰好一行** —— 由 `uq_work_units_ref` 兜底，不靠调用方自觉：
+   * `ON CONFLICT(ref) DO NOTHING` 让「谁先到」由数据库裁决，随后按 ref 读回唯一那一行。
+   * 先查后插（check-then-insert）在并发下不成立，两个 worker 都会看到「不存在」。
+   */
+  ensure(seed: WorkUnitSeed): WorkUnitEnsureResult {
+    const status = seed.status ?? 'running';
+    const res = this.db
+      .prepare(
+        `INSERT INTO work_units
+           (id, parent_id, ref, agent_id, address_ref, task_id, model, status, budget, used,
+            claimed_by, lease_until, context_ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+         ON CONFLICT(ref) DO NOTHING`,
+      )
+      .run(
+        `wu_${randomUUID()}`,
+        seed.parentId ?? null,
+        seed.ref,
+        seed.agentId,
+        seed.addressRef ?? null,
+        seed.taskId ?? null,
+        seed.model ?? null,
+        status,
+        seed.budget ?? null,
+        seed.claimedBy ?? null,
+        seed.leaseUntil ?? null,
+        seed.contextRef ?? null,
+      );
+    const created = ((res as { changes?: number }).changes ?? 0) === 1;
+    const row = this.getByRef(seed.ref);
+    if (!row) {
+      // 走到这里说明「插入没成功、读也读不到」——只可能是 ref 被并发删除了。
+      // 宁可让调用方看到失败（上层会记结构化 warn），也不返回一个假对象。
+      throw new Error(`WorkUnit ensure failed: ref "${seed.ref}" not found after insert`);
+    }
+    return { row, created };
+  }
+
+  /**
+   * C8 收口纠偏：`status='running'` 但**触发它的 mailbox 行已终态**的 WU，就地收口。
+   *
+   * 为什么需要：收口（running → idle）在 task 链路根本没有写者，chat 链路又会因
+   * round 漂移而收错行。结果是 `running` 里积满已结束的回合（真机实测 15 条），
+   * 任何「在跑」的读面都会把它当成真的。
+   *
+   * 判据只用已有事实：WU 的 ref 已经写在 mailbox 行上（C6/C7），而那一行是否终态
+   * 是可查的。不靠时间、不靠推断。
+   */
+  reconcileRunningAgainstTerminalMailbox(): number {
+    // 规则一：触发行已终态 → 这条活已经结束。
+    const settledByTerminal = this.db
+      .prepare(
+        `UPDATE work_units SET status='idle', stop_reason='reconciled_terminal_mailbox'
+          WHERE status='running' AND ref IN (
+            SELECT work_unit_ref FROM mailbox_items
+             WHERE work_unit_ref IS NOT NULL
+               AND status IN ('completed','bounced','catch_all','merged'))`,
+      )
+      .run();
+    // 规则二（孤儿）：`session:` 回合的 WU 没有任何 mailbox 行引用它 ——
+    // 自 C8 起 ref 是**入队参数**，活着的回合必然被引用；没被引用 = 链接从未落上，
+    // 这一行不可能是在跑（真机实测 4 条，均为旧构建遗留）。
+    const settledOrphan = this.db
+      .prepare(
+        `UPDATE work_units SET status='idle', stop_reason='reconciled_orphan_turn'
+          WHERE status='running' AND ref LIKE 'session:%'
+            AND ref NOT IN (SELECT work_unit_ref FROM mailbox_items WHERE work_unit_ref IS NOT NULL)`,
+      )
+      .run();
+    const a = (settledByTerminal as { changes?: number }).changes ?? 0;
+    const b = (settledOrphan as { changes?: number }).changes ?? 0;
+    // 规则三（子存活 ⊂ 父存活）：子 WU 跑在父回合里（`spawn_subagent` 被 await），
+    // 父不在 running 时子不可能在跑。
+    //
+    // 为什么必须有：规则二只覆盖 `session:%`，而委派子 WU 的 ref 是
+    // `delegation:…`。进程被杀 / 回合异常结束时子 WU 的 `settle()` 永不执行，
+    // 那一行就永远是 `running`（真机 2026-11-17 实测：父 `session:…:r127` 已 idle，
+    // 子 `delegation:…r127#sub_…` 仍 running）。
+    const settledByParent = this.db
+      .prepare(
+        `UPDATE work_units SET status='idle', stop_reason='reconciled_parent_not_running'
+          WHERE status='running' AND parent_id IS NOT NULL
+            AND parent_id IN (SELECT id FROM work_units WHERE status <> 'running')`,
+      )
+      .run();
+    const c = (settledByParent as { changes?: number }).changes ?? 0;
+    return a + b + c;
+  }
+
+  getByRef(ref: string): WorkUnitRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, parent_id AS parentId, ref, agent_id AS agentId, address_ref AS addressRef,
+                task_id AS taskId, model, status, budget, used, claimed_by AS claimedBy,
+                lease_until AS leaseUntil, stop_reason AS stopReason, result_ref AS resultRef,
+                context_ref AS contextRef, archived_at AS archivedAt
+           FROM work_units WHERE ref = ?`,
+      )
+      .get(ref) as WorkUnitRecord | undefined;
+    return row;
+  }
+
+  /**
+   * 状态迁移 —— 矩阵的**唯一执行点**。
+   *
+   * 三道闸，缺一不可：
+   *   1. 矩阵判定（`assertWorkUnitTransition`）：非法迁移抛结构化错误；
+   *   2. 乐观并发（`WHERE id = ? AND status = ?`）：读到 running 却被别人先改成
+   *      terminated 时，`changes === 0` → 抛错，而不是把终态覆盖回 running；
+   *   3. 迁移行（`status_transitions`，`entity_type='work_unit'`）：每次迁移都留痕，
+   *      否则「它什么时候停的」只能靠猜。
+   */
+  transition(ref: string, to: WorkUnitStatus, opts?: WorkUnitTransitionOptions): WorkUnitRecord {
+    const current = this.getByRef(ref);
+    if (!current) throw new Error(`WorkUnit transition failed: ref "${ref}" not found`);
+    assertWorkUnitTransition(current.status, to, ref);
+
+    const sets: string[] = ['status = ?'];
+    const params: SqlParams = [to];
+    if (opts?.claimedBy !== undefined) {
+      sets.push('claimed_by = ?');
+      params.push(opts.claimedBy);
+    }
+    if (opts?.leaseUntil !== undefined) {
+      sets.push('lease_until = ?');
+      params.push(opts.leaseUntil);
+    }
+    if (opts?.stopReason !== undefined) {
+      sets.push('stop_reason = ?');
+      params.push(opts.stopReason);
+    }
+    if (opts?.resultRef !== undefined) {
+      sets.push('result_ref = ?');
+      params.push(opts.resultRef);
+    }
+    if (to === 'archived') {
+      sets.push('archived_at = ?');
+      params.push(now());
+    }
+    params.push(current.id, current.status);
+
+    const res = this.db
+      .prepare(`UPDATE work_units SET ${sets.join(', ')} WHERE id = ? AND status = ?`)
+      .run(...params);
+    if (((res as { changes?: number }).changes ?? 0) !== 1) {
+      throw new Error(
+        `WorkUnit transition failed: ref "${ref}" changed concurrently ` +
+          `(expected status "${current.status}")`,
+      );
+    }
+
+    this.transitions.record({
+      entityType: 'work_unit',
+      entityId: current.id,
+      fromStatus: current.status,
+      toStatus: to,
+      changedById: opts?.changedById ?? null,
+      changedByType: opts?.changedByType ?? 'system',
+      changedByName: opts?.changedByName ?? null,
+      reason: opts?.reason ?? null,
+    });
+
+    const updated = this.getByRef(ref);
+    if (!updated) throw new Error(`WorkUnit transition failed: ref "${ref}" vanished`);
+    return updated;
+  }
+
+  /**
+   * C7-B —— 迭代记账：`used` 是**唯一口径**（iteration 次数）。
+   *
+   * 只做加法（`used = used + ?`），不做覆盖：覆盖在并发下会丢读数，而记账丢读数
+   * 是不可察觉的错误 —— 台账看起来对，实际少记。
+   */
+  addUsage(ref: string, used: number): void {
+    if (!Number.isFinite(used) || used <= 0) return;
+    this.db
+      .prepare('UPDATE work_units SET used = used + ? WHERE ref = ?')
+      .run(Math.floor(used), ref);
+  }
+
+  /**
+   * C7-B —— 后补 `context_ref`（只填空值）。
+   *
+   * `WHERE context_ref IS NULL` 不是防御性代码，是语义：一旦允许覆盖，
+   * "这一轮跑在哪个会话"就有了第二个写者，锁键来源随即不可信。
+   * 返回是否真的写入了（0 行 = 已有值或行不存在）。
+   */
+  adoptContextRef(ref: string, contextRef: string): boolean {
+    const res = this.db
+      .prepare('UPDATE work_units SET context_ref = ? WHERE ref = ? AND context_ref IS NULL')
+      .run(contextRef, ref);
+    return ((res as { changes?: number }).changes ?? 0) === 1;
+  }
+
+  /**
+   * 自省读面：「我这个 agent 现在有哪些 WU」。
+   *
+   * 只读 `work_units`，**不碰 payload、不读会话文本** —— 结构问题必须由结构回答
+   * （需求 §10.1 缺口 A：今天的答案是从文本注入块现算的，会漂移）。
+   */
+  listByAgent(
+    agentId: string,
+    opts?: { statuses?: WorkUnitStatus[]; includeArchived?: boolean; limit?: number },
+  ): WorkUnitRecord[] {
+    const limit = opts?.limit ?? 50;
+    const statuses = opts?.statuses?.length
+      ? opts.statuses
+      : opts?.includeArchived
+        ? null
+        : ['running', 'idle', 'paused_budget', 'terminated'] as WorkUnitStatus[];
+    if (statuses) {
+      const placeholders = statuses.map(() => '?').join(', ');
+      return this.db
+        .prepare(
+          `SELECT id, parent_id AS parentId, ref, agent_id AS agentId, address_ref AS addressRef,
+                  task_id AS taskId, model, status, budget, used, claimed_by AS claimedBy,
+                  lease_until AS leaseUntil, stop_reason AS stopReason, result_ref AS resultRef,
+                  context_ref AS contextRef, archived_at AS archivedAt
+             FROM work_units WHERE agent_id = ? AND status IN (${placeholders})
+             ORDER BY rowid ASC LIMIT ?`,
+        )
+        .all(agentId, ...statuses, limit) as unknown as WorkUnitRecord[];
+    }
+    return this.db
+      .prepare(
+        `SELECT id, parent_id AS parentId, ref, agent_id AS agentId, address_ref AS addressRef,
+                task_id AS taskId, model, status, budget, used, claimed_by AS claimedBy,
+                lease_until AS leaseUntil, stop_reason AS stopReason, result_ref AS resultRef,
+                context_ref AS contextRef, archived_at AS archivedAt
+           FROM work_units WHERE agent_id = ? ORDER BY rowid ASC LIMIT ?`,
+      )
+      .all(agentId, limit) as unknown as WorkUnitRecord[];
+  }
+
+  /** 子 WU（C7-B 才产生；本卡读面先就位，读空集是诚实答案）。 */
+  listChildren(parentId: string): WorkUnitRecord[] {
+    return this.db
+      .prepare(
+        `SELECT id, parent_id AS parentId, ref, agent_id AS agentId, address_ref AS addressRef,
+                task_id AS taskId, model, status, budget, used, claimed_by AS claimedBy,
+                lease_until AS leaseUntil, stop_reason AS stopReason, result_ref AS resultRef,
+                context_ref AS contextRef, archived_at AS archivedAt
+           FROM work_units WHERE parent_id = ? ORDER BY rowid ASC`,
+      )
+      .all(parentId) as unknown as WorkUnitRecord[];
+  }
+
+  /**
+   * 第九刀 C9-C：某个 task 主体当前**在跑**的 WorkUnit 条数。
+   *
+   * 只做一件事：`status = 'running'` 且 `task_id = ?` 的计数。读面用它是为了给
+   * `deriveStage()` 一个正向信号（>0 才提升到 `running`）；为 0 不代表「没在跑」，
+   * 只代表「这一列查不到在跑的回合」——所以派生规则里它只升不降。
+   */
+  countRunningByTask(taskId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM work_units WHERE task_id = ? AND status = 'running'")
+      .get(taskId) as { n?: number | bigint } | undefined;
+    const n = row?.n ?? 0;
+    return typeof n === 'bigint' ? Number(n) : n;
+  }
+
+}
+
 // ─── Integration ─────────────────────────────────────────────────────────────
 
-export type { IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
+export type { AddressBindingRow, IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
 
 export class SqliteIntegrationRepo {
   constructor(private db: DatabaseSync) {}
@@ -6135,6 +6600,418 @@ export class SqliteChannelBindingRepo {
 }
 
 // ─── Messaging gateway migration (legacy integrations → instances + bindings) ─
+
+// ─── 邮箱地址绑定（第六刀 C1）─────────────────────────────────────────────────
+
+/** `agent:<id>` —— `target_ref` 的唯一拼装点（§2.2，别处不得手拼）。 */
+export function addressTargetRef(agentId: string): string {
+  return `agent:${agentId}`;
+}
+
+/** SQLite 唯一约束违规：地址冲突的裁决依据是这个错误，不是读-再-写。 */
+function isUniqueViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { errcode?: number }).errcode;
+  // 2067 = SQLITE_CONSTRAINT_UNIQUE, 1555 = SQLITE_CONSTRAINT_PRIMARYKEY
+  if (code === 2067 || code === 1555) return true;
+  return /UNIQUE constraint failed/i.test(err.message);
+}
+
+/**
+ * 地址绑定的唯一写者与唯一读面（§2.2 / §2.4）。
+ *
+ * 三条纪律，都是为了让同一类 bug 在结构上无法表达：
+ * 1. **唯一性由索引裁决**：`bind()` 直接 INSERT，让
+ *    `uq_channel_bindings_address_active` 决定谁赢。先 SELECT 再 INSERT 会让两个
+ *    并发写入者同时通过检查（TOCTOU），那正是 I1 要禁止的。
+ * 2. **不按 org 限定解析**（H4）：`resolve()` / `findActive()` 的 WHERE 里没有
+ *    `org_id`。地址是全局身份；org 只出现在「列表可见范围」这种展示语义里。
+ * 3. **只能写自己**：`bind()` / `revoke()` 的入参没有 target 字段，目标恒为
+ *    `agentId`。「改他人绑定」在这层 API 上**不可表达**（I5 的正面回答在工具面）。
+ */
+export class SqliteAddressBindingRepo {
+  /** C10-A：地址生命周期留痕走与其他实体同一个唯一执行点（entity_type='address'）。 */
+  private readonly transitions: SqliteStatusTransitionRepo;
+
+  constructor(private db: DatabaseSync) {
+    this.transitions = new SqliteStatusTransitionRepo(db);
+  }
+
+  /** 认领一个地址。唯一冲突的裁决权在 DB 部分唯一索引上。 */
+  bind(input: { orgId: string; agentId: string; address: string }): AddressBindOutcome {
+    const gate = this.parseBindable(input.address);
+    if (!gate.ok) return gate.outcome;
+
+    const address = input.address;
+    // C10-A：slug 归属校验（防抢注）。全局唯一索引只防碰撞，不防「绑别人
+    // 组织的 slug」；这道门让「这个 slug 属于哪个组织」在 bind 时可检查。
+    // org 段来自唯一解析器 parseAddress（gate.value），不做第二次 split。
+    const orgRow = this.db
+      .prepare('SELECT org_slug FROM organizations WHERE id = ?')
+      .get(input.orgId) as { org_slug: string | null } | undefined;
+    const ownedSlug = orgRow?.org_slug ?? null;
+    if (ownedSlug === null) {
+      return {
+        status: 'bounced',
+        address,
+        reason: 'unresolved_address',
+        detail: 'org_slug_unset',
+        hint: `Your organisation has no declared org_slug yet, so it owns no address namespace. Ask the org owner to declare a slug (registry), then bind <local>.<slug>@${MARKUS_MAIL_DOMAIN}.`,
+        catchAllId: null,
+      };
+    }
+    if (gate.value.orgSlug !== ownedSlug) {
+      return {
+        status: 'bounced',
+        address,
+        reason: 'unresolved_address',
+        detail: 'org_slug_mismatch',
+        hint: `The org segment "${gate.value.orgSlug}" is not your organisation's slug. Yours is "${ownedSlug}" — bind <local>.${ownedSlug}@${MARKUS_MAIL_DOMAIN} instead; binding another organisation's slug is squatting and is rejected.`,
+        catchAllId: null,
+      };
+    }
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO channel_bindings (id, org_id, scope, instance_id, native_id, kind, agent_id, address, created_at)
+           VALUES (?, ?, 'address', NULL, NULL, 'agent', ?, ?, ?)`,
+        )
+        .run(generateId('cb'), input.orgId, input.agentId, address, new Date().toISOString());
+      // C10-A：签发留痕。from_status 诚实反映前态：有过撤销行 = revoked，否则 unbound。
+      const priorRevoked = this.db
+        .prepare('SELECT 1 FROM channel_bindings WHERE address = ? AND revoked_at IS NOT NULL LIMIT 1')
+        .get(address);
+      this.transitions.record({
+        entityType: 'address',
+        entityId: address,
+        fromStatus: priorRevoked !== undefined ? 'revoked' : 'unbound',
+        toStatus: 'bound',
+        changedById: input.agentId,
+        changedByType: 'agent',
+      });
+      return { status: 'bound', address, targetRef: addressTargetRef(input.agentId) };
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      const existing = this.findActive(address);
+      // 幂等：再绑一次自己的地址是 no-op，不是冲突 —— 同一个事实只有一种结局。
+      if (existing && existing.agentId === input.agentId) {
+        return { status: 'bound', address, targetRef: existing.targetRef, unchanged: true };
+      }
+      return {
+        status: 'conflict',
+        address,
+        hint: `${address} is already bound to a different target. Ask its owner to release it (address_revoke) before claiming it; two active targets for one address is not representable.`,
+      };
+    }
+  }
+
+  /** 撤销自己的绑定：打 `revoked_at`，行保留（地址随即可以被重新认领）。 */
+  revoke(input: { orgId: string; agentId: string; address: string }): AddressRevokeOutcome {
+    // C10-A：撤销不加 slug 归属门 —— 释放自己的历史绑定不得被注册表状态锁死。
+    const gate = this.parseBindable(input.address);
+    if (!gate.ok) return gate.outcome;
+
+    const address = input.address;
+    const result = this.db
+      .prepare(
+        'UPDATE channel_bindings SET revoked_at = ? WHERE address = ? AND revoked_at IS NULL AND agent_id = ?',
+      )
+      .run(new Date().toISOString(), address, input.agentId);
+    if (result.changes > 0) {
+      // M1：源不得比路由活得久。
+      //
+      // `registerSource` 已经要求「地址先绑给自己」，所以源不可能生来无路由 —— 撤销是唯一
+      // 能破坏这条不变量的操作，因此连带处置就写在这个唯一执行点，而不是在下游再为
+      // 「无路由的源」加一套识别/退信/决策机制。修完之后该状态结构上不可表达。
+      //
+      // 只动还启用着的行：已停用的源保留它自己的停用原因，不被这次撤销覆写。
+      // 原因写成可行动的提示（重新绑定 + 重新启用），不是一个不可解读的代码。
+      this.db
+        .prepare(
+          `UPDATE external_sources
+              SET enabled = 0,
+                  last_error = ?,
+                  updated_at = ?
+            WHERE address = ? AND enabled = 1`,
+        )
+        .run(
+          `address_revoked: ${address} was released; bind it again and re-enable this source to resume.`,
+          new Date().toISOString(),
+          address,
+        );
+      this.transitions.record({
+        entityType: 'address',
+        entityId: address,
+        fromStatus: 'bound',
+        toStatus: 'revoked',
+        changedById: input.agentId,
+        changedByType: 'agent',
+      });
+      return { status: 'revoked', address };
+    }
+
+    const existing = this.findActive(address);
+    if (!existing) {
+      return {
+        status: 'not_bound',
+        address,
+        hint: `${address} has no active binding, so there is nothing to revoke.`,
+      };
+    }
+    return {
+      status: 'forbidden',
+      address,
+      hint: `${address} is bound to another target; only its owner can revoke it (I5). Ask the owner, or bind an address of your own.`,
+    };
+  }
+
+  /**
+   * 列出可见绑定：自己的（含已撤销，带状态）+ 可选本组织 active 绑定。
+   * 只读；可见范围是展示语义，解析语义在 {@link resolve}。
+   */
+  listVisible(input: { orgId: string; agentId: string; includeOrg?: boolean }): AddressBindingRow[] {
+    const own = this.db
+      .prepare('SELECT * FROM address_bindings WHERE agent_id = ? ORDER BY created_at, id')
+      .all(input.agentId) as Record<string, unknown>[];
+    if (!input.includeOrg) return own.map((r) => this.mapRow(r));
+
+    const orgRows = this.db
+      .prepare(
+        `SELECT * FROM address_bindings
+          WHERE org_id = ? AND revoked_at IS NULL AND agent_id <> ?
+          ORDER BY address`,
+      )
+      .all(input.orgId, input.agentId) as Record<string, unknown>[];
+    return [...own, ...orgRows].map((r) => this.mapRow(r));
+  }
+
+  /** 一个地址当前是否被占用；被谁占用是 `agentId`，不是字符串推断。 */
+  findActive(address: string): AddressBindingRow | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM address_bindings WHERE address = ? AND revoked_at IS NULL')
+      .get(address) as Record<string, unknown> | undefined;
+    return row ? this.mapRow(row) : undefined;
+  }
+
+  /**
+   * 唯一解析入口（C2 的 `resolve()` 与 C3 的退信共用）：命中唯一 active 目标，
+   * 或明确「没有」。**没有第三种悄悄丢掉**，也**不按当前 org 限定**（H4）。
+   */
+  resolve(address: string): AddressResolution {
+    const parsed = parseAddress(address);
+    // 非本域 / 格式非法 / 0 点平台地址 / ≥2 点：都不是可解析的内部收件人。
+    if (!parsed.ok || parsed.value.kind !== 'markus') {
+      return { matched: false, address, reason: 'unresolved_address' };
+    }
+    const row = this.findActive(parsed.value.address);
+    if (!row) return { matched: false, address, reason: 'no_active_target' };
+    return { matched: true, address: row.address, targetRef: row.targetRef, agentId: row.agentId };
+  }
+
+  /**
+   * 解析阶段的拒绝，统一在这里产出：只有 `kind='markus'` 的地址可以认领。
+   * bind / revoke 共用同一套判定，避免两条写路径各写一份规则。
+   * C10-A：成功时把解析结果一并交出（归属校验读 org 段用），调用方不得再解析一次。
+   */
+  private parseBindable(
+    raw: string,
+  ):
+    | { ok: true; value: Extract<MailAddressRef, { kind: 'markus' }> }
+    | { ok: false; outcome: Extract<AddressBindOutcome, { status: 'bounced' }> } {
+    const parsed = parseAddress(raw);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        outcome: {
+          status: 'bounced',
+          address: raw,
+          reason: 'unresolved_address',
+          detail: parsed.reason,
+          hint: parsed.hint,
+          catchAllId: null,
+        },
+      };
+    }
+    if (parsed.value.kind === 'platform') {
+      return {
+        ok: false,
+        outcome: {
+          status: 'bounced',
+          address: raw,
+          reason: 'unresolved_address',
+          detail: 'platform_reserved',
+          hint: `${raw} is a platform-reserved 0-dot address. Organisations cannot claim it; bind <local>.<org>@markus.global instead.`,
+          catchAllId: null,
+        },
+      };
+    }
+    if (parsed.value.kind === 'external') {
+      return {
+        ok: false,
+        outcome: {
+          status: 'bounced',
+          address: raw,
+          reason: 'unresolved_address',
+          detail: 'external_domain',
+          hint: `${raw} is an external domain. Only <local>.<org>@markus.global addresses can be claimed on this platform.`,
+          catchAllId: null,
+        },
+      };
+    }
+    return { ok: true, value: parsed.value };
+  }
+
+  private mapRow(r: Record<string, unknown>): AddressBindingRow {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      address: r['address'] as string,
+      targetRef: r['target_ref'] as string,
+      agentId: r['agent_id'] as string,
+      kind: (r['kind'] as string | null) ?? null,
+      revokedAt: (r['revoked_at'] as string | null) ?? null,
+      createdAt: r['created_at'] as string,
+    };
+  }
+}
+
+// ─── C10-B：外部信号源（webhook / RSS）持久配置 + kill switch ──────────────────
+//
+// 唯一写者。enabled = 持久 kill switch（每 tick / 每 POST 现读 DB，无内存缓存）；
+// cursor = RSS 水位。kind 闭集 {webhook, rss}；address 经唯一解析器 parseAddress
+// 校验为可认领的 markus 组织地址（格式门；绑定归属由 service/工具层裁决）。
+
+export type ExternalSourceKind = 'webhook' | 'rss';
+
+export interface ExternalSourceRecord {
+  id: string;
+  orgId: string;
+  agentId: string;
+  kind: ExternalSourceKind;
+  address: string;
+  /** JSON 字符串（feedUrl / pollIntervalMs / token 等）。 */
+  config: string;
+  enabled: boolean;
+  cursor: string | null;
+  lastEventAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ExternalSourceRegisterOutcome =
+  | { status: 'registered'; source: ExternalSourceRecord }
+  | { status: 'bounced'; reason: 'invalid_kind' | 'invalid_address'; address: string; hint: string };
+
+export class SqliteExternalSourceRepo {
+  constructor(private db: DatabaseSync) {}
+
+  /** 注册一个源。kind 闭集 + 地址格式门（唯一解析器）；不静默改写非法输入。 */
+  register(input: {
+    orgId: string; agentId: string; kind: string; address: string; config?: Record<string, unknown>;
+  }): ExternalSourceRegisterOutcome {
+    if (input.kind !== 'webhook' && input.kind !== 'rss') {
+      return {
+        status: 'bounced', reason: 'invalid_kind', address: input.address,
+        hint: `kind must be "webhook" or "rss" (got ${JSON.stringify(input.kind)}).`,
+      };
+    }
+    const parsed = parseAddress(input.address);
+    if (!parsed.ok || parsed.value.kind !== 'markus') {
+      return {
+        status: 'bounced', reason: 'invalid_address', address: input.address,
+        hint: `address must be a claimable <local>.<org>@${MARKUS_MAIL_DOMAIN} address (external domains / platform-reserved / malformed are rejected).`,
+      };
+    }
+    const id = generateId('src');
+    const now = new Date().toISOString();
+    const config = JSON.stringify(input.config ?? {});
+    this.db
+      .prepare(
+        `INSERT INTO external_sources (id, org_id, agent_id, kind, address, config, enabled, cursor, last_event_at, last_error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, ?, ?)`,
+      )
+      .run(id, input.orgId, input.agentId, input.kind, parsed.value.address, config, now, now);
+    return { status: 'registered', source: this.get(id)! };
+  }
+
+  get(id: string): ExternalSourceRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM external_sources WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return this.mapRow(row);
+  }
+
+  listByOrg(orgId: string): ExternalSourceRecord[] {
+    const rows = this.db.prepare('SELECT * FROM external_sources WHERE org_id = ? ORDER BY created_at, id').all(orgId) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  listByAgent(orgId: string, agentId: string): ExternalSourceRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM external_sources WHERE org_id = ? AND agent_id = ? ORDER BY created_at, id')
+      .all(orgId, agentId) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  listEnabledByKind(kind: ExternalSourceKind): ExternalSourceRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM external_sources WHERE kind = ? AND enabled = 1 ORDER BY created_at, id')
+      .all(kind) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  /** kill switch：写 enabled 列（持久）。返回是否命中行。 */
+  setEnabled(id: string, enabled: boolean): boolean {
+    const result = this.db
+      .prepare('UPDATE external_sources SET enabled = ?, updated_at = ? WHERE id = ?')
+      .run(enabled ? 1 : 0, new Date().toISOString(), id);
+    return result.changes > 0;
+  }
+
+  /** RSS 水位入库（重启不重扫全量）。lastEventAt 缺省时不动该列。 */
+  updateCursor(id: string, cursor: string | null, lastEventAt?: string): void {
+    const now = new Date().toISOString();
+    if (lastEventAt !== undefined) {
+      this.db.prepare('UPDATE external_sources SET cursor = ?, last_event_at = ?, updated_at = ? WHERE id = ?').run(cursor, lastEventAt, now, id);
+    } else {
+      this.db.prepare('UPDATE external_sources SET cursor = ?, updated_at = ? WHERE id = ?').run(cursor, now, id);
+    }
+  }
+
+  recordError(id: string, error: string | null): void {
+    this.db.prepare('UPDATE external_sources SET last_error = ?, updated_at = ? WHERE id = ?').run(error, new Date().toISOString(), id);
+  }
+
+  /**
+   * C10-F: replace a source's config (currently only used to rotate the webhook
+   * shared secret). Kept as its own writer so the secret has exactly one write
+   * path — register() is create-only and must never be reused for rotation
+   * (that would re-run the address ownership gate with a different answer).
+   */
+  setConfig(id: string, config: Record<string, unknown>): boolean {
+    const result = this.db
+      .prepare('UPDATE external_sources SET config = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(config), new Date().toISOString(), id);
+    return result.changes > 0;
+  }
+
+  private mapRow(r: Record<string, unknown>): ExternalSourceRecord {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      agentId: r['agent_id'] as string,
+      kind: r['kind'] as ExternalSourceKind,
+      address: r['address'] as string,
+      config: r['config'] as string,
+      enabled: (r['enabled'] as number) !== 0,
+      cursor: (r['cursor'] as string | null) ?? null,
+      lastEventAt: (r['last_event_at'] as string | null) ?? null,
+      lastError: (r['last_error'] as string | null) ?? null,
+      createdAt: r['created_at'] as string,
+      updatedAt: r['updated_at'] as string,
+    };
+  }
+}
 
 /** Outcome counters for {@link migrateMessagingGateway} (observability + tests). */
 export interface MessagingGatewayMigrationStats {
@@ -6652,13 +7529,14 @@ export class SqliteWorkflowScheduleRepo {
 export class SqlitePendingCallbackRepo {
   constructor(private db: DatabaseSync) {}
 
-  save(cb: { id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }): void {
+  save(cb: { id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; originScenario?: string; workUnitRef?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }): void {
     this.db.prepare(
-      `INSERT OR REPLACE INTO pending_callbacks (id, agent_id, origin_session_id, type, delivery_mode, command, note, correlation_id, wake_at, recurring_ms, registered_at, timeout_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO pending_callbacks (id, agent_id, origin_session_id, type, delivery_mode, command, note, correlation_id, origin_scenario, work_unit_ref, wake_at, recurring_ms, registered_at, timeout_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       cb.id, cb.agentId, cb.originSessionId, cb.type, cb.deliveryMode ?? 'in_session',
       cb.command ?? null, cb.note ?? null, cb.correlationId ?? null,
+      cb.originScenario ?? null, cb.workUnitRef ?? null,
       cb.wakeAt ?? null, cb.recurringMs ?? null, cb.registeredAt, cb.timeoutMs,
     );
   }
@@ -6667,7 +7545,30 @@ export class SqlitePendingCallbackRepo {
     this.db.prepare('DELETE FROM pending_callbacks WHERE id = ?').run(id);
   }
 
-  loadAll(): Array<{ id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }> {
+  /**
+   * P3 precondition -- claim one due callback for THIS process before delivering it.
+   *
+   * The registry loads every persisted callback into process memory at startup, so
+   * without a claim two processes both see the same due wakeup and both deliver it.
+   * The sibling table mailbox_items already carries claimed_by/lease_until for
+   * exactly this reason; this brings the callback queue to the same standard.
+   *
+   * The WHERE clause IS the mechanism: it succeeds only when nobody holds a live
+   * lease. An expired lease is claimable again, so a crashed holder's work resumes
+   * instead of being stranded forever.
+   *
+   * Both columns are nullable, so rows written before this change read as
+   * unclaimed and become claimable -- old data stays readable, no rewrite.
+   */
+  claim(id: string, owner: string, leaseMs: number, now = Date.now()): boolean {
+    const res = this.db.prepare(
+      'UPDATE pending_callbacks SET claimed_by = ?, lease_until = ? '
+      + 'WHERE id = ? AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until <= ?)',
+    ).run(owner, now + leaseMs, id, now);
+    return (res.changes ?? 0) > 0;
+  }
+
+  loadAll(): Array<{ id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; originScenario?: string; workUnitRef?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }> {
     const rows = this.db.prepare('SELECT * FROM pending_callbacks').all() as Record<string, unknown>[];
     return rows.map(r => ({
       id: r['id'] as string,
@@ -6678,6 +7579,8 @@ export class SqlitePendingCallbackRepo {
       command: (r['command'] as string | null) ?? undefined,
       note: (r['note'] as string | null) ?? undefined,
       correlationId: (r['correlation_id'] as string | null) ?? undefined,
+      originScenario: (r['origin_scenario'] as string | null) ?? undefined,
+      workUnitRef: (r['work_unit_ref'] as string | null) ?? undefined,
       wakeAt: (r['wake_at'] as number | null) ?? undefined,
       recurringMs: (r['recurring_ms'] as number | null) ?? undefined,
       registeredAt: r['registered_at'] as number,

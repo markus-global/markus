@@ -20,7 +20,9 @@
     "tasksTotal": "已完成 / 总计",
     "tokenUsage": "Token 用量",
     "currentWorking": "当前工作中",
-    "storage": "存储"
+    "storage": "存储",
+    "cuQuota": "积分额度",
+    "cuUsedToday": "今日积分消耗"
   },
   "gettingStarted": {
     "title": "你的 AI 团队已就绪",
@@ -92,6 +94,10 @@
       "team": "创建科技前沿智库",
       "teamDesc": "组建由埃隆·马斯克、史蒂夫·乔布斯、山姆·奥特曼、黄仁勋 4 位科技领袖角色组成的 AI 智库，从不同视角分析科技前沿趋势",
       "teamAction": "一键创建",
+      "greetPrompt": "你好！我是新用户，请简单介绍一下你能帮我做什么？",
+      "projectPrompt": "帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力",
+      "requirementsPrompt": "在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式",
+      "teamPrompt": "帮我组建一个名为「科技前沿智库」的团队，成员包括4位科技领袖角色的智能体：埃隆·马斯克（关注太空、电动车、AI安全）、史蒂夫·乔布斯（关注产品设计与用户体验）、山姆·奥特曼（关注AGI与AI创业生态）、黄仁勋（关注GPU、AI算力与数据中心）。团队目标是从不同视角分析科技前沿趋势。",
       "shortcuts": "快捷键教学",
       "shortcutsDesc": "动手练习常用快捷键：导航、折叠/展开左侧栏、新建对话与会话切换",
       "shortcutsAction": "打开快捷键清单"

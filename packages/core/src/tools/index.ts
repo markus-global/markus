@@ -2,7 +2,7 @@ export { ShellTool, createShellTool, type ShellAgentMeta } from './shell.js';
 export { FileReadTool, FileWriteTool, FileEditTool, createFileReadTool, createFileWriteTool, createFileEditTool } from './file.js';
 export { createGrepTool, createGlobTool, createListDirectoryTool } from './search.js';
 export { createPatchTool } from './patch.js';
-export { createBackgroundExecTool, createProcessTool, onBackgroundCompletion, drainCompletedNotifications } from './process-manager.js';
+export { createBackgroundExecTool, createProcessTool, onBackgroundCompletion, drainCompletedNotifications, wasBackgroundResultConsumed, markBackgroundResultConsumed } from './process-manager.js';
 export { WebFetchTool } from './web-fetch.js';
 export {
   WebSearchTool,
@@ -23,7 +23,23 @@ export { createSubagentTool, createParallelSubagentTool, runSubagentLoop, type S
 export { createSettingsTools, type SettingsToolsContext } from './settings.js';
 export { createRecallTool, type RecallContext, type RecallCallbacks } from './recall.js';
 export { createMailboxTools, type MailboxToolContext } from './mailbox-tools.js';
+export {
+  createAddressTools,
+  parseTargetRef,
+  type AddressBindingPort,
+  type AddressBindingRecord,
+  type AddressToolContext,
+} from './address-tools.js';
+export {
+  createExternalSourceTools,
+  type ExternalSourcePort,
+  type ExternalSourceToolContext,
+  type ExternalSourceRegisterResult,
+  type ExternalSourceToggleResult,
+  type ExternalSourceListRecord,
+} from './external-source-tools.js';
 export { createWorkflowTools, type WorkflowToolsContext } from './workflow-tools.js';
+export { createFactTools, type FactToolsContext } from './fact-tools.js';
 export { createMultiModalTools, type MultiModalToolsContext } from './multimodal.js';
 export { createFeishuTools, type FeishuToolsConfig } from './feishu.js';
 export { createOfficeGenerateTool, generateOfficeFile, findCjkFontPath, OFFICE_FORMATS, OfficeGenerateError, type OfficeFormat, type OfficeContentSpec, type OfficeGenerateToolContext, type OfficeGenerateResult } from './office-generate.js';

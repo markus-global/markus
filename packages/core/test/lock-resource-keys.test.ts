@@ -22,12 +22,12 @@ const cls = Agent as unknown as {
   WRITE_TOOL_DOMAINS: Record<string, { domain: string; arg?: readonly string[]; resource?: string }>;
   resourceLocksFor: (
     tc: { name: string; arguments?: Record<string, unknown> },
-    dataDir?: string,
+    opts?: { dataDir?: string; agentId?: string; contextSessionId?: string; workspacePath?: string },
   ) => Array<{ domain: string; sub?: string }>;
 };
 
 const lockKey = (name: string, args: Record<string, unknown> = {}, dataDir?: string): string => {
-  const requests = cls.resourceLocksFor({ name, arguments: args }, dataDir);
+  const requests = cls.resourceLocksFor({ name, arguments: args }, { dataDir });
   expect(requests, `${name} 应至少解析出一个锁请求`).toHaveLength(1);
   const { domain, sub } = requests[0]!;
   return sub === undefined ? domain : `${domain}:${sub}`;

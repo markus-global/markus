@@ -125,11 +125,19 @@ describe('mailbox entity affinity scopes', () => {
       payload: { summary: 's', content: 'c', requirementId: 'req_9' },
     }, 'agt_x')).toBe('req:req_9');
 
-    // A2A 频道
+    // A2A：实体来自 WorkUnit（C8-A）。`channelKey` 不再是实体身份 —— 同一任务经
+    // 两条通道到达必须是同一个实体，否则会分裂成两个会话。
     expect(resolveEntityKey({
       sourceType: 'a2a_message',
       payload: { summary: 's', content: 'c', extra: { channelKey: 'dm:a2a:a|b' } },
-    }, 'agt_x')).toBe('channel:dm:a2a:a|b');
+      workUnitRef: 'a2a:task:tsk_7',
+    }, 'agt_x')).toBe('task:tsk_7');
+
+    // 没有 WorkUnit 的旧行 → 保守串行兜底（不是 `channel:`）
+    expect(resolveEntityKey({
+      sourceType: 'a2a_message',
+      payload: { summary: 's', content: 'c', extra: { channelKey: 'dm:a2a:a|b' } },
+    }, 'agt_x')).toBe('system:agt_x');
 
     // 会话优先于用户（session_reply 声明了 conversation，没有 user）
     expect(resolveEntityKey({

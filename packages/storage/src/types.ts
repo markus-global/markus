@@ -191,23 +191,6 @@ export interface User {
   lastLoginAt: Date | null;
 }
 
-export interface KnowledgeRow {
-  id: string;
-  agentId: string;
-  orgId: string;
-  category: string;
-  title: string;
-  content: string;
-  tags: string[];
-  source: string;
-  metadata: Record<string, unknown>;
-  importance: number;
-  accessCount: number;
-  lastAccessedAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
 export interface ExternalAgentRow {
   id: string;
   externalAgentId: string;
@@ -223,76 +206,6 @@ export interface ExternalAgentRow {
   lastSyncStatus: string | null;
   lastHeartbeat: Date | null;
   registeredAt: Date;
-  updatedAt: Date;
-}
-
-export interface GatewayMessageRow {
-  id: string;
-  targetAgentId: string;
-  fromAgentId: string;
-  fromAgentName: string | null;
-  content: string;
-  delivered: boolean;
-  createdAt: Date;
-}
-
-export interface MarketplaceTemplateRow {
-  id: string;
-  name: string;
-  description: string;
-  source: 'official' | 'community' | 'custom';
-  status: 'draft' | 'pending_review' | 'published' | 'rejected' | 'archived';
-  version: string;
-  authorId: string | null;
-  authorName: string;
-  roleId: string;
-  agentRole: string;
-  skills: string[];
-  llmProvider: string | null;
-  tags: string[];
-  category: string;
-  icon: string | null;
-  heartbeatIntervalMs: number | null;
-  starterTasks: Array<{ title: string; description: string; priority: string }>;
-  config: Record<string, unknown>;
-  downloadCount: number;
-  avgRating: number;
-  ratingCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface MarketplaceSkillRow {
-  id: string;
-  name: string;
-  description: string;
-  source: 'official' | 'community' | 'custom';
-  status: 'draft' | 'pending_review' | 'published' | 'rejected' | 'archived';
-  version: string;
-  authorId: string | null;
-  authorName: string;
-  category: string;
-  tags: string[];
-  tools: Array<{ name: string; description: string }>;
-  readme: string | null;
-  requiredPermissions: string[];
-  requiredEnv: string[];
-  config: Record<string, unknown>;
-  downloadCount: number;
-  avgRating: number;
-  ratingCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface MarketplaceRatingRow {
-  id: string;
-  targetType: 'template' | 'skill';
-  targetId: string;
-  userId: string;
-  rating: number;
-  review: string | null;
-  createdAt: Date;
   updatedAt: Date;
 }
 
@@ -403,6 +316,25 @@ export interface ChannelBindingRepo {
   listByOrg(orgId: string): ChannelBindingRow[];
   listByScope(orgId: string, scope: ChannelBindingScope): ChannelBindingRow[];
   delete(id: string): Promise<void>;
+}
+
+/**
+ * 一个邮箱地址绑定（视图 `address_bindings` 的行，第六刀 §2.1 / §2.2）。
+ *
+ * `scope='address'` 的行只活在地址语义里：`instance_id` / `native_id` 恒为 NULL，
+ * 因此它在结构上不可能成为任何路由候选（不是靠守卫排除，而是没有可路由的字段）。
+ */
+export interface AddressBindingRow {
+  id: string;
+  orgId: string;
+  address: string;
+  /** 形如 `agent:<agentId>`，由 `agent_id` 派生，不是独立存储列（单一写者）。 */
+  targetRef: string;
+  agentId: string;
+  /** C10-A：绑定目标类别，冻结闭集 {agent, role, platform}，仅元数据（主计划 §4.9.6）。 */
+  kind: string | null;
+  revokedAt: string | null;
+  createdAt: string;
 }
 
 // ─── Repo interfaces (structural contracts for dependency injection) ──────────

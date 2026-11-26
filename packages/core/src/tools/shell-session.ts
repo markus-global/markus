@@ -105,6 +105,33 @@ export function withSpoolPointer(tail: string, spoolPath: string | null, totalCh
   return head ? `${head}\n${pointer}\n…(tail)…\n${tail}` : `${pointer}\n${tail}`;
 }
 
+/**
+ * Single source of truth for the persistent-shell session key.
+ *
+ * Explicit name → `${agentId}:${name}`. Otherwise the DEFAULT session is keyed
+ * by EXECUTION CONTEXT (conversation / task session), NOT by agent: a shell
+ * process is a physical serial resource (one stdin/stdout, sentinel protocol),
+ * so an agent-wide default turned every concurrent worker's commands into one
+ * global queue — a `sleep 210` CI poll in one worker froze `git diff` in another
+ * for 148s (2026-11-22 incident). Per-context defaults let workers run shells
+ * in parallel while preserving cwd/env continuity WITHIN a conversation.
+ *
+ * Both the executor (shell.ts) and the write-lock derivation (agent.ts) MUST
+ * use this one function — two formulas would lock a different session than the
+ * one actually executed.
+ */
+export function shellSessionIdFor(agentId: string, explicitName?: string, contextId?: string): string {
+  return `${agentId}:${explicitName ?? `ctx:${contextId ?? 'default'}`}`;
+}
+
+/** Raised when the per-agent session cap is hit; callers fall back to one-shot spawn. */
+export class ShellSessionLimitError extends Error {
+  constructor(readonly agentId: string) {
+    super(`Shell session limit reached for agent ${agentId}`);
+    this.name = 'ShellSessionLimitError';
+  }
+}
+
 const SENTINEL_PREFIX = '__MARKUS_DONE_';
 
 function makeSentinel(): string {
@@ -368,11 +395,12 @@ export class ShellSessionManager {
   private sessionCwd = new Map<string, string>();
 
   /**
-   * Get or create the default session for an agent.
-   * If no session exists, one is lazily created.
+   * Get or create the default session for an execution context (see
+   * `shellSessionIdFor` — the default is per-conversation, NOT per-agent).
+   * Throws `ShellSessionLimitError` at the cap; callers fall back to one-shot.
    */
-  getOrCreateDefault(agentId: string, cwd?: string): ManagedSession {
-    const defaultId = `${agentId}:default`;
+  getOrCreateDefault(agentId: string, cwd?: string, contextId?: string): ManagedSession {
+    const defaultId = shellSessionIdFor(agentId, undefined, contextId);
     const existing = this.sessions.get(defaultId);
     if (existing?.alive) return existing;
 
@@ -380,6 +408,10 @@ export class ShellSessionManager {
       this.removeSession(defaultId);
     }
 
+    const agentSet = this.agentSessions.get(agentId) ?? new Set();
+    if (agentSet.size >= SHELL_MAX_SESSIONS_PER_AGENT) {
+      throw new ShellSessionLimitError(agentId);
+    }
     return this.createSession(
       defaultId,
       agentId,
@@ -416,13 +448,16 @@ export class ShellSessionManager {
   }
 
   /**
-   * Execute a command in the given session (or agent default).
+   * Execute a command in the given session, or the execution context's default
+   * (per-conversation — see `shellSessionIdFor`). An explicit `sessionId` must
+   * already exist; the default is lazily created.
    */
   async execute(
     agentId: string,
     command: string,
     options?: {
       sessionId?: string;
+      contextId?: string;
       cwd?: string;
       timeoutMs?: number;
       onOutput?: (chunk: string) => void;
@@ -442,8 +477,8 @@ export class ShellSessionManager {
         return { stdout: `[Session ${sessionId} not found]`, exitCode: -1 };
       }
     } else {
-      sessionId = `${agentId}:default`;
-      session = this.getOrCreateDefault(agentId, options?.cwd);
+      sessionId = shellSessionIdFor(agentId, undefined, options?.contextId);
+      session = this.getOrCreateDefault(agentId, options?.cwd, options?.contextId);
     }
 
     // Remember the working directory so a session that has to be recreated

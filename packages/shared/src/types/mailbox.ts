@@ -1,5 +1,8 @@
 // ─── Mailbox Types ──────────────────────────────────────────────────────────
 
+import { isAuthoritativeIntent, type DeliveryEnvelope, type SignalClass } from '../mail.js';
+import { entityKeysOfWorkUnitRef, taskIdOfWorkUnitRef } from '../work-unit.js';
+
 export type MailboxItemType =
   | 'human_chat'
   | 'a2a_message'
@@ -15,9 +18,37 @@ export type MailboxItemType =
   | 'daily_report'
   | 'memory_consolidation'
   | 'workflow_update'
-  | 'callback_result';
+  | 'callback_result'
+  | 'external_signal';
 
 export type MailboxPriority = 0 | 1 | 2 | 3 | 4;
+
+/**
+ * How a heartbeat tick reaches the agent — i.e. whether the active channel
+ * produces a mailbox row at all.
+ *
+ *   `clock`  (default): a tick is a liveness beat, not a message. The patrol runs
+ *                       directly, no row is produced.
+ *   `legacy` (rollback): the pre-C8-C channel — the tick becomes a queue row that
+ *                        the attention loop turns into a patrol.
+ *
+ * Needed as a type (not a free string) because `producedBy` below is keyed on it:
+ * a type the active mode cannot produce must not carry a live "droppable by age"
+ * policy bit, and the registry is where those two facts live together.
+ */
+export type ChannelMode = 'clock' | 'legacy';
+
+/**
+ * Can `mode` produce `t` at all? An omitted `producedBy` means every mode (the
+ * normal case); a listed one restricts production to those channels.
+ *
+ * This is the second column that makes "can exist here" and "may be dropped by
+ * age" views of ONE fact instead of two that can drift apart.
+ */
+export function producibleIn(mode: ChannelMode, t: MailboxItemType): boolean {
+  const descriptor = MAILBOX_TYPE_REGISTRY[t];
+  return descriptor.producedBy === undefined || descriptor.producedBy.includes(mode);
+}
 
 export const MailboxPriorityLevel = {
   critical: 0 as MailboxPriority,
@@ -56,15 +87,18 @@ export type MailboxCategory = 'interaction' | 'task' | 'notification' | 'system'
  * | `requirement` | `req:{requirementId}` | 同一需求永不并发 |
  * | `user` | `user:{senderId}` | 同一发起人的消息串行（防同用户矛盾回复） |
  * | `conversation` | `conv:{sessionId}` | 同一会话永不并发 |
- * | `channel` | `channel:{channelKey}` | 同一 A2A DM / 群聊频道永不并发 |
+ * | `workunit` | 由 `entityKeysOfWorkUnitRef(ref)` 派生 | 同一件事永不并发（C8-A） |
  * | `system` | `system:{agentId}` | 兜底：无具体实体 → 同 Agent 内串行 |
+ *
+ * `channel` 已删除（C8-A）：它是**投递通道身份**，不是实体。留着它等于给「同一件事
+ * 经不同 transport 到达」留一个合法入口去分裂实体。（删机制，不加守卫。）
  */
 export type MailboxEntityScope =
   | 'task'
   | 'requirement'
   | 'user'
   | 'conversation'
-  | 'channel'
+  | 'workunit'
   | 'system';
 
 /**
@@ -81,7 +115,7 @@ export type MailboxEntityScope =
  * `user` 仍保留在可选维度中，供确实需要「按人串行」的类型（如 mention）使用。
  */
 export const ENTITY_SCOPE_ORDER: readonly MailboxEntityScope[] = [
-  'task', 'requirement', 'user', 'conversation', 'channel', 'system',
+  'task', 'requirement', 'user', 'conversation', 'workunit', 'system',
 ];
 
 /**
@@ -114,7 +148,13 @@ export interface MailboxTypePolicy {
   affinity: readonly MailboxEntityScope[];
   /** 幂等：按 `(type, taskId, round)` 至多一条（见 {@link routeMailboxItem}）。 */
   dedupePerRound: boolean;
-  /** 陈旧可丢：triage 时按年龄直接丢（list 由 limits 的 TRIAGE_STALE_DROP_TYPES 派生）。 */
+  /**
+   * 陈旧可丢：triage 时按年龄直接丢。
+   *
+   * **本字段是唯一事实源**：`limits.ts` 的 `TRIAGE_STALE_DROP_TYPES` 由它派生。
+   * 别在 limits 里再手写一份名单 —— 同一事实两个写者，今天一致、明天分叉。
+   * 运行时唯一的读者是 `routeMailboxItem(item).triageStaleDrop`。
+   */
   triageStaleDrop: boolean;
   /**
    * 后台工作：抢占判定里「当前在处理的是后台/系统工作」的判据。
@@ -122,14 +162,34 @@ export interface MailboxTypePolicy {
    */
   backgroundWork: boolean;
   /**
-   * 权威态：命中即不得 defer / drop / merge / 批处理。为谓词时用于
-   * 「依赖 payload 才成立」的类型。`extra.triggerExecution` 的判定与类型无关，
-   * 由 {@link routeMailboxItem} 统一施加，不在这里重复。
+   * 权威态：命中即不得 defer / drop / merge / 批处理。
+   *
+   * **只读注册表数据 + 结构字段**（`envelope.intent`），不再有谓词、不再读 payload：
+   * `extra.triggerExecution` 的判定与类型无关 → 由 {@link routeMailboxItem} 统一施加；
+   * `extra.actionRequired` 是**按类型**成立的 → 由下面的 `actionRequiredStrict` 表达。
    */
-  strictState: boolean | ((item: MailboxItemLite) => boolean);
+  strictState: boolean;
+  /**
+   * `intent='action_required'` 对**本类型**是否构成权威态（数据驱动，替代原先写在
+   * 代码里的 `t === 'requirement_update' || t === 'workflow_update'` 字符串判断）。
+   *
+   * 为什么必须按类型门控：心跳也可能带 `actionRequired`（此时它**不得被折叠**），
+   * 但心跳**不是**权威态——把两者混成一个布尔会让心跳占满并发锁。
+   */
+  actionRequiredStrict: boolean;
 }
 
 export interface MailboxTypeDescriptor extends MailboxTypePresentation {
+  /** 信号类别（信封 `signalClass` 的唯一来源；六类闭集，见 `@markus/shared` 的 mail 模块）。 */
+  signalClass: SignalClass;
+  /**
+   * 哪些通道模式能**产生**这个类型。省略 = 所有模式（常态）。
+   *
+   * 存在的理由是消除化石：`triageStaleDrop` 原本是一个裸 boolean，于是 `heartbeat`
+   * 声明了「可丢」而 `clock` 通道根本产不出它 —— 一个永远不会被读到、却让后来者以为
+   * 有人在守的策略位。现在「能存在」与「可丢」是同一张表的两列，两者**不可能再分歧**。
+   */
+  producedBy?: readonly ChannelMode[];
   policy: MailboxTypePolicy;
 }
 
@@ -145,23 +205,75 @@ export interface MailboxTypeDescriptor extends MailboxTypePresentation {
 //   `task_comment` creates no activity when injected into a running turn, but does
 //   when it falls through to handleMessage — the outcome is contextual. Nothing
 //   read the field, so it recorded a rule the runtime never followed.
+/**
+ * 唤醒原因 —— 让处于 sleep/idle 的决策循环开始新一轮的**闭集**。
+ *
+ * 【第一性：唤醒与「处理」是两个问题】
+ * - **入队**是投递语义：一条信号到达了。它能不能被直接处理，与决策无关；
+ *   能直接处理时，它的痕迹就是**那条 mailbox 行自己**（queued→processing→completed
+ *   + queued_at/started_at/claimed_by/lease）—— 不需要另写一条“唤醒行”。
+ *   所以 `enqueue` 不落“唤醒行”不是为了省事，而是为了避免同一条事实写两遍。
+ * - **积压/排队**是竞争语义：同一刻有多个候选（或更高优先到达、或 strict-state
+ *   项插入）时，才进入决策 loop 的职责：取舍（pick/continue/preempt/merge/
+ *   defer/delegate/drop）并记下理由（`agent_decisions`）。无竞争时它不决策。
+ * - **rest 命中/到期**与**启动/恢复**是另一回事：它们是 agent 自己等待的事件的
+ *   终结，以及“我被重新拉起”这个状态变更 —— 启动意味着 in-flight 丢失、
+ *   租约失效、rest 窗口作废，**这类事件必须可感知、必须留痕**，否则重启频率、
+ *   残留租约这类真问题就只能靠猜。留痕与“进哪个面板”是两件事。
+ *
+ * 【本枚举的作用】让三类可区分、可计数（`extra.wakeCause`），不是为了减少记录。
+ * 2026-11-18 Owner 否掉了我上一版的错误说法（“唤醒不该进工作记录”）——那是删账，
+ * 只能掩盖问题。
+ */
+export type WakeCause =
+  /**
+   * 队列里有活：`enqueue` / `requeue` / 租约回收 / 启动恢复。
+   *
+   * **不另写唤醒行** —— 痕迹是那条被投递的条目自己（见本类型的头部说明）。
+   * 消费点是 `mailbox.wakeIdleLoop()`。
+   */
+  | 'enqueue'
+  /** rest 的等待条件命中（哪个条件/哪条被唤醒的条目在 `extra` 里）。 */
+  | 'rest-hit'
+  /** rest 的等待窗口自然到期（没有命中）。 */
+  | 'rest-expired'
+  /** 进程启动 / 恢复：决策循环被重新拉起（`[RESTARTED]`）。 */
+  | 'start';
+
+/** 真正**落行**的唤醒原因（`enqueue` 的痕迹在条目自身，不需要额外一条唤醒行）。 */
+export type WakeRecordCause = Exclude<WakeCause, 'enqueue'>;
+
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
   //                                                                                     ── policy.affinity (precedence order; MUST end with 'system')
-  system_event:         { label: 'System Event',         category: 'system',       icon: '⚙',  policy: { priority: 1, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: true,  strictState: false } },
-  human_chat:           { label: 'Chat',                 category: 'interaction',  icon: '💬', policy: { priority: 0, invokesLLM: true,  affinity: ['task', 'requirement', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
-  task_comment:         { label: 'Task Comment',         category: 'task',         icon: '💬', policy: { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
-  mention:              { label: 'Mention',              category: 'interaction',  icon: '@',  policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'user', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
-  session_reply:        { label: 'Session Reply',        category: 'task',         icon: '↩',  policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
-  task_status_update:   { label: 'Task Status',          category: 'task',         icon: '📋', policy: { priority: 1, invokesLLM: false, affinity: ['task', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: false, strictState: false } },
-  a2a_message:          { label: 'Agent Message',        category: 'interaction',  icon: '🔗', policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'channel', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
-  review_request:       { label: 'Review Request',       category: 'task',         icon: '👀', policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: true,  triageStaleDrop: false, backgroundWork: false, strictState: true } },
-  requirement_comment:  { label: 'Requirement Comment',  category: 'task',         icon: '💬', policy: { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
-  requirement_update:   { label: 'Requirement Update',   category: 'notification', icon: '📝', policy: { priority: 1, invokesLLM: false, affinity: ['requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
-  daily_report:         { label: 'Daily Report',         category: 'system',       icon: '📊', policy: { priority: 2, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false } },
-  heartbeat:            { label: 'Heartbeat',            category: 'system',       icon: '♡',  policy: { priority: 3, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false } },
-  memory_consolidation: { label: 'Memory Consolidation', category: 'system',       icon: '🧠', policy: { priority: 4, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false } },
-  workflow_update:      { label: 'Workflow Update',      category: 'task',         icon: '🔄', policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
-  callback_result:      { label: 'Callback Result',      category: 'system',       icon: '↩',  policy: { priority: 1, invokesLLM: true,  affinity: ['conversation', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false } },
+  system_event:         { label: 'System Event',         category: 'system',       icon: '⚙',  signalClass: 'system',           policy: { priority: 1, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
+  human_chat:           { label: 'Chat',                 category: 'interaction',  icon: '💬', signalClass: 'chat',             policy: { priority: 0, invokesLLM: true,  affinity: ['task', 'requirement', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
+  task_comment:         { label: 'Task Comment',         category: 'task',         icon: '💬', signalClass: 'record',          policy: { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
+  mention:              { label: 'Mention',              category: 'interaction',  icon: '@',  signalClass: 'chat',             policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'user', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
+  session_reply:        { label: 'Session Reply',        category: 'task',         icon: '↩',  signalClass: 'chat',             policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
+  task_status_update:   { label: 'Task Status',          category: 'task',         icon: '📋', signalClass: 'record',          policy: { priority: 1, invokesLLM: false, affinity: ['task', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: false, strictState: false, actionRequiredStrict: false } },
+  // C8-A：`channel` 已从这个列表里删除，换成 `workunit`。理由：A2A 的实体是
+  // 「这件事」，由 WorkUnit ref 回答；`channelKey` 只是「这次怎么送到的」。
+  // 旧形态（`channel` 参与加锁）让同一任务经 DM / 群聊两条通道到达就变成两个实体、
+  // 两个会话、两份互不可见的上下文 —— 这正是本卡要根除的症状。
+  a2a_message:          { label: 'Agent Message',        category: 'interaction',  icon: '🔗', signalClass: 'a2a',              policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'workunit', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
+  review_request:       { label: 'Review Request',       category: 'task',         icon: '👀', signalClass: 'governance_event', policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: true,  triageStaleDrop: false, backgroundWork: false, strictState: true,  actionRequiredStrict: false } },
+  requirement_comment:  { label: 'Requirement Comment',  category: 'task',         icon: '💬', signalClass: 'record',          policy: { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
+  requirement_update:   { label: 'Requirement Update',   category: 'notification', icon: '📝', signalClass: 'governance_event', policy: { priority: 1, invokesLLM: false, affinity: ['requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: true } },
+  daily_report:         { label: 'Daily Report',         category: 'system',       icon: '📊', signalClass: 'system',           policy: { priority: 2, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
+  heartbeat:            { label: 'Heartbeat',            category: 'system',       icon: '♡',  signalClass: 'system',           producedBy: ['legacy'], policy: { priority: 3, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
+  // C8-A：dream **不再**按年龄丢弃。它属于后台休眠路径，不是 attention 分拣的噪音；
+  // 过期即丢 = 这一轮整理无痕消失（正是「静默丢消息」）。affinity 仍是 ['system']，
+  // 那是 C8-C 的战场，本卡不动。
+  memory_consolidation: { label: 'Memory Consolidation', category: 'system',       icon: '🧠', signalClass: 'system',           policy: { priority: 4, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
+  workflow_update:      { label: 'Workflow Update',      category: 'task',         icon: '🔄', signalClass: 'governance_event', policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: true } },
+  callback_result:      { label: 'Callback Result',      category: 'system',       icon: '↩',  signalClass: 'callback',         policy: { priority: 1, invokesLLM: true,  affinity: ['conversation', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
+  // 外部信号（webhook / RSS）的**注册表缺省**是 record 类、invokesLLM=false。
+  // A（Owner 2026-11-25）：唯一 ingest 点把 intent 定为 action_required（平台判定
+  // 外部事件欠一个回合），routeMailboxItem 据此把 invokesLLM **上调**为 true ——
+  // 缺省值仍是 record，真实路由由 intent 决定，两处不是第二写者（M0：只上调不下调）。
+  // 未验证发送者的权威在 agent 级天花板受封（selfInitiationCeiling → maySelfInitiate），
+  // 不再靠把 intent 擦成 deliver 来「限制」它。实体维度 workunit（每事件即 wu:<ref>）。
+  external_signal:      { label: 'External Signal',      category: 'notification', icon: '📡', signalClass: 'record',           policy: { priority: 2, invokesLLM: false, affinity: ['workunit', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
 };
 
 // ─── The single routing decision point ───────────────────────────────────────
@@ -176,10 +288,27 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
 // Pure: no IO, no clock, no randomness. Same input → same output (cacheable, and
 // lockable by table-driven golden tests).
 
-export type MailboxItemLite = Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>;
+export type MailboxItemLite = Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'> & {
+  /**
+   * 身份头（结构化）。路由只读它的 `intent` —— **不读 `payload.extra`**（R3'）。
+   * 缺省（旧行 / 未接线调用方）= 无信封 → 按 `deliver` 处理。
+   */
+  envelope?: Pick<DeliveryEnvelope, 'intent'>;
+  /** 轮次（结构化，替代 `payload.extra.round` / `metadata.round` 两处散读）。 */
+  round?: number;
+  /**
+   * C8-A：这条 item 属于哪个 WorkUnit（结构事实）。
+   *
+   * 路由的两件事都读它、且**只**读它：实体维度 `workunit`（→ 并发锁键）与
+   * 幂等键的 taskId 维度。`null` / `undefined` = 旧行或非 WU 链路，行为不变。
+   */
+  workUnitRef?: string | null;
+};
 
 export interface MailboxRoute {
   type: MailboxItemType;
+  /** 信封 `signalClass` 的唯一来源：路由决策点同时是分类决策点。 */
+  signalClass: SignalClass;
   priority: MailboxPriority;
   invokesLLM: boolean;
   affinity: readonly MailboxEntityScope[];
@@ -191,28 +320,43 @@ export interface MailboxRoute {
   dedupeKey?: string;
 }
 
-/** Type-independent authority flag: `triggerExecution` means "run real work". */
-function hasAuthorityFlag(item: MailboxItemLite): boolean {
-  const extra = item.payload?.extra ?? {};
-  if (extra.triggerExecution) return true;
-  const t = item.sourceType;
-  if ((t === 'requirement_update' || t === 'workflow_update') && extra.actionRequired) {
-    return true;
-  }
-  return false;
+// 2026-11-12（第六刀 C2）：`hasAuthorityFlag()` 与 `buildRoundDedupKey()` 已删除。
+//
+// 两者都在**从载荷推断结构**（R3'）：`payload.extra.triggerExecution` 决定权威态、
+// `payload.extra.round` 决定幂等键。同一份结构因此有两处来源（载荷 + 结构列），
+// 改一处不改另一处就会出现「路由说跑、去重说别跑」这类只有线上才看得见的裂缝。
+//
+// 现在：权威态只读结构字段 `envelope.intent`（按类型的门控在注册表
+// `actionRequiredStrict`），幂等键只读结构字段 `round`。下面两个函数是各自的唯一判定点。
+
+/**
+ * 权威态：`intent` 与注册表按类型的门控共同决定。**唯一判定点**。
+ *
+ * - `trigger_execution` 与类型无关（任务执行指令落在任一类型上都必须真跑）；
+ * - `action_required` 只对声明了 `actionRequiredStrict` 的类型成立（需求/工作流收尾）。
+ */
+function isAuthoritativeUnderPolicy(item: MailboxItemLite, p: MailboxTypePolicy): boolean {
+  const intent = item.envelope?.intent ?? 'deliver';
+  if (intent === 'trigger_execution') return true;
+  return intent === 'action_required' && p.actionRequiredStrict;
 }
 
-/** `(sourceType, taskId, round)` — the only writer of the idempotency key shape. */
-function buildRoundDedupKey(item: MailboxItemLite): string | undefined {
-  const taskId = item.payload.taskId ?? (item.metadata?.taskId as string | undefined);
-  const roundRaw = item.payload.extra?.round ?? (item.metadata as Record<string, unknown> | undefined)?.round;
-  const round = typeof roundRaw === 'number' && Number.isFinite(roundRaw) ? roundRaw : undefined;
-  if (!taskId || round === undefined) return undefined;
+/** `(sourceType, taskId, round)` — 幂等键形状的唯一写者，输入全为结构字段。 */
+function roundDedupKeyOf(item: MailboxItemLite): string | undefined {
+  // C8-A：taskId 优先取**结构事实**（WorkUnit ref），载荷只在旧行上兜底。
+  // 旧写法只读 `payload.taskId` —— 那是从载荷推断结构（R3'），而没有该字段的
+  // item（A2A 就是典型）会静默失去幂等约束。
+  const taskId = item.payload.taskId
+    ?? (item.metadata?.taskId as string | undefined)
+    ?? taskIdOfWorkUnitRef(item.workUnitRef);
+  const round = item.round;
+  if (!taskId || typeof round !== 'number' || !Number.isFinite(round)) return undefined;
   return `${item.sourceType}:${taskId}:${round}`;
 }
 
 /** Conservative fallback for an unregistered type: run, don't drop, don't throw. */
 const UNKNOWN_ROUTE: Omit<MailboxRoute, 'type'> = {
+  signalClass: 'system',
   priority: 2,
   invokesLLM: true,
   affinity: ['system'],
@@ -226,13 +370,23 @@ export function routeMailboxItem(item: MailboxItemLite): MailboxRoute {
   const descriptor = MAILBOX_TYPE_REGISTRY[item.sourceType];
   if (!descriptor) return { type: item.sourceType, ...UNKNOWN_ROUTE };
   const p = descriptor.policy;
-  const strictState = hasAuthorityFlag(item)
-    || (typeof p.strictState === 'function' ? p.strictState(item) : p.strictState);
-  const dedupeKey = p.dedupePerRound ? buildRoundDedupKey(item) : undefined;
+  const strictState = isAuthoritativeUnderPolicy(item, p) || p.strictState;
+  const dedupeKey = p.dedupePerRound ? roundDedupKeyOf(item) : undefined;
   return {
     type: item.sourceType,
+    signalClass: descriptor.signalClass,
     priority: p.priority,
-    invokesLLM: p.invokesLLM,
+    // M0：「欠不欠一个 LLM 回合」= 类型默认 **或** 本条结构 intent 明确要求动作。
+    //
+    // 方向是**只上调、不下调**，这不是保守，是必需：`mailbox.enqueue` 把每条 item 的 intent
+    // 缺省成 `deliver`（`options?.intent ?? 'deliver'`），若让 `deliver` 反向关掉回合，
+    // human_chat / a2a_message 会全部失去回合 —— 等于把整个平台静音。
+    //
+    // 修的是实测根因（2026-11-25）：`external_signal` 注册为 record + invokesLLM:false，
+    // 于是外部信号永远不欠回合 —— 收件 agent 的 execution_stream_logs / agent_activities
+    // 双双为 0（没有模型调用），只有 pick 决策、work_unit 停 idle、邮箱行 1ms 内 completed。
+    // 权威态判据复用唯一谓词 isAuthoritativeIntent，不在此另写一份 intent 比较。
+    invokesLLM: p.invokesLLM || isAuthoritativeIntent(item.envelope?.intent),
     affinity: p.affinity,
     strictState,
     triageStaleDrop: p.triageStaleDrop,
@@ -244,7 +398,7 @@ export function routeMailboxItem(item: MailboxItemLite): MailboxRoute {
 export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types: MailboxItemType[] }> = {
   interaction:  { label: 'Interaction',  types: ['human_chat', 'a2a_message', 'mention'] },
   task:         { label: 'Task',         types: ['task_status_update', 'task_comment', 'requirement_comment', 'review_request', 'session_reply', 'workflow_update'] },
-  notification: { label: 'Notification', types: ['requirement_update'] },
+  notification: { label: 'Notification', types: ['requirement_update', 'external_signal'] },
   system:       { label: 'System',       types: ['system_event', 'heartbeat', 'daily_report', 'memory_consolidation', 'callback_result'] },
 };
 
@@ -270,7 +424,7 @@ export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types:
  * are part of the contract and shared with the handoff log.
  */
 export function resolveEntityKeys(
-  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
+  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'> & { workUnitRef?: string | null },
   agentId: string,
 ): string[] {
   const scopes = routeMailboxItem(item).affinity;
@@ -298,9 +452,11 @@ export function resolveEntityKeys(
         if (id) keys.push(`conv:${id}`);
         break;
       }
-      case 'channel': {
-        const id = item.payload.extra?.channelKey as string | undefined;
-        if (id) keys.push(`channel:${id}`);
+      case 'workunit': {
+        // C8-A：实体由 WorkUnit ref 回答（派生规则只在 `entityKeysOfWorkUnitRef`）。
+        // 这里不做任何 if 判断「要不要用 WU」—— 由注册表声明，不由调用点决定。
+        const ref = item.workUnitRef;
+        if (ref) keys.push(...entityKeysOfWorkUnitRef(ref));
         break;
       }
     }
@@ -315,10 +471,42 @@ export function resolveEntityKeys(
  * `resolveEntityKeys` so that every entity dimension is protected.
  */
 export function resolveEntityKey(
-  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
+  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'> & { workUnitRef?: string | null },
   agentId: string,
 ): string {
   return resolveEntityKeys(item, agentId)[0];
+}
+
+// ─── 去向：三条轴，一个判定点（C8-A）────────────────────────────────────────
+
+/**
+ * 一条 item 该去哪：**轮内注入 / 队列 / 概览**。
+ *
+ * 三条轴的判据只有「实体对不对得上」，与消息类型无关 —— 类型决定优先级与是否
+ * 欠一个 LLM 回合（那是 `routeMailboxItem` 的事），去向由实体决定（结构，不推断）：
+ *
+ * | 情形 | 去向 | 为什么 |
+ * |---|---|---|
+ * | 解析不出具体实体（只剩 `system:` 兜底） | `overview` | 它不属于任何正在做的事；打断谁都不对 |
+ * | 与当前回合的实体有交集 | `inject` | 同一件事，**排在自己后面就是死锁** |
+ * | 不同实体（或当前空闲） | `queue` | 并行安全；排队等的是资源不是语义 |
+ *
+ * 「当前回合的实体」由调用方给（`undefined` / 空数组 = 空闲或未知）。未知一律
+ * 走 `queue` —— 注入是侵入性动作，只在**确定**同实体时做。
+ */
+export type MailboxDestination = 'inject' | 'queue' | 'overview';
+
+export function resolveMailboxDestination(
+  entityKeys: readonly string[],
+  activeTurnEntityKeys?: readonly string[] | null,
+): MailboxDestination {
+  const concrete = entityKeys.filter(k => !k.startsWith('system:'));
+  if (concrete.length === 0) return 'overview';
+
+  const active = activeTurnEntityKeys ?? [];
+  if (active.length === 0) return 'queue';
+
+  return concrete.some(k => active.includes(k)) ? 'inject' : 'queue';
 }
 
 function dedupeKeys(keys: string[]): string[] {
@@ -331,7 +519,104 @@ export type MailboxItemStatus =
   | 'completed'
   | 'deferred'
   | 'merged'
-  | 'dropped';
+  /**
+   * 退信（第六刀 §2.5）：**不再有「静默丢掉」这个终态**。`bounced` 行必带
+   * `drop_reason`（五类可产生原因 + 一类预留的闭集）。
+   *
+   * 与 `catch_all` 的分工：`bounced` = 「这次没投进去」这一事实的记录；
+   * `catch_all` = 该记录**已归集到概览**（`bounce_target` 写值），等人认领或归档。
+   * 两者都是终态行会出现的值，但同一行只停在其中之一（见 {@link MAILBOX_TRANSITIONS}）。
+   */
+  | 'bounced'
+  /**
+   * catch-all 概览态（第六刀 §2.5 `bounced → catch_all`）：退信已被归集，
+   * 在概览里**恰好可见一次**且原因可查。人认领 → `queued`；归档 → 停留（不迁移）。
+   */
+  | 'catch_all';
+
+// ─── FSM-2：投递状态机（声明式矩阵）────────────────────────────────────────
+//
+// 第六刀 §2.5 / 主计划 §4.2（FSM-2）。**唯一**的执行点是
+// `AgentMailbox.updateSignalStatus()`（core），本表是它的判据；任何绕过它的迁移
+// 都被 `architecture-guard` 判红。
+//
+// 矩阵按**真实代码**枚举，而不是按设计稿的简化图。差集是刻意记录下来的事实：
+// 设计稿只画了主链路，而 `defer`/`merge`/`complete` 在 core 的**排队态**上也会发生
+// （`defer()` 从队列 splice、`merge()` 合并两条排队项、triage 的 inline 完成）。
+// 若按设计稿裁剪，这些合法路径会在运行时被判非法 —— 那是把图当事实，不是把代码当事实。
+//
+// | from | to | 触发 |
+// |---|---|---|
+// | queued | processing | 原子认领（claimedBy + leaseUntil）|
+// | queued | deferred / merged / completed / bounced | preempt 前置决策、入队合并、inline 完成、陈旧清理 |
+// | processing | completed / deferred / merged / bounced | 回合收口 / preempt / 合并 / 解析失败·收件人不存在·租约失效 |
+// | processing | queued | 回队（requeue / putBack / 租约过期回收 / 补偿重投）|
+// | deferred | queued | resurfaceDue() |
+// | bounced | catch_all | 归集到概览（写 bounce_target）|
+// | bounced | queued | **补偿重投复用原行**（P1.x R6：同幂等键再投一次时复用既有 bounced 行，不新增行；storage `requeueItem` 的 WHERE 也显式列了 `bounced`）|
+// | catch_all | queued | 人认领（re-queue 给真实目标）|
+// | completed / merged | — | 终态，不迁移 |
+//
+// `bounced → queued` 曾经漏在表外：设计稿只看“归集”一条路径，但真实代码里**补偿重投**
+// 走的就是“复用既有未收口行”，而 `bounced` 正是未收口终态。矩阵不收录它，这条合法路径
+// 就会在运行时被判非法（restart 后重投会静默失败）——又一次“把图当事实”。
+//
+// `dropped` **不在取值域内**：历史行保留只读，读路径经 `normalizeSignalStatus()`
+// 归一为 `bounced`，绝不改写历史数据（不回填、不批量 UPDATE）。
+export const MAILBOX_TRANSITIONS: Readonly<Record<MailboxItemStatus, readonly MailboxItemStatus[]>> = Object.freeze({
+  queued: ['processing', 'deferred', 'merged', 'completed', 'bounced'],
+  processing: ['completed', 'deferred', 'merged', 'bounced', 'queued'],
+  deferred: ['queued'],
+  bounced: ['catch_all', 'queued'],
+  catch_all: ['queued'],
+  completed: [],
+  merged: [],
+});
+
+/**
+ * `from` 是否在当前取值域内。
+ *
+ * 为什么需要它：真实库里有 C3 之前的 `failed` 行（`requeueItem` 的 WHERE 里仍列着它）。
+ * 这类值是**取值域外的历史态**，矩阵没有它的规则，但它们仍必须能被补偿重投回队。
+ * 用这个谓词把“矩阵能判的”与“历史遗留只能由端口 SQL 自律的”分开，
+ * 而不是让 `MAILBOX_TRANSITIONS[未知]` 抛 TypeError（那是把数据问题变成崩溃）。
+ */
+export function isKnownSignalStatus(status: string): status is MailboxItemStatus {
+  return Object.prototype.hasOwnProperty.call(MAILBOX_TRANSITIONS, status);
+}
+
+/**
+ * 迁移是否合法。**同一状态 → 同一状态** 永远允许：那不是迁移，而是字段更新
+ * （例如 `updatePriority()` 在改优先级时顺带写一次同状态）。把它判非法会制造一类
+ * 「改个优先级把队列卡死」的假失败。
+ *
+ * **取值域外的 `from`（历史 `failed`）一律判非法**（不是抛异常）：它没有规则可依，
+ * 不该被任何“默认放行”的写法接住 —— 否则新增一个未知状态就等于自动获得所有出口。
+ */
+export function canTransitionSignal(from: MailboxItemStatus | string, to: MailboxItemStatus): boolean {
+  if (from === to) return true;
+  if (!isKnownSignalStatus(from)) return false;
+  return MAILBOX_TRANSITIONS[from].includes(to);
+}
+
+/**
+ * 历史状态 → 当前取值域。**读路径唯一归一函数**。
+ *
+ * `dropped` 是本刀删掉的终态（真实库 ≥28,621 行、无 `drop_reason`、无回声）。
+ * 历史行**只读**：这里只把读到的值映射成 `bounced`，不 UPDATE 任何行。
+ */
+export function normalizeSignalStatus(raw: string): MailboxItemStatus {
+  if (raw === 'dropped') return 'bounced';
+  return raw as MailboxItemStatus;
+}
+
+/** 已归集/待归集的退信态（概览读者用这一个谓词，别处不得再写 `=== 'bounced'`）。 */
+export function isBounceSignalStatus(status: MailboxItemStatus): boolean {
+  return status === 'bounced' || status === 'catch_all';
+}
+
+// `catchAllTargetOf()` / `CATCH_ALL_PREFIX` 定义在 `mail.ts`（低层，无循环依赖），
+// 由本模块经 index 一并导出。这里不重复定义 —— 同一事实两个写者必然漂移。
 
 export interface MailboxItem {
   id: string;
@@ -341,6 +626,33 @@ export interface MailboxItem {
   status: MailboxItemStatus;
   payload: MailboxPayload;
   metadata?: MailboxItemMetadata;
+  /**
+   * 投递信封（第六刀 §2.1）：**每条新信号的唯一身份头**。
+   *
+   * 由 `AgentMailbox.enqueue()` 在唯一装配点生成（形状写者是
+   * `buildDeliveryEnvelope()`）；投递点只提供 `from` / `messageId`。
+   * 旧行（C2 之前落库）为 `undefined` = 无信封，读路径 `warn` 并回退到 `agentId`。
+   */
+  envelope?: DeliveryEnvelope;
+  /**
+   * 本轮轮次（结构化）：幂等键 `(sourceType, taskId, round)` 的输入。
+   * 从 `payload.extra.round` / `metadata.round` 提上来的结构字段（§2.1 硬规则 3）。
+   */
+  round?: number;
+  /**
+   * 第七刀 C7-A：这条 item 属于哪个 WorkUnit（`work_units.ref`）。
+   *
+   * 由生产者在**实体已存在之后**写入，不是入队时猜出来的。旧行为 `null`，
+   * 意义是「这条投递在 WU 之前发生」——诚实留空，不补造身份。
+   */
+  workUnitRef?: string | null;
+  /**
+   * 退信原因（`status='bounced'` 时必填，六类闭集）；其它状态恒 `undefined`。
+   * `undefined` + `bounced` = 不可建模的退信，写入侧由 `isActiveBounceReason` 拒绝。
+   */
+  dropReason?: string;
+  /** catch-all 概览项 id（C3 写值）；本卡只加列。 */
+  bounceTarget?: string;
   queuedAt: string;
   startedAt?: string;
   completedAt?: string;
@@ -385,12 +697,14 @@ export function isStrictStateItem(item: {
   return routeMailboxItem(item).strictState;
 }
 
-/** 是否为「正式任务执行」item（triggerExecution）。是 isStrictStateItem 的特例。 */
+/** 是否为「正式任务执行」item（`intent='trigger_execution'`）。是 isStrictStateItem 的特例。 */
 export function isTaskExecutionItem(item: {
   sourceType: MailboxItemType;
   payload: MailboxPayload;
+  envelope?: Pick<DeliveryEnvelope, 'intent'>;
 }): boolean {
-  return item.payload.extra?.triggerExecution === true;
+  // 只读结构字段：`payload.extra.triggerExecution` 已不是事实来源（见 routeMailboxItem 上方注释）。
+  return item.envelope?.intent === 'trigger_execution';
 }
 
 export interface MailboxPayload {
@@ -477,33 +791,20 @@ export interface TriageContext {
   activeTaskIds?: string[];
 }
 
-export interface TriageResult {
-  processItemId: string;
-  deferItemIds: string[];
-  dropItemIds: string[];
-  inlineCompletedIds?: string[];
-  reasoning: string;
-}
-
-export interface DeliberationResult {
-  /** Primary item to process (backward compat). Ignored if processItemIds is set. */
-  processItemId: string;
-  /** Batch of items to process together in one LLM session. Overrides processItemId when length > 1. */
-  processItemIds?: string[];
-  /** Optional synthesis/instruction for batch processing context. */
-  batchContext?: string;
-  deferItemIds: string[];
-  dropItemIds: string[];
-  inlineCompletedIds: string[];
-  reasoning: string;
-  situationalAwareness?: string;
-  /** Memory operations to apply after deliberation completes. */
-  memoryUpdates?: Array<{
-    type: 'working' | 'longterm';
-    key: string;
-    content: string;
-  }>;
-}
+/**
+ * Who actually made this decision.
+ *
+ * Without it the ledger cannot answer "who decided, and on what grounds":
+ * a platform heuristic and a model judgement land in the same column with
+ * the same shape, so an irreversible action taken by a rule reads exactly
+ * like a deliberated one.
+ *
+ * - `model`     — the agent's own LLM judgement (delegate.evaluateInterrupt)
+ * - `heuristic` — platform fallback rules (heuristicDecision)
+ * - `rule`      — a structural invariant, not a judgement (queue order, strict-state)
+ * - `user`      — an explicit human action (cancel button)
+ */
+export type DecisionSource = 'model' | 'heuristic' | 'rule' | 'user';
 
 export interface AttentionDecision {
   id: string;
@@ -513,6 +814,23 @@ export interface AttentionDecision {
   context: DecisionContext;
   reasoning: string;
   outcome?: string;
+  /** Who decided. Required on every new row; NULL only for pre-2026-11-18 epochs. */
+  source?: DecisionSource;
+  /**
+   * Set when a platform rule overrode an earlier judgement in the same yield
+   * point (e.g. the model said `defer` but a strict-state item may not defer).
+   * The overridden type is kept so the ledger shows one final row *with* its
+   * provenance, instead of two rows nobody can order.
+   */
+  overrode?: DecisionType;
+  /**
+   * ①-2：这条决定属于哪个工作单元。与 MailboxItem.workUnitRef 同一轴。
+   *
+   * 没有它，「谁在哪个回合撤销了什么」只能靠 mailbox_item_id 反推，
+   * 而 mailbox 行会被 TTL 清理/合并 → 反查链路会断。
+   * NULL = 加列（2026-11-15）之前的旧纪元。
+   */
+  workUnitRef?: string | null;
   createdAt: string;
 }
 
@@ -530,12 +848,6 @@ export type AttentionState = 'idle' | 'focused' | 'deciding';
 
 export interface AgentMindState {
   attentionState: AttentionState;
-  isDeliberating?: boolean;
-  deliberationActivity?: {
-    activityId: string;
-    label: string;
-    startedAt: string;
-  };
   currentFocus?: {
     mailboxItemId: string;
     type: MailboxItemType;
@@ -560,14 +872,6 @@ export interface AgentMindState {
     deferredUntil?: string;
   }>;
   recentDecisions: AttentionDecision[];
-  lastTriage?: {
-    reasoning: string;
-    processedItemId: string;
-    deferredItemIds: string[];
-    droppedItemIds: string[];
-    inlineCompletedIds: string[];
-    timestamp: string;
-  };
 }
 
 // ─── User Notification Type Registry ─────────────────────────────────────────

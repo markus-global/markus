@@ -8,7 +8,7 @@
   "newTab": "New Tab",
   "confirm": "Confirm",
   "ok": "OK",
-  "error": "Error",
+  "error": "Error: {{message}}",
   "pageErrorTitle": "This page failed to render",
   "pageErrorHint": "The rest of the app still works. Try again first; if it keeps happening, report the message below.",
   "pageErrorRetry": "Try again",
@@ -68,7 +68,6 @@
   "removing": "Removing...",
   "networkError": "Network error",
   "failed": "Failed",
-  "error": "Error: {{message}}",
   "noResults": "No results",
   "selectAll": "Select all",
   "selected": "{{count}} selected",
@@ -106,6 +105,50 @@
     "cancelled": "Cancelled",
     "archived": "Archived"
   },
+  "threadStage": {
+    "waitingHuman": "Needs you",
+    "running": "Working now",
+    "needsEvidence": "Needs evidence",
+    "inVerification": "Awaiting check",
+    "done": "Closed out",
+    "blockedDeps": "Waiting on deps",
+    "ended": "Given up",
+    "evidence": {
+      "title": "Completion evidence ({{count}})",
+      "subtitle": "What backs this card's claim: each conclusion, who asserted it, and whether anyone checked it independently.",
+      "empty": "No evidence fact yet",
+      "emptyHint": "Submitting for review requires one 'completion evidence' fact, or the gate will refuse.",
+      "unverified": "Not independently verified",
+      "assertedBy": "asserted by {{who}}",
+      "verifiedBy": "checked by {{who}}",
+      "predicateOnly": "Recorded as a structured value — no text summary.",
+      "expand": "Show full text",
+      "collapse": "Collapse",
+      "predicate": {
+        "task_completion_evidence": "Completion evidence",
+        "task_rejection_reason": "Rejection reason",
+        "requirement_acceptance_met": "Acceptance met",
+        "work_defect_class": "Defect class",
+        "agent_capability_claim": "Capability claim",
+        "memory_consolidation_suggestion": "Memory consolidation suggestion"
+      },
+      "verification": {
+        "pass": "Verified",
+        "fail": "Verification failed"
+      },
+      "refKind": {
+        "deliverable": "Deliverable",
+        "comment": "Comment",
+        "inPlace": "Reference",
+        "commit": "Commit",
+        "probe": "Live probe",
+        "task": "Task",
+        "record": "Fact",
+        "transcript": "Transcript",
+        "other": "Other"
+      }
+    }
+  },
   "processStatus": {
     "idle": "Idle",
     "working": "Working",
@@ -139,13 +182,19 @@
     "urgent": "Urgent",
     "high": "High",
     "normal": "Normal",
-    "low": "Low"
+    "low": "Low",
+    "medium": "Medium"
   },
   "role": {
     "owner": "Owner",
     "admin": "Admin",
     "member": "Member",
     "guest": "Guest"
+  },
+  "actor": {
+    "user": "User",
+    "agent": "Agent",
+    "system": "System"
   },
   "units": {
     "members": "{{count}} members",
@@ -158,7 +207,8 @@
     "now": "now",
     "minutesAgo": "{{count}}m",
     "hoursAgo": "{{count}}h",
-    "daysAgo": "{{count}}d"
+    "daysAgo": "{{count}}d",
+    "yesterday": "yesterday"
   },
   "signOut": "Log out",
   "openInBrowser": "Open in Browser",
@@ -228,7 +278,10 @@
       "state": {
         "running": "In progress",
         "done": "Completed"
-      }
+      },
+      "tools": "{{count}} tools",
+      "subagents": "{{count}} subagents",
+      "errors": "{{count}} errors"
     },
     "tools": {
       "shell_execute": "Running command",
@@ -426,7 +479,9 @@
       "text": "text",
       "thinkingTag": "thinking",
       "round": "Round #{{n}}",
-      "rounds": "{{count}} rounds"
+      "rounds": "{{count}} rounds",
+      "toolsExecuted": "{{count}} tools executed",
+      "toolsLine": "{{count}} tools"
     },
     "fullLog": {
       "title": "Execution Log",
@@ -438,7 +493,15 @@
       "completed": "Completed",
       "resumed": "Resumed",
       "execution_finished": "Completed"
-    }
+    },
+    "prompt": "Prompt",
+    "inputArguments": "Input arguments",
+    "earlierStepsOmitted": "{{n}} earlier steps omitted",
+    "filesChanged": "{{n}} files changed",
+    "modifiedFiles": "Modified files",
+    "cost": "Cost",
+    "inputTokens": "{{n}} input tokens",
+    "outputTokens": "{{n}} output tokens"
   },
   "taskDag": {
     "noTasks": "No tasks to display",
@@ -519,14 +582,17 @@
     "scaleStandard": "Standard",
     "scaleLarge": "Large",
     "typographySettings": "Typography Settings",
-    "typographyDesc": "Adjust font and size for copied HTML output"
+    "typographyDesc": "Adjust font and size for copied HTML output",
+    "imageLoadFailed": "Failed to load image — click to retry",
+    "clickToRetry": "Click to retry"
   },
   "activity": {
     "step_one": "{{count}} step",
     "step_other": "{{count}} steps",
     "failed": "{{count}} failed",
     "thinking": "Thinking",
-    "writingResponse": "Writing response…"
+    "writingResponse": "Writing response…",
+    "step": "Step {{count}}"
   },
   "copyFailed": "Failed",
   "aiDisclaimer": "Content is AI-generated; please verify before relying on it.",
@@ -649,7 +715,14 @@
     "hubUnsupported": "This Hub version doesn't support feedback yet. Please upgrade Hub.",
     "successTitle": "Feedback sent",
     "successDesc": "Thanks — we'll take a look soon.",
-    "successClose": "Done"
+    "successClose": "Done",
+    "draft": {
+      "autoFilled": "— Auto-filled error diagnostics below — edit freely —",
+      "noRawError": "(this bubble kept no raw error, only the UI message below)",
+      "myAction": "What I did / what I expected: (add here)",
+      "unknownError": "Unknown error",
+      "title": "Chat error: {{reason}}"
+    }
   },
   "ambassador": {
     "entry": "Growth Ambassador",
@@ -669,5 +742,159 @@
     "loadFailed": "Couldn't load invite data. Please try again later.",
     "unsupported": "This Hub version doesn't expose invite data. Please upgrade Hub.",
     "openHub": "Open in Hub"
-  }
+  },
+  "factsAudit": {
+    "title": "Facts audit trail",
+    "subtitle": "Read-only: for each conclusion, old value → new value → who and when, plus its evidence and verifier.",
+    "subjectKind": "Subject kind",
+    "subjectId": "Subject id",
+    "predicate": "Predicate",
+    "any": "Any",
+    "since": "Since",
+    "until": "Until",
+    "includeSuperseded": "Include superseded history",
+    "disabled": "The facts layer is not wired in this deployment, so there is nothing to show here — this is not the same as \"no facts\".",
+    "empty": "No facts match these filters.",
+    "truncated": "Result limit reached — narrow the filters.",
+    "unverified": "Not independently verified",
+    "colPredicate": "Predicate",
+    "colSubject": "Subject",
+    "colAsserted": "Asserted by / when / turn",
+    "colVerification": "Verification",
+    "colChain": "Supersede chain",
+    "colValue": "Value",
+    "statTotal": "records",
+    "statVerified": "independently verified",
+    "statSuperseded": "superseded",
+    "fSubject": "About",
+    "fKind": "Type",
+    "fConclusion": "Conclusion",
+    "fTime": "Time",
+    "subjectSearchPlaceholder": "Search by name: task / requirement / agent / deliverable",
+    "subjectNoMatch": "No matching subject. Leave it empty to see everything.",
+    "clearSubject": "Clear selected subject",
+    "openSubject": "Open details ({{id}})",
+    "kindAll": "All",
+    "conclusionAll": "All conclusions",
+    "range": "Time range",
+    "rangeAll": "All time",
+    "range24h": "Last 24 hours",
+    "range7d": "Last 7 days",
+    "range30d": "Last 30 days",
+    "rangeCustom": "Custom…",
+    "emptyHint": "Try a wider time range, or clear the subject / predicate filters.",
+    "by": "asserted by {{name}}",
+    "confidence": "Confidence",
+    "confidenceShort": "conf {{pct}}%",
+    "verificationTitle": "Result · verifier · time",
+    "chain": {
+      "replacedBy": "Overturned by a newer conclusion at {{time}}",
+      "replacedByUnknown": "Overturned by another conclusion (not in this result set)",
+      "replaces": "Replaces the earlier conclusion from {{time}}"
+    },
+    "evidence": "Evidence",
+    "kind": {
+      "task": "Task",
+      "requirement": "Requirement",
+      "agent": "Agent",
+      "deliverable": "Deliverable",
+      "work_unit": "Work unit"
+    },
+    "predicateName": {
+      "task_completion_evidence": "Completion evidence",
+      "task_rejection_reason": "Rejection reason",
+      "requirement_acceptance_met": "Acceptance met",
+      "work_defect_class": "Defect class",
+      "agent_capability_claim": "Capability claim",
+      "memory_consolidation_suggestion": "Memory consolidation suggestion"
+    },
+    "reset": "Reset",
+    "superseded": "Superseded",
+    "wu": {
+      "session": "Session",
+      "sessionRound": "Session · round {{round}}",
+      "a2a": "Message"
+    },
+    "src": {
+      "commit": "Commit {{hash}}",
+      "probe": "Live probe",
+      "task": "Task",
+      "deliverable": "Deliverable"
+    }
+  },
+  "retry": "Retry",
+  "copyPath": "Copy path",
+  "exitFullscreen": "Exit fullscreen",
+  "fullscreen": "Fullscreen",
+  "collapsePanel": "Hide panel",
+  "agents": "Agents",
+  "tasks": "Tasks",
+  "requirements": "Requirements",
+  "projects": "Projects",
+  "deliverables": "Deliverables",
+  "workflows": "Workflows",
+  "showAll": "Show all",
+  "searchHint": "Type a keyword to search",
+  "toggle": "Toggle",
+  "switchTab": "Switch tab",
+  "navigate": "Navigate",
+  "justNow": "just now",
+  "rawOutput": "Raw output",
+  "filePreview": {
+    "loadFailed": "Failed to load file",
+    "unsupported": "This file type cannot be previewed."
+  },
+  "browserTest": {
+    "title": "Browser Integration Test Suite",
+    "subtitle": "Concurrent multi-agent browser test with correctness verification",
+    "failuresOnly": "Failures only",
+    "extensionNotConnected": "Chrome extension not connected. Connect the extension first to run tests.",
+    "quickTab": "Quick Test (~15s)",
+    "chaosTab": "Chaos Test",
+    "runQuick": "Run Quick Test",
+    "duration": "Duration",
+    "startChaos": "Start Chaos",
+    "passedCount": "{{n}} passed",
+    "failedCount": "{{n}} failed",
+    "completeSummary": "Complete: {{passed}}/{{total}} passed in {{seconds}}s",
+    "liveLogFailures": "Live Log ({{n}} failures)",
+    "liveLogOps": "Live Log ({{n}} ops)"
+  },
+  "menu": "Menu",
+  "forward": "Forward",
+  "fileNotFound": "File not found",
+  "htmlPreview": "HTML preview",
+  "revealInFileExplorer": "Reveal in file explorer",
+  "publishToHub": "Publish to Markus Hub",
+  "duration": {
+    "unknown": "Unknown duration",
+    "lessThanAMinute": "Less than a minute",
+    "lessThan1Minute": "<1 min",
+    "minutes": "{{count}} min",
+    "hours": "{{count}} hr",
+    "days": "{{count}} d",
+    "daysHours": "{{days}} d {{hours}} hr",
+    "moreThan30Days": ">30 d",
+    "approximate": "~{{duration}}"
+  },
+  "loadFailed": "Load failed",
+  "readErrorNotice": "Could not load {{subject}}: {{error}} (this does not mean \"{{notEquals}}\")",
+  "emptyDirectory": "This folder is empty",
+  "revealInFileBrowser": "Reveal in file browser",
+  "backToParentDir": "Back to parent folder",
+  "goUp": "Up",
+  "clickToPreview": "Click to preview",
+  "clickToRevealInExplorer": "Click to reveal in file explorer",
+  "codingTool": {
+    "files": "{{n}} files",
+    "tokensIn": "{{n}} in",
+    "tokensOut": "{{n}} out"
+  },
+  "slashMenu": {
+    "commands": "Commands"
+  },
+  "searchResults": {
+    "workflowMeta": "{{n}} steps · v{{version}}"
+  },
+  "readFailed": "Read failed"
 }

@@ -4,6 +4,8 @@ import {
   generateId,
   stripInternalBlocks,
   type AgentConfig,
+  type AgentAutonomy,
+  type OrgTrustBoundaryPort,
   type AgentConcurrentConfig,
   type AgentProfile,
   type LLMAssignment,
@@ -23,9 +25,13 @@ import {
   type UserInputAnswer,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   MailboxPriorityLevel,
+  type SignalAddressLookup,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
+import type { DelegationWorkUnitPort } from './tools/subagent.js';
+import type { MailboxIdentityPort } from './mailbox.js';
 import { AgentStoppedByHumanError, decideStart, type StartCause } from './agent-start-cause.js';
+import { loopSessionId, resolveTarget } from './session-target.js';
 
 /**
  * Peer agent as seen by `askAgent` (the `agent_ask_agent` tool).
@@ -67,6 +73,16 @@ import { extractTextFromFile } from './file-converter.js';
 import { createOfficeGenerateTool } from './tools/office-generate.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
+import { createFactTools } from './tools/fact-tools.js';
+import { toFactView, type FactsPromptContext } from './facts/facts-block.js';
+import type { FactService } from './facts/fact-service.js';
+// C8-D: action-tool reachability — the whitelist is asserted against the live
+// face at assembly (below), so an "always reachable" tool can never be missing
+// without a loud failure.
+import { assertActionToolReachability, toolFaceNames } from './capability-packs.js';
+import { createAddressTools, type AddressBindingPort, type AddressToolContext } from './tools/address-tools.js';
+import { createExternalSourceTools, type ExternalSourcePort, type ExternalSourceToolContext } from './tools/external-source-tools.js';
+import { createOrgTools, type OrgQueryPort, type OrgToolContext } from './tools/org-tools.js';
 import { createSettingsTools, type SettingsAgentContext } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
@@ -346,6 +362,8 @@ export interface CreateAgentRequest {
   agentRole?: 'manager' | 'worker';
   skills?: string[];
   heartbeatIntervalMs?: number;
+  /** C10-C: autonomy axis — 'observe' = read-only tier (no self-initiated patrol). Default 'act'. */
+  autonomy?: AgentAutonomy;
   tools?: AgentToolHandler[];
   orgContext?: OrgContext;
   enableSandbox?: boolean;
@@ -438,6 +456,18 @@ export function wireAgentEventForwarding(
   }
 }
 
+/**
+ * C9-A：从一段文本里取第一个 `tsk_…` 主体 id。
+ *
+ * 纯正则、无推断：`tsk_` 前缀是平台自己的结构记号，用户点了名才命中；命中就注入那个 task
+ * 的事实，没点名就什么都不做（聊天回合默认不注入任何 facts）。
+ */
+function firstTaskIdIn(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const m = text.match(/\btsk_[a-z0-9]{6,}/i);
+  return m ? m[0] : undefined;
+}
+
 export class AgentManager {
   private agents = new Map<string, Agent>();
   private eventBus: EventBus;
@@ -521,10 +551,12 @@ export class AgentManager {
   private static readonly MCP_IDLE_GRACE_MS = 30_000;
   private activityCallbacks?: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
-    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown>; workUnitRef?: string | null }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
   private recallCallbacks?: RecallCallbacks;
+  /** 邮箱地址绑定端口（第六刀 C1）。未接线 ⇒ 地址工具不注册（见 setAddressBindingPort）。 */
+  private addressBindingPort?: AddressBindingPort;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private _concurrentConfig?: AgentConcurrentConfig;
@@ -773,12 +805,21 @@ export class AgentManager {
           status: task.status,
         });
       } else {
-        // No task service — send as a direct message to the agent
+        // No task service = an ASSEMBLY ERROR, not a routing decision: a delegation is work
+        // owned by a task, so with no task there is no entity to open a session for. Route it
+        // to the agent's Loop session — the one destination for signals without an identity
+        // (M2) — instead of inventing a `sys_<sender>_<ts>` placeholder that nobody will ever
+        // read again (and that makes the agent amnesiac by construction).
+        log.warn('Delegation has no task service — routing to the Loop session, not a placeholder session', {
+          to: envelope.to,
+          from: envelope.from,
+          title: delegation.title,
+        });
         await targetAgent.sendMessage(
           `[Delegated Task from ${envelope.from}]\nTitle: ${delegation.title}\nDescription: ${delegation.description}\nPriority: ${delegation.priority}`,
           envelope.from,
           { name: envelope.from, role: 'manager' },
-          { sourceType: 'a2a_message', sessionId: `sys_${envelope.from}_${Date.now()}`, waitForReply: false }
+          { sourceType: 'a2a_message', scenario: 'a2a', sessionId: loopSessionId(envelope.to), waitForReply: false }
         );
       }
     });
@@ -1407,14 +1448,28 @@ export class AgentManager {
     }
 
     // Fallback: direct enqueue when group chat handlers are not wired.
+    //
+    // The session comes from the SAME resolver as every other signal (M1). A DM's channel
+    // key IS its conversational identity, so two deliveries in the same DM land in one
+    // session; the old `a2a_<target>_<ts>` opened a brand-new session per message, which is
+    // the historical "every a2a is amnesiac" defect (618k tokens, 0% cache hit). A resolver
+    // miss cannot happen here (the channel key is always supplied) but would still route to
+    // the Loop session rather than being guessed.
     const target = this.getAgent(targetId);
+    const routed = resolveTarget({
+      sourceType: 'a2a_message',
+      agentId: targetId,
+      conversationId: dmChannelKey,
+      channelSessionId: dmChannelKey,
+      ts: Date.now(),
+    });
     const reply = await target.sendMessage(
       message,
       fromId,
       { name: fromName, role: this.getAgent(fromId)?.config.agentRole ?? 'worker' },
       {
         sourceType: 'a2a_message',
-        sessionId: `a2a_${targetId}_${Date.now()}`,
+        sessionId: routed?.sessionId ?? loopSessionId(targetId),
         scenario: 'a2a',
         channelKey: dmChannelKey,
         priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
@@ -1557,6 +1612,7 @@ export class AgentManager {
         : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
       channels: [],
       heartbeatIntervalMs: request.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      autonomy: request.autonomy ?? 'act',
       concurrent: this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1601,6 +1657,9 @@ export class AgentManager {
     };
 
     const agent = new Agent(agentOpts);
+    this.applyWorkUnitPort(agent);
+    this.applyTrustBoundaryPort(agent);
+    this.applyFactService(agent);
 
     // (0.9.7 context-root-fix) Agent-driven context compaction: agents may
     // actively collapse stale session history on demand via the session tool.
@@ -1795,6 +1854,8 @@ export class AgentManager {
       agentName: config.name,
       memory: agent.getMemory(),
       semanticSearch: this.semanticSearch,
+      updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
+      clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
     })) {
       agent.registerTool(tool);
     }
@@ -1810,8 +1871,36 @@ export class AgentManager {
       updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
       clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
       getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
+      // 第六刀 C3：路由取证 + catch-all 概览。两者都直读持久层；未接线时
+      // mailbox 返回空集（工具仍可用，但会诚实地回 not_found / 空概览）。
+      routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
+      catchAll: () => agent.getMailbox().catchAll(),
+      // 第七刀 C7-A：自省端口。**总是注册**，取值在调用时惰性解析。
+      //
+      // 曾经的写法是「provider 没注入就不注册工具」，结果：装配一旦晚于建 agent，
+      // 工具就**不存在**，而 agent 无法区分「这个部署没接台账」和「我没有这个能力」——
+      // 2026-11-14 真机事故里它就是这么静默消失的。现在工具始终在，
+      // 未接线时诚实地回 `unavailable`（可行动），而不是变成一个不存在的名字。
+      workStatus: (opts: { limit?: number }) =>
+        this.workUnitStatusProvider
+          ? this.workUnitStatusProvider(id, opts)
+          : { status: 'unavailable', reason: 'work unit ledger is not wired in this deployment' },
     };
     for (const tool of createMailboxTools(mailboxToolCtx)) agent.registerTool(tool);
+
+    // 第九刀 C9-A：facts 三工具。
+    //
+    // 未接线（没注入 FactService）时**不注册**：与 work_status 的「恒在但诚实地回
+    // unavailable」不同，facts 是能力而不是自省 —— 一个不存在的事实层不应向模型
+    // 暴露一个永远拒绝的工具（那是把部署限制伪装成模型错）。
+    this.applyFactsCapability(agent);
+
+    // 邮箱地址自助工具（第六刀 C1）：未接线时 helper 内部直接返回，不注册空能力。
+    this.registerAddressTools(agent, id);
+    // C10-D：组织身份与余额查询（同样：未接线不注册）。
+    this.registerOrgTools(agent, id);
+    // C10-B：外部信号源工具 + 地址簿只读端口（同一装配纪律：两条建 Agent 路径都走）。
+    this.applyExternalSource(agent, id);
 
     // Recall tool — agents can query their own execution history
     if (this.recallCallbacks) {
@@ -2219,7 +2308,7 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message, _from) => {
           const target = this.getAgent(targetId);
-          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', waitForReply: false });
+          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', scenario: 'a2a', waitForReply: false });
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
@@ -2387,6 +2476,24 @@ export class AgentManager {
     this.eventBus.emit('agent:created', { agentId: id, name: request.name });
     log.info(`Agent created: ${request.name} (${id})`);
 
+    // C8-D fail-fast: the tool face is final at this point, so the action
+    // whitelist must resolve on it. A deployment without a task service states
+    // that capability as not provided — an explicit degradation, not a silent
+    // filter (a task tool the agent is told to call must never just be absent).
+    //
+    // `getTools` is the real registry accessor. Test doubles that replace the
+    // Agent class wholesale expose no registry at all; there is then nothing to
+    // assert, and that is said here rather than pretended — the check is skipped
+    // for "not a real agent", never for "some ids are missing".
+    const actionFace = typeof agent.getTools === 'function'
+      ? toolFaceNames(agent.getTools().keys())
+      : null;
+    if (actionFace) {
+      assertActionToolReachability(actionFace, {
+        notWired: this.taskService ? [] : (['task'] as const),
+      });
+    }
+
     return agent;
   }
 
@@ -2405,6 +2512,7 @@ export class AgentManager {
     skills: unknown;
     llmConfig: unknown;
     heartbeatIntervalMs: number;
+    autonomy?: string;
     profile?: unknown;
     tokensUsedToday?: number;
     activeTaskIds?: unknown;
@@ -2478,6 +2586,7 @@ export class AgentManager {
       })(),
       channels: [],
       heartbeatIntervalMs: row.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      autonomy: (row.autonomy as AgentAutonomy | undefined) ?? 'act',
       concurrent: (row as Record<string, unknown>)['concurrent'] as AgentConfig['concurrent'] ?? this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2518,6 +2627,9 @@ export class AgentManager {
       maxToolIterations: this._maxToolIterations,
       handbookPath: this.resolveHandbookPath(row.roleId ?? row.roleName),
     });
+    this.applyWorkUnitPort(agent);
+    this.applyTrustBoundaryPort(agent);
+    this.applyFactService(agent);
 
     // Progressive disclosure: catalog metadata only; full bodies via discover_tools
     if (this.skillRegistry) {
@@ -2719,6 +2831,8 @@ export class AgentManager {
       agentName: config.name,
       memory: agent.getMemory(),
       semanticSearch: this.semanticSearch,
+      updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
+      clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
     })) {
       agent.registerTool(tool);
     }
@@ -2734,8 +2848,19 @@ export class AgentManager {
       updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
       clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
       getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
+      routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
+      catchAll: () => agent.getMailbox().catchAll(),
+      // 第七刀 C7-A：自省端口（同第一条建 agent 路径，总是注册、惰性解析）。
+      workStatus: (opts: { limit?: number }) =>
+        this.workUnitStatusProvider
+          ? this.workUnitStatusProvider(id, opts)
+          : { status: 'unavailable', reason: 'work unit ledger is not wired in this deployment' },
     };
     for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
+
+    this.registerAddressTools(agent, id);
+    this.registerOrgTools(agent, id);
+    this.applyExternalSource(agent, id);
 
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
@@ -3121,7 +3246,7 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message) => {
           const target = this.getAgent(targetId);
-          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', waitForReply: false });
+          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', scenario: 'a2a', waitForReply: false });
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
@@ -3261,6 +3386,18 @@ export class AgentManager {
       tokensUsedToday: row.tokensUsedToday ?? 0,
       activeTaskIds: Array.isArray(row.activeTaskIds) ? (row.activeTaskIds as string[]).length : 0,
     });
+
+    // C8-D fail-fast — same contract as the create path above (including the
+    // "test double has no registry" note).
+    const restoredFace = typeof agent.getTools === 'function'
+      ? toolFaceNames(agent.getTools().keys())
+      : null;
+    if (restoredFace) {
+      assertActionToolReachability(restoredFace, {
+        notWired: this.taskService ? [] : (['task'] as const),
+      });
+    }
+
     return agent;
   }
 
@@ -3453,6 +3590,20 @@ export class AgentManager {
     return agent;
   }
 
+  /**
+   * C7-B：某个 agent **本轮**父 WU 的 ref（读内存中由 `onFocusChanged` 设置的回合 ref）。
+   *
+   * 名字里的 turn 就是约束：**只许读内存**，禁止用库查询实现（按 agentId 反查
+   * 「当前 WU」在结构上不成立 —— 库里只有历史，查到的会是错的那一条）。
+   * architecture-guard 守这条：本方法实现体内出现 `listByAgent` / `SELECT` / `repo.` 判红。
+   *
+   * agent 不在内存 / 尚未进入回合 = null（具名表态，不吞异常）。
+   */
+  turnWorkUnitRef(agentId: string): string | null {
+    const agent = this.agents.get(agentId);
+    return agent ? agent.turnWorkUnitRef() : null;
+  }
+
   hasAgent(agentId: string): boolean {
     return this.agents.has(agentId);
   }
@@ -3583,7 +3734,7 @@ export class AgentManager {
 
   setActivityCallbacks(cbs: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
-    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown>; workUnitRef?: string | null }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   }): void {
     this.activityCallbacks = cbs;
@@ -3599,6 +3750,233 @@ export class AgentManager {
     }
   }
 
+  /**
+   * 接线邮箱地址绑定端口（第六刀 C1）。缺省 ⇒ 不注册地址工具。
+   *
+   * 为什么是可选的：工具存在但每次调用必然失败，比工具不存在更坏——Agent 会据此
+   * 建模出一个它其实没有的能力。没接线就让它「看不见」这个能力。
+   */
+  setAddressBindingPort(port: AddressBindingPort): void {
+    this.addressBindingPort = port;
+    for (const [id, agent] of this.agents) this.registerAddressTools(agent, id);
+  }
+
+  /**
+   * C10-D：组织查询端口（org_info / org_list / org_usage）。与地址端口同一装配
+   * 纪律：未接线 ⇒ 工具不注册（空能力不注册，而不是注册一个必然失败的桩）。
+   * core 不认识 storage，也不认识 hub 的 HTTP：它只拿到三个结构化函数。
+   */
+  private orgQueryPort?: OrgQueryPort;
+
+  setOrgQueryPort(port: OrgQueryPort): void {
+    this.orgQueryPort = port;
+    for (const [id, agent] of this.agents) this.registerOrgTools(agent, id);
+  }
+
+  /** 单一注册点：两个建 Agent 的路径都调这里，避免两套工具集漂移。 */
+  /**
+   * 第七刀 C7-A：`work_status()` 自省端口的接入口（org-manager 装配时注入）。
+   *
+   * 为什么用 setter 而不是构造函数参数：core 不认识 org-manager 的
+   * `WorkUnitService`（依赖方向），只能拿到一个「给定 agent 返回其 WU 视图」的函数。
+   * 未注入 ⇒ 工具不注册（空能力不注册，而不是注册一个永远报错的空壳）。
+   */
+  private workUnitStatusProvider?: (agentId: string, opts: { limit?: number }) => unknown;
+
+  /**
+   * 第九刀 C9-A：facts 层的唯一写者（由 org-manager 注入 `SqliteFactService`）。
+   *
+   * core 只认 port —— 不认识 DatabaseSync，也不认识 SQL。不注入时三工具不注册、
+   * `[FACTS:…]` 不渲染，行为与今天完全一致（关闭通道 = 不接这个依赖）。
+   */
+  private factService?: FactService | null;
+  setWorkUnitStatusProvider(
+    fn: ((agentId: string, opts: { limit?: number }) => unknown) | undefined,
+  ): void {
+    this.workUnitStatusProvider = fn;
+  }
+
+  /**
+   * 第九刀 C9-A：接入 facts 的唯一写者（org-manager 装配时注入）。
+   *
+   * 传 `null` 与不调用等价：三工具不注册、`[FACTS:…]` 不渲染。
+   * （`FACTS_ENABLED=0` 开关已于 2026-11-15 删除：事实层是核心能力，不再提供
+   * “关掉整层”的运行形态；不接线的部署仍是合法的惰性状态。）
+   */
+  setFactService(service: FactService | null): void {
+    this.factService = service;
+    // C9-E：dream 的建议动作落事实需要 Agent 自己也拿得到同一个写者（dream 跑在
+    // Agent 内部，不绕 mailbox）。注入时对**已存在**的 agent 逐个补装，此后新建的
+    // agent 在建时就接上（`applyFactService`）。
+    for (const agent of this.agents.values()) this.applyFactService(agent);
+  }
+
+  /**
+   * C9-E：把同一个 facts 写者交给 Agent（dream 的建议动作落结构，以及回滚通道）。
+   *
+   * `null`/未注入 ⇒ **不触碰** agent：与 `setFactService` 的「不调用等价」口径一致，
+   * 也让未接 facts 的部署里 agent 完全不知道这一层存在。
+   *
+   * 注：`FACTS_ENABLED=0` 开关已于 2026-11-15 删除（Owner 决定）。事实层是核心能力，
+   * “关掉事实层”不该是长期可选的运行形态——开关存本身就是技术债：多 4 处分支、
+   * 多一条为回退而存在的测试，并给了一个“出问题就关掉”的错误出口。
+   */
+  private applyFactService(agent: Agent): void {
+    if (!this.factService) return;
+    agent.setFactService(this.factService);
+    // 写者与入口必须同行：补装只给 service、不给工具时，已存在的 agent 有写者却
+    // 没有任何调用入口，而终态钩子仍在要求它先断言事实 —— 任务流转会死锁
+    // （2026-11-15 真机事故：重启后全体存量 agent 没有任何 fact 工具）。
+    this.applyFactsCapability(agent);
+  }
+
+  /**
+   * C9-A/C9-E：facts 能力的**唯一**装配点（工具 + `[FACTS:…]` 注入 + 写者句柄）。
+   *
+   * 两条建 agent 的路径（`createAgent` / `restoreAgent`）与运行期补装
+   * （`setFactService` 对已存在 agent 的 re-apply）**都必须**走这里。
+   * 曾经的写法是在 `createAgent` 里内联装配、补装只 `setFactService`：结果重启后
+   * 所有存量 agent（全走 `restoreAgent`）都没有 fact 工具，而 `task_submit_review`
+   * 强制要求 `task.completion_evidence` 事实 —— 等于要求模型调用一个它不具备的工具。
+   *
+   * `Agent.registerTool` 是 `Map.set`，重复装配幂等（同名覆盖）。
+   */
+  private applyFactsCapability(agent: Agent): void {
+    const facts = this.factService;
+    if (!facts) return;
+    for (const tool of createFactTools({
+      agentId: agent.id,
+      facts,
+      // C8 身份链：本回合的 ref 从内存读，**不重新解析、不查库**。
+      turnWorkUnitRef: () => agent.turnWorkUnitRef(),
+    })) {
+      agent.registerTool(tool);
+    }
+    // `[FACTS:<subject>]` —— 只注入**当前 subject**（本回合正在做的那个 task）。
+    // 没有 task 的回合（chat / 心跳）不注入任何 facts：没有终态就不该有事实。
+    agent.getContextEngine().setFactsProvider(() => {
+      // 任务会话：认这一回合正在做的 task。
+      // 聊天回合没有 `currentTaskId` —— 但人可以点名一个 task（`tsk_…` 是稳定结构记号，
+      // 不是从自然语言里推断出来的），那就注入**那个 task** 的事实。否则"聊天里问某张卡
+      // 现在什么状态"只能靠模型自己想起来去 fact_query，注入层等于不存在。
+      const taskId = agent.getCurrentTaskId() ?? firstTaskIdIn(agent.getLastUserMessageText());
+      if (!taskId) return null;
+      const active = facts.queryActive({ subjectKind: 'task', subjectId: taskId, activeOnly: true, limit: 20 });
+      const ctx: FactsPromptContext = {
+        subjectKind: 'task',
+        subjectId: taskId,
+        facts: active.map(toFactView),
+      };
+      return ctx;
+    });
+  }
+
+  /**
+   * C7-B：委派 WU 端口的接入口（org-manager 装配时注入）。
+   *
+   * 与 `workUnitStatusProvider` 同方向：core 只认最小端口，不认识 WorkUnitService。
+   * 注入时对**已经存在**的 agent 逐个补装；此后新建的 agent 在建时就接上
+   * （`applyWorkUnitPort`）—— 两条建 Agent 的路径都要走，否则必有一半没身份。
+   */
+  private workUnitPort?: DelegationWorkUnitPort;
+  setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {
+    this.workUnitPort = port;
+    for (const agent of this.agents.values()) agent.setWorkUnitPort(port);
+  }
+
+  /** C10-0A：身份 ensure 端口 —— 与委派端口同一装配纪律：两条建 Agent 的路径都要走。 */
+  private mailboxIdentityPort?: MailboxIdentityPort;
+  setMailboxIdentityPort(port: MailboxIdentityPort | undefined): void {
+    this.mailboxIdentityPort = port;
+    for (const agent of this.agents.values()) agent.setMailboxIdentityPort(port);
+  }
+
+  private applyWorkUnitPort(agent: Agent): void {
+    if (this.workUnitPort) agent.setWorkUnitPort(this.workUnitPort);
+    if (this.mailboxIdentityPort) agent.setMailboxIdentityPort(this.mailboxIdentityPort);
+  }
+
+  /**
+   * C10-C：信任边界端口 —— 与委派端口同一装配纪律（setter 对已存在 agent 逐个
+   * 补装；两条建 Agent 路径都走 apply）。组织级端口带 receiverOrgId（api-server
+   * 实现 org/policy 判定）；Agent 级端口按 agent 绑定接收方组织，Agent 契约保持
+   * (senderAgentIds) => ceiling。未注入 ⇒ Agent 无天花板（自主轴本身照常咬人）。
+   */
+  private trustBoundaryPort?: OrgTrustBoundaryPort;
+  setTrustBoundaryPort(port: OrgTrustBoundaryPort | undefined): void {
+    this.trustBoundaryPort = port;
+    for (const agent of this.agents.values()) this.applyTrustBoundaryPort(agent);
+  }
+
+  private applyTrustBoundaryPort(agent: Agent): void {
+    // 与 applyWorkUnitPort 同一守卫纪律：端口未注入时不触碰 agent——
+    // 测试替身没有新 setter 也必须能活（装配惰性=依赖缺席，不是崩溃）。
+    const port = this.trustBoundaryPort;
+    if (!port) return;
+    agent.setTrustBoundaryPort({
+      selfInitiationCeiling: (senderAgentIds, unverifiedExternal) =>
+        port.selfInitiationCeiling(agent.config.orgId, senderAgentIds, unverifiedExternal),
+    });
+  }
+
+  private registerAddressTools(agent: Agent, agentId: string): void {
+    const port = this.addressBindingPort;
+    if (!port) return;
+    const orgId = agent.config.orgId ?? 'default';
+    const ctx: AddressToolContext = {
+      agentId,
+      orgId,
+      bind: (input) => port.bind(input),
+      revoke: (input) => port.revoke(input),
+      list: (input) => port.list(input),
+    };
+    for (const tool of createAddressTools(ctx)) agent.registerTool(tool);
+  }
+
+  /** C10-D：组织查询三工具。单一注册点 —— 两条建 Agent 路径都走这里，避免工具集漂移。 */
+  private registerOrgTools(agent: Agent, agentId: string): void {
+    const port = this.orgQueryPort;
+    if (!port) return;
+    const ctx: OrgToolContext = {
+      agentId,
+      orgId: agent.config.orgId ?? 'default',
+      info: (input) => port.info(input),
+      list: () => port.list(),
+      usage: (input) => port.usage(input),
+    };
+    for (const tool of createOrgTools(ctx)) agent.registerTool(tool);
+  }
+
+  /**
+   * C10-B：外部信号源端口 + 地址簿只读端口（D8）。与 address-binding 同纪律：
+   * 未接线 ⇒ 工具不注册（空能力不注册）；两条建 Agent 路径 + 运行期补装都走
+   * applyExternalSource，避免「一半 agent 有外部源工具、一半没有」。
+   * addressLookup 让 mailbox 唯一解析器把外部信号路由到 active 绑定（跟绑定走，不跟源主走）。
+   */
+  private externalSourcePort?: ExternalSourcePort;
+  private addressLookup?: SignalAddressLookup;
+  setExternalSourcePort(port: ExternalSourcePort | undefined): void {
+    this.externalSourcePort = port;
+    for (const [id, agent] of this.agents) this.applyExternalSource(agent, id);
+  }
+  setAddressLookup(lookup: SignalAddressLookup | undefined): void {
+    this.addressLookup = lookup;
+    for (const agent of this.agents.values()) agent.setAddressLookup(lookup);
+  }
+  private applyExternalSource(agent: Agent, agentId: string): void {
+    if (this.addressLookup) agent.setAddressLookup(this.addressLookup);
+    const port = this.externalSourcePort;
+    if (!port) return;
+    const orgId = agent.config.orgId ?? 'default';
+    const ctx: ExternalSourceToolContext = {
+      agentId,
+      orgId,
+      register: (input) => port.register(input),
+      list: (input) => port.list(input),
+      toggle: (input) => port.toggle(input),
+    };
+    for (const tool of createExternalSourceTools(ctx)) agent.registerTool(tool);
+  }
   /**
    * Legacy wiring hook kept for API compatibility. The session tool is now
    * ALWAYS Memory-backed (createSessionRepo) — the agent's context is built

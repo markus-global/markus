@@ -20,7 +20,9 @@
     "tasksTotal": "Total",
     "tokenUsage": "Token Usage",
     "currentWorking": "Actualmente",
-    "storage": "Almacenamiento"
+    "storage": "Almacenamiento",
+    "cuQuota": "Cuota de CU",
+    "cuUsedToday": "CU usado hoy"
   },
   "gettingStarted": {
     "title": "Su fuerza de trabajo AI está lista",
@@ -92,6 +94,10 @@
       "team": "Crear Tech Frontier Think Tank",
       "teamDesc": "Construir un think tank con 4 personas visionarias tecnológicas — Elon Musk, Steve Jobs, Sam Altman y Jensen Huang— para analizar las tendencias tecnológicas de vanguardia desde diferentes perspectivas",
       "teamAction": "Crear ahora",
+      "greetPrompt": "¡Hola! Soy un usuario nuevo: ¿puedes explicarme brevemente en qué puedes ayudarme?",
+      "projectPrompt": "Crea un proyecto llamado «Explorar Markus» para conocer y probar todo lo que Markus puede hacer.",
+      "requirementsPrompt": "En el proyecto «Explorar Markus», crea dos requisitos: 1. Comprender la arquitectura y la filosofía de diseño del proyecto de código abierto Markus 2. Explorar las capacidades de los agentes de Markus y cómo usarlos.",
+      "teamPrompt": "Crea un equipo llamado «Observatorio de Vanguardia Tecnológica» con cuatro agentes que representen a líderes tecnológicos: Elon Musk (espacio, vehículos eléctricos, seguridad de la IA), Steve Jobs (diseño de producto y experiencia de usuario), Sam Altman (AGI y el ecosistema de startups de IA) y Jensen Huang (GPU, cómputo para IA y centros de datos). El objetivo del equipo es analizar las tendencias tecnológicas de vanguardia desde distintas perspectivas.",
       "shortcuts": "Aprender atajos de teclado",
       "shortcutsDesc": "Practica los atajos esenciales: navegación, alternar barras laterales, nueva conversación y cambio de pestañas",
       "shortcutsAction": "Abrir lista de atajos"

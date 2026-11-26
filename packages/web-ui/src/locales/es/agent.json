@@ -137,7 +137,7 @@
       "runtimeStatus": "Estado del horario de ejecución",
       "usage": "Uso",
       "storage": "Almacenamiento",
-      "openFolder": "Carpeta abierta →",
+      "openFolder": "Abrir carpeta",
       "llmConfiguration": "Configuración LLM",
       "recentHeartbeats": "Heartbeats recientes",
       "recentA2A": "Comunicaciones recientes A2A",
@@ -199,6 +199,12 @@
       "activeTasksCount_one": "{{count}} tarea activa",
       "activeTasksCount_other": "{{count}} tareas activas",
       "mailboxQueued": "{{count}} mensaje(s) queued in mailbox",
+      "runningTitle": "En ejecución",
+      "runningNone": "ninguna unidad de trabajo en ejecución",
+      "runningInternal": "sesión interna",
+      "runningWorker": "proceso …{id}",
+      "runningBudgetHint": "usado / límite de llamadas de este turno",
+      "runningUnavailable": "el estado de ejecución no está disponible",
       "startAgent": "▶ Comienzo",
       "stopAgent": "⏹ Detener",
       "openClaw": "OpenClaw",
@@ -209,8 +215,28 @@
         "confirm": "Detener"
       },
       "lifetimeCaption": "Acumulado desde que se creó el agente",
+      "storageLabel": "Uso de disco",
+      "storageScanBtn": "Ver uso de disco",
+      "storageLoading": "Leyendo…",
+      "cleanupCta": "Pedir al agente que limpie datos",
+      "cleanupHint": "Rellena la petición en el chat: tú decides si enviarla. El agente preguntará primero si tiene dudas.",
+      "cleanupPrefill": "Revisa tus propios datos (espacio de trabajo, logs, historial de sesiones, archivo de memoria) y enumera qué se puede borrar sin riesgo, con motivos.\nPregúntame lo que no tengas claro: no borres por tu cuenta; espera mi confirmación.",
+      "storageTotalHint": "total del directorio de datos del agente",
+      "storageMore": "otros {{count}} elementos · {{size}} en total",
       "storageDepthLimited": "El árbol de directorios es profundo: el uso real puede ser mayor",
       "sections": {
+        "run": {
+          "title": "Resumen",
+          "hint": "Qué está ejecutando · pendientes · descanso y despertar · actividad reciente"
+        },
+        "capability": {
+          "title": "Capacidades",
+          "hint": "Habilidades y herramientas"
+        },
+        "settings": {
+          "title": "Ajustes",
+          "hint": "Config ROLE / POLICIES · uso y almacenamiento"
+        },
         "files": {
           "title": "Archivos",
           "hint": "ROLE.md / HEARTBEAT.md / knowledge.md, etc."
@@ -249,7 +275,18 @@
       },
       "a2aRuns_one": "{{count}} intercambio A2A",
       "a2aRuns_other": "{{count}} intercambios A2A",
-      "recentWindow": "las {{count}} actividades más recientes"
+      "recentWindow": "las {{count}} actividades más recientes",
+      "heartbeatRuns": "{{count}} latidos",
+      "a2aRuns": "{{count}} ejecuciones A2A",
+      "capabilityCollapsed": "Capacidades (herramientas y habilidades): clic para abrir",
+      "workUnit": {
+        "subDelegation": "Delegación de subtarea",
+        "delegation": "Delegación de tarea",
+        "task": "Ejecución de tarea",
+        "requirement": "Trabajo de requisito",
+        "channel": "Respuesta de grupo",
+        "unknown": "Unidad de trabajo desconocida"
+      }
     },
     "syncContext": {
       "assignedTasks": "Tareas con requisitos y trazabilidad de proyectos",
@@ -300,7 +337,9 @@
         "heartbeatMd": "Tareas de latido cardíaco",
         "policiesMd": "Políticas y Guardias",
         "contextMd": "Contexto e instrucciones"
-      }
+      },
+      "filesDiffer": "{{count}} archivos difieren de {{templateId}}",
+      "emptyFile": "Sin contenido"
     },
     "diff": {
       "title": "Diff: Actual vs Plantilla ({{templateId}})",
@@ -311,7 +350,8 @@
     },
     "toolsTab": {
       "registeredCount": "{{count}} Herramientas registradas",
-      "noToolsRegistered": "No hay herramientas registradas"
+      "noToolsRegistered": "No hay herramientas registradas",
+      "title": "Herramientas"
     },
     "skillsTab": {
       "alwaysOn": "siempre.",
@@ -329,6 +369,14 @@
       "missingSkillsHint": "Esta habilidad no está instalada, por lo que sus herramientas no están disponibles. Instálala o elimínala de este agente."
     },
     "memoryTab": {
+      "organizeCta": "Pedir al agente que ordene la memoria",
+      "organizePrefill": "Tu knowledge.md supera el presupuesto ({{used}}/{{limit}} caracteres, {{pct}}%). Por favor ordénala: fusiona secciones duplicadas, elimina entradas sustituidas por conclusiones nuevas y conserva solo conclusiones reutilizables; no dejes procesos ni registros en el área curada. Muéstrame primero la lista de lo que piensas borrar/fusionar.",
+      "organizePrefillHint": "Salta al chat y rellena la petición: tú decides si enviarla",
+      "detailsToggle": "Detalles (región curada · búfer de observaciones · archivo)",
+      "injectionLine": "Inyectado en este turno (presupuesto del prompt)",
+      "curatedLine": "Región curada en disco (si supera el presupuesto se archiva sin pérdida)",
+      "observationLine": "Búfer de observaciones (no se inyecta)",
+      "injectionOmittedHint": "{{count}} sección(es) no se incluyeron por superar el límite de inyección (siguen siendo consultables)",
       "loading": "Cargando memoria...",
       "loadFailed": "No se pudieron cargar los datos de memoria",
       "recent": "Recientes ({{count}})",
@@ -350,7 +398,14 @@
         "system": "sistema",
         "assistant": "asistente"
       },
-      "userEditedSource": "Certificado de usuario"
+      "userEditedSource": "Certificado de usuario",
+      "healthTitle": "Salud de la memoria (knowledge.md)",
+      "observationsCount": "Observaciones",
+      "curatedCount": "Secciones de conocimiento",
+      "archivedChars": "Archivado",
+      "lastConsolidated": "Última consolidación",
+      "charsOfCap": "{{used}} / {{cap}} caracteres",
+      "archivedCharsSearchable": "{{count}} caracteres (buscables)"
     },
     "heartbeatTab": {
       "loading": "Carga de datos...",
@@ -406,7 +461,13 @@
       "soon": "pronto",
       "cancelWakeupOk": "Despertador cancelado.",
       "cancelWakeupFailed": "Error al cancelar el despertador",
-      "cancelWakeupGone": "Ese despertador ya no existe (ya se disparó o se canceló en otro lugar). La lista se ha actualizado."
+      "cancelWakeupGone": "Ese despertador ya no existe (ya se disparó o se canceló en otro lugar). La lista se ha actualizado.",
+      "wakeupsCount": "{{count}} activaciones",
+      "pendingOpsCount": "{{count}} pendientes",
+      "runsThisSession": "{{count}} en esta sesión",
+      "actionsCount": "{{count}} acciones",
+      "intervalHours": "cada {{count}} horas",
+      "intervalMinutes": "cada {{count}} minutos"
     },
     "relative": {
       "inSeconds": "dentro {{count}}s",
@@ -453,7 +514,7 @@
       "deferred": "Diferido: {{count}}",
       "dropped": "Suelto: {{count}}",
       "inlineCompleted": "Inline Completed: {{count}}",
-      "mailboxHistory": "Historial del buzón",
+      "mailboxHistory": "Registro de trabajo",
       "noHistory": "No hay historial de buzón todavía",
       "loadEarlier": "Cargar anteriores...",
       "decisions": "Decisiones",
@@ -465,12 +526,12 @@
       "from": "Desde:",
       "tokensCount": "{{count}} fichas",
       "toolsCount": "{{count}} herramientas",
-      "categoryFilters": {
+      "entityFilters": {
         "all": "Todos",
-        "interaction": "Interacción",
         "task": "Tarea",
-        "notification": "Notificación",
-        "system": "Sistema"
+        "requirement": "Requisito",
+        "channel": "Conversación",
+        "none": "Sin asignar"
       },
       "statusFilters": {
         "all": "Todos",
@@ -479,7 +540,8 @@
         "completed": "Completado",
         "merged": "Fusión",
         "deferred": "Diferido",
-        "dropped": "Suelto"
+        "bounced": "Rebotado",
+        "catch_all": "Buzón de rebotes"
       },
       "activityFilters": {
         "all": "Todos",
@@ -527,8 +589,25 @@
       "notebook": "Cuaderno",
       "notebookEntries": "{{count}} entradas",
       "notebookHint": "El espacio de trabajo cognitivo persistente del agente. Mostrando las {{count}} más recientes; el resto vive en NOTEBOOK.md. Las entradas expiran automáticamente.",
-      "expandNotebook": "Mostrar {{count}} más…"
-    }
+      "expandNotebook": "Mostrar {{count}} más…",
+      "noMatch": "No hay registros con este filtro",
+      "unitOrphan": "Historial",
+      "scrollForMore": "Desliza para cargar más",
+      "roundDecisions": "Decisiones de esta ronda",
+      "loopIdle": "No hubo señales que requirieran decisión en este periodo: está dormido o ya las gestionó",
+      "unitEmpty": "Esta entidad aún no tiene registros",
+      "loadingContent": "Cargando el contenido completo…",
+      "showMore": "Mostrar más",
+      "unitTask": "Tarea {{id}}",
+      "unitRequirement": "Requisito {{id}}",
+      "unitConversation": "Conversación {{id}}",
+      "unitLoop": "Bucle de decisión",
+      "itemCount": "{{count}} elementos",
+      "showMoreCount": "Mostrar más (quedan {{count}})"
+    },
+    "sessionMessagesSubject": "Mensajes de la sesión",
+    "noSessionMessages": "Esta sesión no tiene mensajes",
+    "noDeliverables": "Este agente no tiene entregables"
   },
   "deliverables": {
     "empty": "No hay entregables todavía",
@@ -540,6 +619,13 @@
     "created": "Creado",
     "updated": "Actualizado",
     "accessed": "Acceso {{count}} tiempo(s))",
-    "openInPage": "Abrir entrada"
+    "openInPage": "Abrir entrada",
+    "diff": "Diff",
+    "testsPassed": "{{n}} aprobadas",
+    "testsFailed": "{{n}} fallidas",
+    "testsSkipped": "{{n}} omitidas",
+    "fileCount": "{{count}} archivos",
+    "fileCount_one": "{{count}} archivo",
+    "fileCount_other": "{{count}} archivos"
   }
 }

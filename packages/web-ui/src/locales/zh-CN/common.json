@@ -8,7 +8,7 @@
   "newTab": "新建标签页",
   "confirm": "确认",
   "ok": "确定",
-  "error": "错误",
+  "error": "错误：{{message}}",
   "pageErrorTitle": "这个页面渲染出错了",
   "pageErrorHint": "其余页面仍可正常使用。可以先重试；如果反复出现，把下面的报错信息提供给开发。",
   "pageErrorRetry": "重试",
@@ -68,7 +68,6 @@
   "removing": "正在移除...",
   "networkError": "网络错误",
   "failed": "失败",
-  "error": "错误：{{message}}",
   "noResults": "无结果",
   "selectAll": "全选",
   "selected": "已选 {{count}} 项",
@@ -106,6 +105,50 @@
     "cancelled": "已取消",
     "archived": "已归档"
   },
+  "threadStage": {
+    "waitingHuman": "需要你",
+    "running": "执行中",
+    "needsEvidence": "缺证据",
+    "inVerification": "待核验",
+    "done": "已收口",
+    "blockedDeps": "等依赖",
+    "ended": "已终止",
+    "evidence": {
+      "title": "完成依据（{{count}} 条）",
+      "subtitle": "这张卡凭什么说自己做完了：每条结论、谁断言的、有没有人独立核验。",
+      "empty": "还没有证据事实",
+      "emptyHint": "提交评审前必须有一条「交付证据」，否则会被闸门拦住。",
+      "unverified": "尚未独立验证",
+      "assertedBy": "由 {{who}} 断言",
+      "verifiedBy": "由 {{who}} 核验",
+      "predicateOnly": "以结构化值记录，没有文字摘要。",
+      "expand": "展开全文",
+      "collapse": "收起",
+      "predicate": {
+        "task_completion_evidence": "交付证据",
+        "task_rejection_reason": "驳回原因",
+        "requirement_acceptance_met": "验收已达成",
+        "work_defect_class": "缺陷归类",
+        "agent_capability_claim": "能力声明",
+        "memory_consolidation_suggestion": "记忆整理建议"
+      },
+      "verification": {
+        "pass": "已验证",
+        "fail": "验证未通过"
+      },
+      "refKind": {
+        "deliverable": "交付物",
+        "comment": "评论",
+        "inPlace": "原始记录",
+        "commit": "提交",
+        "probe": "实测记录",
+        "task": "任务",
+        "record": "事实",
+        "transcript": "会话记录",
+        "other": "其他"
+      }
+    }
+  },
   "processStatus": {
     "idle": "空闲",
     "working": "工作中",
@@ -139,13 +182,19 @@
     "urgent": "紧急",
     "high": "高",
     "normal": "普通",
-    "low": "低"
+    "low": "低",
+    "medium": "中"
   },
   "role": {
     "owner": "所有者",
     "admin": "管理员",
     "member": "成员",
     "guest": "访客"
+  },
+  "actor": {
+    "user": "用户",
+    "agent": "智能体",
+    "system": "系统"
   },
   "units": {
     "members": "{{count}} 名成员",
@@ -158,7 +207,8 @@
     "now": "刚刚",
     "minutesAgo": "{{count}} 分钟前",
     "hoursAgo": "{{count}} 小时前",
-    "daysAgo": "{{count}} 天前"
+    "daysAgo": "{{count}} 天前",
+    "yesterday": "昨天"
   },
   "signOut": "登出",
   "openInBrowser": "在浏览器中打开",
@@ -228,7 +278,10 @@
       "state": {
         "running": "执行中",
         "done": "已完成"
-      }
+      },
+      "tools": "{{count}} 个工具",
+      "subagents": "{{count}} 个子智能体",
+      "errors": "{{count}} 个错误"
     },
     "tools": {
       "shell_execute": "执行命令",
@@ -426,7 +479,9 @@
       "text": "文本",
       "thinkingTag": "思考",
       "round": "第 {{n}} 轮",
-      "rounds": "共 {{count}} 轮"
+      "rounds": "共 {{count}} 轮",
+      "toolsExecuted": "执行了 {{count}} 个工具",
+      "toolsLine": "{{count}} 个工具"
     },
     "fullLog": {
       "title": "执行日志",
@@ -438,7 +493,15 @@
       "completed": "已完成",
       "resumed": "已恢复",
       "execution_finished": "已完成"
-    }
+    },
+    "prompt": "提示词",
+    "inputArguments": "输入参数",
+    "earlierStepsOmitted": "已省略前 {{n}} 个步骤",
+    "filesChanged": "{{n}} 个文件变更",
+    "modifiedFiles": "修改的文件",
+    "cost": "费用",
+    "inputTokens": "输入 Token {{n}}",
+    "outputTokens": "输出 Token {{n}}"
   },
   "taskDag": {
     "noTasks": "没有可显示的任务",
@@ -519,14 +582,17 @@
     "scaleStandard": "标准",
     "scaleLarge": "大号",
     "typographySettings": "字体排版设置",
-    "typographyDesc": "调整复制 HTML 时的字体和字号"
+    "typographyDesc": "调整复制 HTML 时的字体和字号",
+    "imageLoadFailed": "图片加载失败 — 点击重试",
+    "clickToRetry": "点击重试"
   },
   "activity": {
     "step_one": "{{count}} 步",
     "step_other": "{{count}} 步",
     "failed": "{{count}} 失败",
     "thinking": "思考中",
-    "writingResponse": "正在生成回复…"
+    "writingResponse": "正在生成回复…",
+    "step": "第 {{count}} 步"
   },
   "copyFailed": "失败",
   "aiDisclaimer": "内容由 AI 生成，请注意辨别后再使用。",
@@ -649,7 +715,14 @@
     "hubUnsupported": "当前 Hub 版本不支持问题反馈，请先升级 Hub",
     "successTitle": "反馈已提交",
     "successDesc": "感谢反馈，我们会尽快处理。",
-    "successClose": "完成"
+    "successClose": "完成",
+    "draft": {
+      "autoFilled": "—— 以下为自动填入的错误诊断，可直接修改 ——",
+      "noRawError": "（该气泡没有保留错误原文，只有下面的界面提示）",
+      "myAction": "我当时的操作 / 期望的结果：（在这里补充）",
+      "unknownError": "未知错误",
+      "title": "聊天报错：{{reason}}"
+    }
   },
   "ambassador": {
     "entry": "成长大使",
@@ -669,5 +742,159 @@
     "loadFailed": "邀请数据加载失败，请稍后重试",
     "unsupported": "当前 Hub 版本不支持邀请数据，请先升级 Hub",
     "openHub": "在 Hub 中查看"
-  }
+  },
+  "factsAudit": {
+    "title": "事实审计轨迹",
+    "subtitle": "只读：每条结论的旧值 → 新值 → 谁在何时，以及它的证据与验证者。",
+    "subjectKind": "主体类型",
+    "subjectId": "主体 ID",
+    "predicate": "谓词",
+    "any": "全部",
+    "since": "起始时间",
+    "until": "结束时间",
+    "includeSuperseded": "包含已被取代的历史行",
+    "disabled": "事实层在当前部署中未接线，因此这里没有可展示的数据；这不是“没有事实”。",
+    "empty": "当前过滤条件下没有事实。",
+    "truncated": "结果已达上限，请缩窄过滤条件。",
+    "unverified": "未经独立验证",
+    "colPredicate": "谓词",
+    "colSubject": "主体",
+    "colAsserted": "断言者 / 时间 / 回合",
+    "colVerification": "验证",
+    "colChain": "取代链",
+    "colValue": "值",
+    "statTotal": "条记录",
+    "statVerified": "条已独立验证",
+    "statSuperseded": "条已被推翻",
+    "fSubject": "关于谁",
+    "fKind": "类型",
+    "fConclusion": "结论类型",
+    "fTime": "时间范围",
+    "subjectSearchPlaceholder": "搜名字：任务 / 需求 / 智能体 / 产出物",
+    "subjectNoMatch": "没找到匹配的主体；留空就是看全部。",
+    "clearSubject": "清除已选主体",
+    "openSubject": "打开详情（{{id}}）",
+    "kindAll": "全部",
+    "conclusionAll": "全部结论",
+    "range": "时间范围",
+    "rangeAll": "全部时间",
+    "range24h": "近 24 小时",
+    "range7d": "近 7 天",
+    "range30d": "近 30 天",
+    "rangeCustom": "自定义…",
+    "emptyHint": "可以放宽时间范围，或清空主体 / 谓词过滤。",
+    "by": "{{name}} 断言",
+    "confidence": "置信度",
+    "confidenceShort": "置信 {{pct}}%",
+    "verificationTitle": "验证结果 · 验证者 · 时间",
+    "chain": {
+      "replacedBy": "已被 {{time}} 的新结论推翻",
+      "replacedByUnknown": "已被其他结论推翻（不在当前结果中）",
+      "replaces": "取代了 {{time}} 的旧结论"
+    },
+    "evidence": "证据",
+    "kind": {
+      "task": "任务",
+      "requirement": "需求",
+      "agent": "智能体",
+      "deliverable": "产出物",
+      "work_unit": "工作单元"
+    },
+    "predicateName": {
+      "task_completion_evidence": "交付证据",
+      "task_rejection_reason": "驳回原因",
+      "requirement_acceptance_met": "验收已达成",
+      "work_defect_class": "缺陷归类",
+      "agent_capability_claim": "能力声明",
+      "memory_consolidation_suggestion": "记忆整理建议"
+    },
+    "reset": "重置",
+    "superseded": "已被取代",
+    "wu": {
+      "session": "会话",
+      "sessionRound": "会话第 {{round}} 轮",
+      "a2a": "消息"
+    },
+    "src": {
+      "commit": "提交 {{hash}}",
+      "probe": "实测记录",
+      "task": "任务",
+      "deliverable": "产出物"
+    }
+  },
+  "retry": "重试",
+  "copyPath": "复制路径",
+  "exitFullscreen": "退出全屏",
+  "fullscreen": "全屏",
+  "collapsePanel": "收起面板",
+  "agents": "智能体",
+  "tasks": "任务",
+  "requirements": "需求",
+  "projects": "项目",
+  "deliverables": "交付物",
+  "workflows": "工作流",
+  "showAll": "查看全部",
+  "searchHint": "输入关键词搜索",
+  "toggle": "唤起/关闭",
+  "switchTab": "切换分类",
+  "navigate": "导航",
+  "justNow": "刚刚",
+  "rawOutput": "原始输出",
+  "filePreview": {
+    "loadFailed": "文件加载失败",
+    "unsupported": "该文件类型无法预览。"
+  },
+  "browserTest": {
+    "title": "浏览器集成测试套件",
+    "subtitle": "多智能体并发浏览器测试，含正确性校验",
+    "failuresOnly": "仅看失败",
+    "extensionNotConnected": "未连接 Chrome 扩展，请先连接扩展再运行测试。",
+    "quickTab": "快速测试（约 15 秒）",
+    "chaosTab": "混沌测试",
+    "runQuick": "运行快速测试",
+    "duration": "时长",
+    "startChaos": "开始混沌测试",
+    "passedCount": "{{n}} 通过",
+    "failedCount": "{{n}} 失败",
+    "completeSummary": "完成：{{passed}}/{{total}} 通过，用时 {{seconds}} 秒",
+    "liveLogFailures": "实时日志（{{n}} 条失败）",
+    "liveLogOps": "实时日志（{{n}} 条操作）"
+  },
+  "menu": "菜单",
+  "forward": "前进",
+  "fileNotFound": "文件不存在",
+  "htmlPreview": "HTML 预览",
+  "revealInFileExplorer": "在文件管理器中显示",
+  "publishToHub": "发布到 Markus Hub",
+  "duration": {
+    "unknown": "时长未知",
+    "lessThanAMinute": "不到 1 分钟",
+    "lessThan1Minute": "<1 分钟",
+    "minutes": "{{count}} 分钟",
+    "hours": "{{count}} 小时",
+    "days": "{{count}} 天",
+    "daysHours": "{{days}} 天 {{hours}} 小时",
+    "moreThan30Days": ">30 天",
+    "approximate": "约 {{duration}}"
+  },
+  "loadFailed": "读取失败",
+  "readErrorNotice": "{{subject}}读取失败：{{error}}（这不等于「{{notEquals}}」）",
+  "emptyDirectory": "此目录为空",
+  "revealInFileBrowser": "在文件浏览器中显示",
+  "backToParentDir": "返回上级目录",
+  "goUp": "上级",
+  "clickToPreview": "点击预览",
+  "clickToRevealInExplorer": "点击在文件管理器中显示",
+  "codingTool": {
+    "files": "{{n}} 个文件",
+    "tokensIn": "输入 {{n}}",
+    "tokensOut": "输出 {{n}}"
+  },
+  "slashMenu": {
+    "commands": "命令"
+  },
+  "searchResults": {
+    "workflowMeta": "{{n}} 个步骤 · v{{version}}"
+  },
+  "readFailed": "读取失败"
 }

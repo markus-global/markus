@@ -13,10 +13,10 @@ import { isStrictStateItem } from '@markus/shared';
 
 describe('P1-2 · isStrictStateItem 谓词覆盖 4 类严格状态项', () => {
   it('4 类判真，informational 判假', () => {
-    expect(isStrictStateItem({ sourceType: 'task_status_update', payload: { summary: '', content: '', extra: { triggerExecution: true } } })).toBe(true);
+    expect(isStrictStateItem({ sourceType: 'task_status_update', payload: { summary: '', content: '' }, envelope: { intent: 'trigger_execution' } })).toBe(true);
     expect(isStrictStateItem({ sourceType: 'review_request', payload: { summary: '', content: '' } })).toBe(true);
-    expect(isStrictStateItem({ sourceType: 'requirement_update', payload: { summary: '', content: '', extra: { actionRequired: true } } })).toBe(true);
-    expect(isStrictStateItem({ sourceType: 'workflow_update', payload: { summary: '', content: '', extra: { actionRequired: true } } })).toBe(true);
+    expect(isStrictStateItem({ sourceType: 'requirement_update', payload: { summary: '', content: '' }, envelope: { intent: 'action_required' } })).toBe(true);
+    expect(isStrictStateItem({ sourceType: 'workflow_update', payload: { summary: '', content: '' }, envelope: { intent: 'action_required' } })).toBe(true);
     // 非 strict
     expect(isStrictStateItem({ sourceType: 'task_status_update', payload: { summary: '', content: '' } })).toBe(false);
     expect(isStrictStateItem({ sourceType: 'requirement_update', payload: { summary: '', content: '' } })).toBe(false);
@@ -41,7 +41,7 @@ describe('P1-2 · consolidateByEntity 不吞掉严格状态项', () => {
   it('requirement_update[actionRequired] 与同名 informational 共存 → 两者都保留', () => {
     const mb = new AgentMailbox('agt_t', new EventBus());
     mb.enqueue('requirement_update', { summary: 'req info', content: 'informational', requirementId: 'req_1' });
-    mb.enqueue('requirement_update', { summary: 'req action', content: 'do it', requirementId: 'req_1', extra: { actionRequired: true } });
+    mb.enqueue('requirement_update', { summary: 'req action', content: 'do it', requirementId: 'req_1' }, { intent: 'action_required' });
     expect(mb.getQueuedItems()).toHaveLength(2);
 
     const removed = mb.consolidateByEntity();

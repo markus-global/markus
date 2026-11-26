@@ -427,7 +427,7 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="text-sm text-fg-primary truncate">{wf.displayName || wf.name}</div>
-                              <div className="text-xs text-fg-tertiary truncate">{wf.stepCount} steps · v{wf.version}</div>
+                              <div className="text-xs text-fg-tertiary truncate">{t('searchResults.workflowMeta', { n: wf.stepCount, version: wf.version })}</div>
                             </div>
                           </button>
                         );

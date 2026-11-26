@@ -16,7 +16,13 @@
  * 不存在"投递了但没唤醒"这种半状态：deliver 只有成功（已入队）或抛错两种结果。
  */
 
-import { createLogger } from '@markus/shared';
+import {
+  createLogger,
+  agentAddressRef,
+  WORK_UNIT_REF,
+  taskIdOfWorkUnitRef,
+  sessionScopeKeyOfWorkUnitRef,
+} from '@markus/shared';
 
 const log = createLogger('agent-delivery');
 
@@ -98,6 +104,18 @@ export interface DeliveryDeps {
       payload: { summary: string; content: string; extra?: Record<string, unknown> },
       options?: {
         metadata?: Record<string, unknown>;
+        /** 第六刀 C2：投递来源（from / messageId），由 mailbox 在唯一装配点长成信封。 */
+        origin?: { from: unknown; messageId?: string; externalThreadRef?: string | null; subject?: string };
+        intent?: 'deliver' | 'trigger_execution' | 'action_required';
+        round?: number;
+        /**
+         * C8-A：这条 item 属于哪个 WorkUnit（结构事实）。
+         *
+         * 必须能穿到这里：内存里的 item 若不带身份，调度期的实体键（`workunit` 维度）
+         * 与会话锁都会退化成 `system:` 全局单键 —— DB 列补不了内存（C10-0B 已把那个
+         * “事后补列”的写者删除：身份只有一个建造点，就是入队时）。
+         */
+        workUnitRef?: string | null;
         runtime?: { responsePromise?: { resolve: (v: string) => void; reject: (r: unknown) => void } };
       },
     ) => unknown;
@@ -119,7 +137,50 @@ export interface DeliveryDeps {
     text: string;
     messageId?: string;
   }) => void;
+  /**
+   * 第七刀 C7-A：WorkUnit 的唯一业务入口（§16：一次 A2A 投递 = 一个 WU）。
+   *
+   * 必填而非可选：`workUnits?:` 会让「没有 WU 服务」和「忘了装配」在类型上无法区分，
+   * 整条链路静默跳过且没人发现。真的没有 WU 的装配路径显式传 `NULL_WORK_UNITS`。
+   *
+   * `transition` 是**装配处**包好 `WorkUnitService.tryTransition()` 的版本（业务路径
+   * 用的那个：非矩阵失败记事件、不打断投递；矩阵错误照样抛）—— 端口只声明「迁移」
+   * 这件事，不声明「怎么处理失败」，那是 service 的职责。
+   */
+  workUnits: {
+    ensure(seed: {
+      ref: string;
+      agentId: string;
+      contextRef?: string | null;
+      taskId?: string | null;
+      /**
+       * C7-B：发送方本轮父 WU 的 ref。一次 A2A 投递就是「某个回合里发出的一次
+       * 委派」，父只能是那个回合的 WU；ref → id 的解析归 `WorkUnitService.ensure()`。
+       */
+      parentRef?: string | null;
+    }): { status: string } | null;
+    /**
+     * C7-B：读「发送方**本轮**跑在哪条 WU 上」。
+     *
+     * 名字里的 turn 是约束：只读该 agent 内存中由 `onFocusChanged` 设置的回合 ref，
+     * 禁止用库查询实现。必填而非可选：`NULL_WORK_UNITS` 让它显式返回 null。
+     */
+    turnWorkUnitRef(agentId: string): string | null;
+    transition(ref: string, to: string, opts?: { reason?: string | null }): unknown;
+  };
 }
+
+/**
+ * 具名空实现：这条装配路径确实没有 WU 服务（CLI 无 storage、单测直接构造）。
+ *
+ * 用显式对象而不是 `undefined`，是让「这里没有 WU」成为装配处一个**看得见**的决定，
+ * 而不是一个悄悄成立的可选性。
+ */
+export const NULL_WORK_UNITS: DeliveryDeps['workUnits'] = {
+  ensure: () => null,
+  turnWorkUnitRef: () => null,
+  transition: () => undefined,
+};
 
 let deliverySeq = 0;
 
@@ -166,6 +227,39 @@ export class AgentDelivery {
         // 那才是缓存最怕的。
         const addressedCount = req.addressedTargetIds?.length ?? 0;
         const othersAddressed = Math.max(0, addressedCount - 1);
+
+        // ── C8-A：这条 A2A 属于**哪件事**（实体），不是「这次怎么送到的」 ──
+        //
+        // 旧写法 `a2a:<channelKey>:<deliveryId>` 把投递 id 编进了身份，于是同一件事
+        // 连发三条必然产出三个 WU，下游再按 WU 派生会话 → 三个会话、三份互不可见的
+        // 上下文。这正是本卡要根除的症状，所以身份改成实体键：
+        //
+        //   · 发送方本轮 WU 属于某个任务  → `task:<taskId>`（A2A 讨论的就是那个任务）
+        //   · 否则                        → `channel:<channelKey>`（一段对话本身即实体）
+        //
+        // 父 WU 只从**回合状态**读（`turnWorkUnitRef`，内存、非查库），不从载荷推断。
+        const units = this.deps.workUnits;
+        const parentRef = units.turnWorkUnitRef(req.fromAgentId);
+        const parentTaskId = taskIdOfWorkUnitRef(parentRef);
+        const entityKey = parentTaskId ? `task:${parentTaskId}` : `channel:${req.channelKey}`;
+        const entityRef = WORK_UNIT_REF.a2a(entityKey);
+        // 这一轮的**会话作用域键**同样由实体派生 —— 这就是「三条消息一个会话」的机制。
+        // 它经 `sessionHint{role:'channel', key}` 由 `channelMemorySessionId()` 变成记忆
+        // 会话 id；拿不到派生值时退回频道（与旧行为一致），绝不静默换成一个新会话。
+        const entitySessionKey = sessionScopeKeyOfWorkUnitRef(entityRef) ?? req.channelKey;
+
+        // 顺序不可反：**先建实体（ensure），再入队并带上引用**。
+        // 入队那一刻 item 就得带着真实身份，否则内存里的 item 到处理时仍无 WU,
+        // 实体键与会话锁都会退化成 `system:` 全局单键。失败（无 WU repo）时显式 null。
+        // C10-0B：这段顺序就是全仓的范本 —— 任务执行链原先反着来（先入队、
+        // 再由第二个写者补 DB 列），于是台账与库分成两套真相。
+        const wu = units.ensure({
+          ref: entityRef,
+          agentId: req.fromAgentId,
+          contextRef: req.channelKey,
+          parentRef,
+        });
+
         agent.enqueueToMailbox('a2a_message', {
           summary: req.mentions?.length
             ? `@mention from ${req.fromAgentName}`
@@ -186,7 +280,9 @@ export class AgentDelivery {
             // channel conversation, not to whatever session the target happens to
             // be in. Without this the turn falls back to the recipient's current
             // session and channel/private context bleed into each other.
-            sessionHint: { kind: 'system', role: 'channel', key: req.channelKey },
+            // C8-A：会话身份由**实体**派生（`sessionScopeKeyOfWorkUnitRef`），不再是频道。
+            // 同一任务的第三条消息拿到的 key 与前两条相同 → 同一个记忆会话。
+            sessionHint: { kind: 'system', role: 'channel', key: entitySessionKey },
             waitForReply: false,
             // 因果链：由最初发起者生成，跨跳原样传递（§11.1.3）
             chainId: req.chainId,
@@ -196,15 +292,41 @@ export class AgentDelivery {
             ...(req.throttled ? { throttled: true } : {}),
           },
         }, {
+          // C8-A：身份随消息一起落地（内存 + DB 同源）。`mailbox_items.work_unit_ref`
+          // 这一列的唯一写者就是入队本身；内存与 DB 在同一个装配点写同一个值。
+          workUnitRef: wu ? entityRef : null,
           metadata: {
             senderId: req.fromAgentId,
             senderName: req.fromAgentName,
             senderRole: 'agent',
           },
+          // 第六刀 C2（§2.3 投递点 3）：A2A 唯一出口交出信封的“谁发的”。
+          // `messageId` 用本次投递 id：同一 chainId 下同一跳的两条**不同**消息都是合法消息，
+          // 按 chainId/深度去重会静默吞掉真消息；而 IM/邮件入口用的是对方给的 native id。
+          origin: {
+            from: agentAddressRef(req.fromAgentId),
+            messageId: deliveryId,
+            externalThreadRef: req.chainId,
+          },
           runtime: resolveReply
             ? { responsePromise: { resolve: (value: string) => resolveReply?.(value), reject: () => {} } }
             : undefined,
         });
+        // ── C7-A / C8-A：一条**活** = 一个 WorkUnit（state-machines §16）──
+        // WU 由**发送方**拥有：`deliver()` 是发送方的动作，所以 `agent_id` 记发送方
+        // （干活的那个），不是接收方。一次投递给 N 个接收方 → N 个 item 共享同一个
+        // ref，这是定义不是缺陷（它们确实是同一条活产出的 N 份投递）。
+        //
+        // C8-A 的改动只有一处、在身份上：ref 由 `a2a:<channelKey>:<deliveryId>` 改成
+        // `a2a:<entityKey>`（见上方 entityKey 的推导）。实体已由 `ensure` 在入队前建好，
+        // 引用随入队写入（C10-0B：删除此处的事后补列调用 —— 它只能改 DB，
+        // 而内存里的 item 早在 enqueue 时就拿到了同一个 ref）。
+        // 投递已入队 = 这条活不再在跑 → `running → idle`，留痕在 `status_transitions`
+        // （`entity_type='work_unit'`）：不留痕的话「它什么时候停的」只能靠猜。
+        // 只在 `running` 上迁：重投同一跳会命中既有 `idle` 行（idle→idle 不在矩阵里）。
+        if (wu?.status === 'running') {
+          units.transition(entityRef, 'idle', { reason: 'a2a_delivery_enqueued' });
+        }
         deliveredTo.push(targetId);
       } catch (err) {
         // 投递失败必须可见：不吞。调用方据此决定是否重试。

@@ -13,13 +13,26 @@ import type { FeishuClient } from '../src/feishu/client.js';
 const sdkState = vi.hoisted(() => ({
   dispatcher: undefined as undefined | { handlers: Record<string, (data: unknown) => void> },
   wsStarts: 0,
+  /** Every WSClient ever constructed, in order, with its own close record. */
+  sockets: [] as Array<{ started: boolean; closes: Array<{ force?: boolean } | undefined> }>,
+  /** The `httpInstance` each WSClient was handed (undefined = SDK default axios). */
+  httpInstances: [] as Array<{ request?: (c: unknown) => Promise<unknown> } | undefined>,
 }));
 
 vi.mock('@larksuiteoapi/node-sdk', () => ({
   WSClient: class {
-    constructor(_opts: unknown) {}
+    private state = { started: false, closes: [] as Array<{ force?: boolean } | undefined> };
+    constructor(opts: { httpInstance?: { request?: (c: unknown) => Promise<unknown> } }) {
+      sdkState.sockets.push(this.state);
+      sdkState.httpInstances.push(opts.httpInstance);
+    }
     async start(): Promise<void> {
       sdkState.wsStarts += 1;
+      this.state.started = true;
+    }
+    close(params?: { force?: boolean }): void {
+      this.state.closes.push(params);
+      this.state.started = false;
     }
   },
   EventDispatcher: class {
@@ -298,6 +311,42 @@ describe('FeishuAdapter', () => {
         webhookPort: 0,
       });
       expect(fresh.isConnected()).toBe(true);
+      await fresh.disconnect();
+      vi.unstubAllGlobals();
+    });
+
+    /**
+     * The long connection's handshake is an HTTP POST through `httpInstance`.
+     * Without an explicit instance the SDK falls back to `axios.create()`, which
+     * honours the HTTP(S)_PROXY env vars our own egress layer exports and then
+     * mis-tunnels to Feishu — the socket never opens and card buttons report
+     * "callback service offline". Asserting only "an instance was passed" would
+     * not bite (any object satisfies it), so drive the instance and require that
+     * the request actually reaches `fetch`, i.e. the platform's single egress.
+     */
+    it('hands the long connection a fetch-backed httpInstance (no proxy bypass needed)', async () => {
+      const fresh = new FeishuAdapter();
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
+        text: async () => JSON.stringify({ code: 0, data: { URL: 'wss://example', ClientConfig: {} } }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      sdkState.httpInstances.length = 0;
+
+      // No wsMode/webhookPort: the default inbound transport is the socket.
+      await fresh.connect({ platform: 'feishu', appId: 'cli_test', appSecret: 'secret' });
+
+      expect(sdkState.httpInstances).toHaveLength(1);
+      const instance = sdkState.httpInstances[0];
+      expect(instance?.request).toBeTypeOf('function');
+
+      fetchMock.mockClear();
+      await instance!.request!({ method: 'post', url: 'https://open.feishu.cn/callback/ws/endpoint' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0]![0])).toContain('/callback/ws/endpoint');
+
       await fresh.disconnect();
       vi.unstubAllGlobals();
     });
@@ -844,6 +893,64 @@ describe('FeishuAdapter', () => {
       expect(fresh.isConnected()).toBe(true);
 
       await fresh.disconnect();
+      vi.unstubAllGlobals();
+    });
+
+    // Regression: approval buttons failed with "目标回调服务当前未在线" while a
+    // healthy connection existed. Cause: teardown only nulled the WSClient ref,
+    // so every reconnect leaked the previous socket. One Feishu app then held
+    // several long connections and Feishu routed `card.action.trigger` to an
+    // orphaned one that nobody dispatches for.
+    //
+    // These assert the socket is CLOSED, not merely dereferenced — counting
+    // `start()` calls would stay green with the leak still present.
+    it('disconnect closes the live socket instead of just dropping the reference', async () => {
+      sdkState.sockets.length = 0;
+      const fresh = new FeishuAdapter();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
+        }),
+      );
+
+      await fresh.connect({ platform: 'feishu', appId: 'cli_test', appSecret: 'secret' });
+      expect(sdkState.sockets).toHaveLength(1);
+      expect(sdkState.sockets[0]!.closes).toHaveLength(0);
+
+      await fresh.disconnect();
+
+      // force: do not linger on a closing handshake with a peer that may be gone.
+      expect(sdkState.sockets[0]!.closes).toEqual([{ force: true }]);
+      expect(sdkState.sockets[0]!.started).toBe(false);
+      vi.unstubAllGlobals();
+    });
+
+    it('reconnecting leaves at most one live long connection per adapter', async () => {
+      sdkState.sockets.length = 0;
+      const fresh = new FeishuAdapter();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
+        }),
+      );
+
+      await fresh.connect({ platform: 'feishu', appId: 'cli_test', appSecret: 'secret' });
+      await fresh.connect({ platform: 'feishu', appId: 'cli_test', appSecret: 'secret' });
+
+      expect(sdkState.sockets).toHaveLength(2);
+      // The predecessor must be closed, and closed BEFORE its successor starts —
+      // otherwise there is a window where two connections are live and Feishu
+      // can pick the doomed one.
+      expect(sdkState.sockets[0]!.closes).toEqual([{ force: true }]);
+      expect(sdkState.sockets.filter(s => s.started)).toHaveLength(1);
+      expect(sdkState.sockets[1]!.started).toBe(true);
+
+      await fresh.disconnect();
+      expect(sdkState.sockets.filter(s => s.started)).toHaveLength(0);
       vi.unstubAllGlobals();
     });
 

@@ -53,7 +53,13 @@
     "failedToCreateTeam": "Failed to create team: {{message}}",
     "agents": "Agents",
     "teams": "Teams",
-    "agentDMs": "Agent DMs"
+    "agentDMs": "Agent DMs",
+    "you": "You",
+    "noMembers": "No members in this team yet.",
+    "addTitle": "Add title…",
+    "toggleTeamPanel": "Toggle team panel",
+    "clickToEditName": "Click to edit name",
+    "clickToEditTitle": "Click to edit title"
   },
   "teamProfile": {
     "overview": "Overview",
@@ -65,7 +71,10 @@
     "noAnnouncements": "No announcements yet. Click to add.",
     "noNorms": "No norms defined yet. Click to add.",
     "noMembers": "No members",
-    "teamMissing": "Team not found"
+    "teamMissing": "Team not found",
+    "teamId": "Team ID",
+    "onlineCount": "{{count}} online",
+    "deleteTeamConfirm": "Delete team \"{{name}}\"? This removes the team record from the database."
   },
   "contextMenu": {
     "renameTeam": "Rename Team",
@@ -218,7 +227,6 @@
       "requirementChangesRequested": "Requirement changes requested: {{title}}",
       "mentionedYou": "{{authorName}} mentioned you",
       "groupMessage": "{{senderName}} in {{groupName}}",
-      "staleReview": "Stale review",
       "stuckTask": "Stuck task",
       "agentNeedsHelp": "Agent needs help",
       "taskComment": "Comment on task {{title}}"
@@ -271,7 +279,8 @@
     "previous": "Previous",
     "questionProgress": "Question {{current}} of {{total}}",
     "textPlaceholder": "Type your answer…",
-    "freeformPlaceholder": "Or write your own answer…"
+    "freeformPlaceholder": "Or write your own answer…",
+    "requiresFreeform": "This choice needs the text below — picking it alone is not an answer."
   },
   "intro": {
     "secretary": "I just set up Markus. Help me get started — what can I do here?",
@@ -499,6 +508,28 @@
     "applyGlobal": "Apply to global",
     "applyAgent": "Apply to current agent",
     "noAgent": "Select an agent to apply per-agent",
-    "empty": "No enabled providers / models"
+    "empty": "No enabled providers / models",
+    "chatOnlyHint": "Only models with a chat interface are listed"
+  },
+  "history": {
+    "unreadUnknown": "Unread count unknown (load failed)",
+    "unreadLoading": "Unread…",
+    "showAll": "Show all",
+    "onlyUnread": "Unread only",
+    "unreadCount": "{{count}} unread",
+    "allReadShowAll": "All read · show all",
+    "tabApprovals": "Approvals",
+    "noticesLoadFailed": "Could not load notifications: {{error}} (this does not mean \"no history\").",
+    "approvalsLoadFailed": "Could not load approval history (this does not mean \"no approvals\").",
+    "empty": "No history yet",
+    "emptyHint": "Once your team starts working, approvals and notifications show up here",
+    "openTarget": "Open the related task / requirement / conversation",
+    "answered": "Answered",
+    "unanswered": "Not answered",
+    "atTime": "{{time}}",
+    "waited": "waited {{duration}}",
+    "noTargetHint": "This notification isn't linked to a task / requirement / conversation — it's informational only",
+    "infoOnly": "Info only",
+    "noMore": "No earlier records"
   }
 }

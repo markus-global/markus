@@ -13,6 +13,11 @@
  *   • After changing, grep for the constant name to find all affected paths.
  */
 
+// The stale-drop set is a **projection of the registry** (see
+// `TRIAGE_STALE_DROP_TYPES` below). The registry is the only writer of
+// "is this type droppable by age"; this module must not keep a second copy.
+import { MAILBOX_TYPE_REGISTRY, producibleIn, type ChannelMode, type MailboxItemType } from './types/mailbox.js';
+
 // ─── Tool Response Limits ────────────────────────────────────────────────────
 // These control what `task_get` / `task_list` return to the calling agent.
 
@@ -137,7 +142,7 @@ export const MAILBOX_ITEM_MAX_RETRIES = 2;
  * (8 in one day, 2026-10-04). Deleted in docs/records/platform-hardening-2026-10.md §6.
  *
  * The typed signal replaced it: an agent ends a turn by CALLING the `end_turn` tool
- * (unconditionally injected, budget-protected — see capability-packs.ts
+ * (unconditionally injected — see capability-packs.ts
  * `TOOL_DEF_PROTECTED`). A tool call cannot be paraphrased into prose, cannot leak
  * into a reply, and needs no detection heuristic or cleanup. This sentinel is how the
  * agent reports that typed fact to the mailbox/attention layer.
@@ -214,20 +219,32 @@ export const SYSTEM_LONGTERM_MEMORY_CHARS = 5000;
  *  Prevents any single section from growing unbounded. */
 export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
 
-/** Hard cap on the **CURATED** part of knowledge.md (chars) — the sections that
- *  are actually injected into every turn's `## Your Knowledge` block.
+/** SOFT budget on the **CURATED REGION ON DISK** (chars) — NOT an injection ceiling.
  *
- *  ⚠️ This is NOT "the size of knowledge.md". knowledge.md holds two kinds of
- *  content with different injection semantics, and they have **separate**
- *  budgets (see MEMORY_OBSERVATIONS_MAX_CHARS):
+ *  ⚠️ This is NOT "the size of knowledge.md", and it is NOT "how much knowledge one
+ *  turn injects". knowledge.md holds two kinds of content with different injection
+ *  semantics and **separate** budgets (see MEMORY_OBSERVATIONS_MAX_CHARS):
  *
- *    • curated sections (`## <key>`) → INJECTED every turn. This is the budget
- *      below; it is what "memory pressure" actually means for the prompt.
+ *    • curated sections (`## <key>`) → eligible for injection every turn.
  *    • `## _observations`           → NOT injected, searched on demand.
  *
- *  Treating them as one number is what produced the "permanent false alarm"
- *  bug: a healthy, large observation buffer made the injected-footprint
- *  percentage read >100% while the agent's prompt carried only ~2k chars.
+ *  What this constant bounds is the first region's size *on disk*: how much curated
+ *  knowledge the agent may accumulate before it should consolidate. It is a
+ *  **report-only** soft budget — nothing acts on it, nothing is trimmed or archived
+ *  when it is crossed; only the hard ceiling (`MEMORY_MD_CURATED_HARD_MAX_CHARS`)
+ *  refuses a write.
+ *
+ *  @deprecated Do NOT use this as an "injection budget". It measures the disk region,
+ *  and the region is routinely much larger than what a single turn can carry — a
+ *  16 673-char region against this 15 000 constant reports "111%" while the turn
+ *  actually injected 6 691 chars. The injection ceiling is
+ *  `knowledgeInjectionCapChars(knowledgeTokCap)` (i.e. min(SYSTEM_KNOWLEDGE_CHARS,
+ *  knowledgeTokCap × 4) = 6000 / 4800 / 0), which is what
+ *  `prepareKnowledgeForPrompt` truncates to and what the in-prompt health banner
+ *  reports (`MemoryHealth.injectedChars` / `injectionCapChars`).
+ *  Legitimate remaining use: reporting region SIZE (report-only) — see
+ *  `MemoryHealth.curatedPercent`.
+ *
  *  15 000 chars ≈ 5 sections × 3 000. */
 export const MEMORY_MD_CURATED_MAX_CHARS = 15_000;
 
@@ -251,11 +268,15 @@ export const MEMORY_MD_CURATED_MAX_CHARS = 15_000;
  */
 export const MEMORY_MD_CURATED_HARD_MAX_CHARS = 3 * MEMORY_MD_CURATED_MAX_CHARS;
 
-/** Usage percent of the **curated (injected)** budget at which the in-prompt
- *  health banner fires (and at which the `memory_status` hint suggests
- *  consolidation). Kept as ONE constant so the banner and the tool hint can
- *  never drift apart — see docs/architecture/architecture.md ("Your Knowledge") +
- *  docs/architecture/cognitive-architecture.md §3. */
+/** Usage percent of the **injected-payload** budget at which the in-prompt health
+ *  banner fires (and at which the `memory_stats` hint suggests consolidation).
+ *
+ *  The measured object is `MemoryHealth.injectionUsedPercent`
+ *  = injectedChars / injectionCapChars for THIS turn — not the curated region
+ *  against `MEMORY_MD_CURATED_MAX_CHARS` (that pair is reported separately as
+ *  `curatedPercent`, report-only). Kept as ONE constant so the banner and the tool
+ *  hint can never drift apart — see docs/architecture/architecture.md ("Your
+ *  Knowledge") + docs/architecture/cognitive-architecture.md §3. */
 export const MEMORY_HEALTH_WARN_PERCENT = 70;
 
 /** Usage percent of the **observation-buffer** budget at which the periodic memory
@@ -549,13 +570,56 @@ export const TRIAGE_ITEM_CONTENT_CHARS = 3000;
  *  to prevent unbounded queue growth. */
 export const TRIAGE_STALE_INFO_TTL_MS = 4 * 60 * 60 * 1000;
 
-/** Informational mailbox types eligible for age-based auto-drop before triage.
- *  These types carry context that decays rapidly and do not require LLM processing.
- *  `callback_result` is included so orphaned/unprocessed background completions
- *  (and historically fan-out ghosts) do not wedge the queue forever. */
-export const TRIAGE_STALE_DROP_TYPES: readonly string[] = [
-  'task_status_update', 'heartbeat', 'memory_consolidation', 'daily_report', 'callback_result',
-];
+/**
+ * Informational mailbox types eligible for age-based auto-drop before triage.
+ *
+ * **Derived from the registry — never listed here by hand.** This set used to be
+ * a hand-maintained literal sitting beside the registry's per-type
+ * `triageStaleDrop` flag: the same fact written twice, in two files, with no
+ * mechanism keeping them equal. (The literal had in fact already lost its
+ * readers — the only runtime reader is `routeMailboxItem(item).triageStaleDrop`
+ * — so it was a second writer that looked authoritative and answered nothing.)
+ * Two writers of one fact eventually disagree; now a type's flag is flipped in
+ * one place and this list follows.
+ *
+ * `callback_result` is included so orphaned/unprocessed background completions
+ * (and historically fan-out ghosts) do not wedge the queue forever; the ones
+ * that carry a user-visible reply are still protected by `isNeverPurgeable()`.
+ *
+ * `memory_consolidation` (dream) is deliberately **absent** (C8-A): a dream run
+ * belongs to the background-sleep path, not to attention triage, so age expiry
+ * must not discard it — losing that item loses the work with no trace. It is the
+ * one type whose absence changes behaviour, which is why this card owns it.
+ */
+/**
+ * Types that may be dropped by age (triage) **in `mode`**.
+ *
+ * Two columns of one table, not two facts:
+ *   - `policy.triageStaleDrop` says a type IS droppable;
+ *   - `producedBy` says which channels can create it at all.
+ * A type the active channel cannot produce is never droppable there — before this
+ * split, `heartbeat` declared itself droppable while `clock` (the default) can
+ * never create one, so the bit read as a live policy to every future reader while
+ * no such row could ever exist. A fossil policy is worse than no policy: it tells
+ * the next person somebody is guarding it.
+ *
+ * The runtime's actual reader is `routeMailboxItem(item).triageStaleDrop`; this
+ * function exists so the *declaration* cannot disagree with producibility.
+ */
+export function triageStaleDropTypes(mode: ChannelMode): readonly string[] {
+  return Object.entries(MAILBOX_TYPE_REGISTRY)
+    .filter(([t, d]) => d.policy.triageStaleDrop && producibleIn(mode, t as MailboxItemType))
+    .map(([t]) => t);
+}
+
+/**
+ * The clock-mode view of {@link triageStaleDropTypes}.
+ *
+ * @deprecated Prefer `triageStaleDropTypes(mode)` and pass the mode you actually
+ * mean. This constant is the DEFAULT channel's set, kept so existing readers keep
+ * their meaning in clock mode instead of silently widening.
+ */
+export const TRIAGE_STALE_DROP_TYPES: readonly string[] = triageStaleDropTypes('clock');
 
 /** Max tool-use iterations allowed during triage deliberation.
  *  6 rounds is sufficient for memory recall + task/requirement lookups
@@ -593,8 +657,6 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   'notify_user', 'task_comment', 'requirement_comment',
   'agent_send_message', 'agent_send_group_message',
   'agent_create_group_chat', 'agent_list_group_chats',
-  // Decision output
-  'complete_deliberation',
 ];
 
 // ─── Heartbeat ──────────────────────────────────────────────────────────────
@@ -705,13 +767,36 @@ export const SUBAGENT_ERROR_PREVIEW_CHARS = 500;
 export const SUBAGENT_MAX_PARALLEL = 10;
 
 /**
- * Aggregate tool-iteration budget shared across all children of one `spawn_subagents`
- * fan-out (B4). Per-child caps and `SUBAGENT_MAX_PARALLEL` bound a single child / the
- * concurrency; this bounds the TOTAL work so a wide fan-out cannot silently multiply
- * CU/token spend. When the shared budget is exhausted, remaining children stop early and
- * the aggregate result reports `budgetExceeded`.
+ * C7-B — **circuit breaker, not a schedule**.
+ *
+ * History (kept as a lesson, not narrative): the prompt text already called this a
+ * circuit breaker, but the code pre-allocated it as a shared iteration POOL for every
+ * fan-out (`{ remaining: 100 }`), so a wide fan-out silently used it as its schedule
+ * and siblings starved each other. C7-B removed that pre-allocation: scheduling is
+ * now `work_units.budget` (one ledger, one writer). This constant survives only as an
+ * **abnormal fallback ceiling** — the worst case a full-width fan-out may reach when
+ * per-child budgets are misconfigured.
+ *
+ * Derivation of the per-child default keeps the two facts consistent: a full-width
+ * fan-out (`SUBAGENT_MAX_PARALLEL` children) at the default budget lands exactly on
+ * this breaker, so the breaker cannot be exceeded by a correctly configured fan-out.
  */
 export const SUBAGENT_MAX_AGGREGATE_ITERATIONS = 100;
+
+/**
+ * C7-B — the **finite** per-child iteration budget when neither the caller
+ * (`iteration_budget`) nor a WorkUnit ledger supplies one.
+ *
+ * Why finite: the 6b patch made the per-child default unbounded (`Infinity`). An
+ * unbounded child budget meant a wide fan-out had no per-child rope at all, so the
+ * only stop was the shared pool — de facto "the circuit breaker is the schedule".
+ * A finite default is what makes sibling independence real: each child owns exactly
+ * this many iterations and can never spend a sibling's.
+ */
+export const SUBAGENT_DEFAULT_ITERATION_BUDGET = Math.max(
+  1,
+  Math.floor(SUBAGENT_MAX_AGGREGATE_ITERATIONS / SUBAGENT_MAX_PARALLEL),
+);
 
 /** Max LLM call retries for transient errors within a subagent. */
 export const SUBAGENT_MAX_LLM_RETRIES = 2;
@@ -730,8 +815,12 @@ export const SHELL_TIMEOUT_DEFAULT_MS = 60_000;
  *  Prevents commands from hanging indefinitely (e.g. interactive git rebase). */
 export const SHELL_TIMEOUT_MAX_MS = 300_000;
 
-/** Maximum concurrent persistent shell sessions per agent. */
-export const SHELL_MAX_SESSIONS_PER_AGENT = 3;
+/** Maximum concurrent persistent shell sessions per agent.
+ *  The default session is per execution context (one per concurrent
+ *  conversation/worker), so this must cover the concurrency fan-out plus named
+ *  sessions; idle reaping (SHELL_SESSION_IDLE_TIMEOUT_MS) bounds the live count.
+ *  At the cap, callers fall back to one-shot spawn. */
+export const SHELL_MAX_SESSIONS_PER_AGENT = 16;
 
 /** Idle timeout (ms) before a persistent shell session is reaped.
  *  10 minutes of no activity → session is killed and removed. */
@@ -937,15 +1026,6 @@ export const PROMPT_AFFORD_OUTPUT_RESERVE = 4_096;
 
 // ─── Agent Runtime: Context Economics (see docs/architecture/agent-runtime.md §3) ─────────
 
-/** Max tool-definition tokens for reflex pack (heartbeat / dream / flush). */
-export const TOOL_DEF_BUDGET_REFLEX = 3_000;
-/** Max tool-definition tokens for converse pack (chat / a2a / comments). */
-export const TOOL_DEF_BUDGET_CONVERSE = 8_000;
-/** Max tool-definition tokens for execute pack (task_execution). */
-export const TOOL_DEF_BUDGET_EXECUTE = 10_000;
-/** Max tool-definition tokens for govern pack (review / deliberation). */
-export const TOOL_DEF_BUDGET_GOVERN = 8_000;
-
 /**
  * Soft size metric for ROLE.md (observe/warn only). ROLE is never truncated —
  * oversized ROLE is an authoring issue (move long-tail refs into skills).
@@ -960,6 +1040,25 @@ export const KNOWLEDGE_PROMPT_MAX_TOKENS = 1_500;
 export const KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE = 1_200;
 /** knowledge.md injection for reflex (0 = omit full dump). */
 export const KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX = 0;
+
+/**
+ * The knowledge injection ceiling for ONE turn, in chars: `min(SYSTEM_KNOWLEDGE_CHARS, tokensCap × 4)`.
+ *
+ * ONE formula for both ends of the contract — the injector truncates to it
+ * (`ContextEngine.buildSystemPrompt` → `prepareKnowledgeForPrompt`) and the memory
+ * store uses the DEFAULT below to project an unmeasured payload. Keeping the formula
+ * in one place is the point: the drift this replaced was a banner that divided the
+ * on-disk curated region by `MEMORY_MD_CURATED_MAX_CHARS` (15 000) and reported
+ * "111% injected" while the turn had actually injected 6 691 chars.
+ */
+export function knowledgeInjectionCapChars(tokensCap: number): number {
+  return Math.min(SYSTEM_KNOWLEDGE_CHARS, tokensCap * 4);
+}
+
+/** Default (execute/govern scenario) injection cap — 6000 chars. Used only to
+ *  PROJECT a payload for reports taken outside a turn packing (status endpoints,
+ *  `memory_stats`); a real turn always reports its own measurement. */
+export const DEFAULT_KNOWLEDGE_INJECTION_CAP_CHARS = knowledgeInjectionCapChars(KNOWLEDGE_PROMPT_MAX_TOKENS);
 /**
  * NOTE (2026-09-16): `STATE_PROMPT_MAX_LINES_REFLEX` / `STATE_TTL_DAYS` were removed
  * together with the state.md store. Situational state is a **Working-layer** concern and
@@ -994,8 +1093,6 @@ export const SYSTEM_WORKFLOWS_MAX_CONVERSE = 3;
 export const SYSTEM_WORKFLOW_DESC_CHARS_CONVERSE = 80;
 /** Max chars for caller-supplied `dynamicContext` blob in converse. */
 export const SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE = 800;
-/** Tier-3 rediscovery catalog hard cap in chars (Afford.S2). */
-export const DEFERRED_CATALOG_MAX_CHARS = 1_500;
 /** Safety tokens subtracted from OR reservation afford when clamping max_tokens. */
 export const MAX_TOKENS_AFFORD_SAFETY = 64;
 /** Margin when computing max_tokens from promptAfford − estimatedPrompt. */

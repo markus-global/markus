@@ -137,7 +137,7 @@
       "runtimeStatus": "Runtime Status",
       "usage": "Usage",
       "storage": "Storage",
-      "openFolder": "Open folder →",
+      "openFolder": "Open folder",
       "detailsToggle": "Usage & storage details",
       "stopAgentConfirm": {
         "title": "Stop this agent?",
@@ -145,8 +145,24 @@
         "confirm": "Stop"
       },
       "lifetimeCaption": "Cumulative since the agent was created",
+      "storageLabel": "Disk usage",
+      "storageScanBtn": "Check disk usage",
+      "storageLoading": "Reading…",
+      "cleanupCta": "Ask agent to clean up data",
+      "cleanupHint": "Prefills the request in chat — you decide whether to send it. The agent will ask first when unsure.",
+      "cleanupPrefill": "Review your own data (workspace, logs, session history, memory archive) and list what can be safely removed, with reasons.\nAsk me about anything you are unsure of — do not delete on your own; wait for my confirmation.",
+      "storageTotalHint": "total size of the agent data directory",
+      "storageMore": "other {{count}} items · {{size}} in total",
       "storageDepthLimited": "Directory tree is deep — actual usage may be higher",
       "sections": {
+        "run": {
+          "title": "Overview",
+          "hint": "What it is running · pending · rest & wake · recent activity"
+        },
+        "capability": {
+          "title": "Capabilities",
+          "hint": "Skills and tools"
+        },
         "files": {
           "title": "Files",
           "hint": "ROLE.md / HEARTBEAT.md / knowledge.md, etc."
@@ -165,13 +181,17 @@
           "hint": "Enabled skills and tools"
         },
         "memory": {
-          "title": "Memory & Heartbeat",
-          "hint": "Long-term memory · sessions · heartbeat rhythm"
+          "title": "Memory",
+          "hint": "Long-term memory · observations · sessions"
         },
         "usage": {
           "title": "Usage & Storage",
           "hint": "Lifetime tokens · requests · disk usage",
           "empty": "No usage data yet"
+        },
+        "settings": {
+          "title": "Settings",
+          "hint": "ROLE / POLICIES config · usage & storage"
         }
       },
       "storageBuckets": {
@@ -247,9 +267,26 @@
       "activeTasksCount_one": "{{count}} active task",
       "activeTasksCount_other": "{{count}} active tasks",
       "mailboxQueued": "{{count}} message(s) queued in mailbox",
+      "runningTitle": "Running now",
+      "runningNone": "no unit of work is running",
+      "runningInternal": "internal session",
+      "runningWorker": "worker …{id}",
+      "runningBudgetHint": "used / tool-call budget for this turn",
+      "runningUnavailable": "running state is unavailable right now",
       "startAgent": "▶ Start",
       "stopAgent": "⏹ Stop",
-      "openClaw": "OpenClaw"
+      "openClaw": "OpenClaw",
+      "heartbeatRuns": "{{count}} heartbeats",
+      "a2aRuns": "{{count}} A2A runs",
+      "capabilityCollapsed": "Capabilities (tools & skills) — click to expand",
+      "workUnit": {
+        "subDelegation": "Subtask delegation",
+        "delegation": "Task delegation",
+        "task": "Task run",
+        "requirement": "Requirement work",
+        "channel": "Group reply",
+        "unknown": "Unknown work unit"
+      }
     },
     "syncContext": {
       "assignedTasks": "Tasks with requirement & project traceability",
@@ -300,7 +337,9 @@
         "heartbeatMd": "Heartbeat Tasks",
         "policiesMd": "Policies & Guardrails",
         "contextMd": "Context & Instructions"
-      }
+      },
+      "filesDiffer": "{{count}} files differ from {{templateId}}",
+      "emptyFile": "Empty"
     },
     "diff": {
       "title": "Diff: Current vs Template ({{templateId}})",
@@ -311,7 +350,8 @@
     },
     "toolsTab": {
       "registeredCount": "{{count}} tools registered",
-      "noToolsRegistered": "No tools registered"
+      "noToolsRegistered": "No tools registered",
+      "title": "Tools"
     },
     "skillsTab": {
       "alwaysOn": "always-on",
@@ -322,13 +362,21 @@
       "loadingDetails": "Loading skill details…",
       "toolsHeading": "Tools ({{count}})",
       "detailsUnavailable": "Skill details not available (skill may not be registered in the store)",
-      "installedCount": "{{count}} skills installed — descriptions auto-injected into agent context",
+      "installedCount": "{{count}} skill packs installed — descriptions are already in context; bodies (SOP) load on demand via `discover_tools`",
       "noSkills": "No skills installed",
       "byAuthor": "by {{author}}",
       "missingSkillsTitle": "{{count}} assigned skill not installed",
       "missingSkillsHint": "This skill is not installed, so its related tools are unavailable. Install it or remove it from this agent."
     },
     "memoryTab": {
+      "organizeCta": "Ask agent to tidy memory",
+      "organizePrefill": "Your knowledge.md is over budget ({{used}}/{{limit}} chars, {{pct}}%). Please tidy it: merge duplicate sections, drop entries superseded by newer conclusions, keep only reusable conclusions; keep process and logs out of the curated area. Show me the list of what you plan to delete/merge first.",
+      "organizePrefillHint": "Jumps to chat and prefills the request — you decide whether to send it",
+      "detailsToggle": "Details (curated region · observation buffer · archive)",
+      "injectionLine": "Injected this turn (prompt budget)",
+      "curatedLine": "Curated region on disk (over-budget is archived losslessly)",
+      "observationLine": "Observation buffer (not injected)",
+      "injectionOmittedHint": "{{count}} section(s) were not inlined because they exceed the injection cap (still searchable)",
       "loading": "Loading memory...",
       "loadFailed": "Failed to load memory data",
       "recent": "Recent ({{count}})",
@@ -350,7 +398,14 @@
         "system": "system",
         "assistant": "assistant"
       },
-      "userEditedSource": "User-edited"
+      "userEditedSource": "User-edited",
+      "healthTitle": "Memory health (knowledge.md)",
+      "observationsCount": "Observations",
+      "curatedCount": "Knowledge sections",
+      "archivedChars": "Archived",
+      "lastConsolidated": "Last consolidated",
+      "charsOfCap": "{{used}} / {{cap}} chars",
+      "archivedCharsSearchable": "{{count}} chars (searchable)"
     },
     "heartbeatTab": {
       "loading": "Loading heartbeat data...",
@@ -406,7 +461,13 @@
       "firstHeartbeatSoon": "First heartbeat will trigger in ~{{when}}.",
       "schedulerStopped": "Heartbeat scheduler is stopped.",
       "runFirstNow": "Run First Heartbeat Now",
-      "soon": "soon"
+      "soon": "soon",
+      "wakeupsCount": "{{count}} wakeups",
+      "pendingOpsCount": "{{count}} pending",
+      "runsThisSession": "{{count}} this session",
+      "actionsCount": "{{count}} actions",
+      "intervalHours": "every {{count}} hours",
+      "intervalMinutes": "every {{count}} minutes"
     },
     "relative": {
       "inSeconds": "in {{count}}s",
@@ -459,7 +520,7 @@
       "deferred": "Deferred: {{count}}",
       "dropped": "Dropped: {{count}}",
       "inlineCompleted": "Inline Completed: {{count}}",
-      "mailboxHistory": "Mailbox History",
+      "mailboxHistory": "Work record",
       "noHistory": "No mailbox history yet",
       "loadEarlier": "Load Earlier...",
       "decisions": "Decisions",
@@ -471,12 +532,12 @@
       "from": "From:",
       "tokensCount": "{{count}} tokens",
       "toolsCount": "{{count}} tools",
-      "categoryFilters": {
+      "entityFilters": {
         "all": "All",
-        "interaction": "Interaction",
         "task": "Task",
-        "notification": "Notification",
-        "system": "System"
+        "requirement": "Requirement",
+        "channel": "Conversation",
+        "none": "Unassigned"
       },
       "statusFilters": {
         "all": "All",
@@ -485,7 +546,8 @@
         "completed": "Completed",
         "merged": "Merged",
         "deferred": "Deferred",
-        "dropped": "Dropped"
+        "bounced": "Bounced",
+        "catch_all": "Catch-all"
       },
       "activityFilters": {
         "all": "All",
@@ -527,8 +589,25 @@
         "systemAnnouncement": "System Announcement",
         "systemEvent": "System Event",
         "statusArrow": "{{from}} → {{to}}"
-      }
-    }
+      },
+      "noMatch": "No records under this filter",
+      "unitOrphan": "History",
+      "scrollForMore": "Scroll down to load more",
+      "roundDecisions": "Decisions this round",
+      "loopIdle": "No signals needed a decision in this period — it is asleep or already handled them",
+      "unitEmpty": "This entity has no records yet",
+      "loadingContent": "Loading full content…",
+      "showMore": "Show more",
+      "unitTask": "Task {{id}}",
+      "unitRequirement": "Requirement {{id}}",
+      "unitConversation": "Conversation {{id}}",
+      "unitLoop": "Decision loop",
+      "itemCount": "{{count}} items",
+      "showMoreCount": "Show more ({{count}} remaining)"
+    },
+    "sessionMessagesSubject": "Session messages",
+    "noSessionMessages": "This session has no messages",
+    "noDeliverables": "This agent has no deliverables"
   },
   "deliverables": {
     "empty": "No deliverables yet",
@@ -540,6 +619,13 @@
     "created": "Created",
     "updated": "Updated",
     "accessed": "Accessed {{count}} time(s)",
-    "openInPage": "Open in Output"
+    "openInPage": "Open in Output",
+    "diff": "Diff",
+    "testsPassed": "{{n}} passed",
+    "testsFailed": "{{n}} failed",
+    "testsSkipped": "{{n}} skipped",
+    "fileCount": "{{count}} files",
+    "fileCount_one": "{{count}} file",
+    "fileCount_other": "{{count}} files"
   }
 }

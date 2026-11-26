@@ -1,7 +1,7 @@
 /**
  * `notify_user` 的上下文契约（2026-10-28 GEO策略主管 12 连发事故回归）。
  *
- * 事故见 `docs/architecture/notify-user-context-truth.md`。一句话根因：
+ * 事故见 `docs/records/notify-user-context-truth-2026-10-28.md`。一句话根因：
  * 通知的处理函数把「通知载荷」当作 assistant 发言插进了
  * `assistant(toolCalls) → tool(回执)` 的**中间**，`sanitizeMessageSequence()`
  * 因此把整块 toolCalls 连回执一起丢弃 —— 模型永远看不到「已送达」，

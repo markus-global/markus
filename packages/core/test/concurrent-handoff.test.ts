@@ -8,11 +8,15 @@ import {
 } from '../src/concurrent-handoff.js';
 
 // ── 并发交接日志（ConcurrentHandoffLog）审计回归 ─────────────────────────────
-// 覆盖审计发现的四处缺陷：
+// 覆盖审计发现的缺陷：
 //  1. clear() 用 appendFileSync(path,'') 只写 0 字节，**不截断文件** → 重启后记录回归
-//  2. inFlight() 只按 workerId 去重 → 一个 worker 服务多实体时在途信息丢失
-//  3. 纯 append、从不轮转 → 文件无界增长
-//  4. 模块级 seq 跨实例共享 → 多实例 id 不保证唯一
+//  2. 纯 append、从不轮转 → 文件无界增长
+//  3. 模块级 seq 跨实例共享 → 多实例 id 不保证唯一
+//
+// 注：旧实现的 `inFlight()` 已删除 —— 它试图从**历史**反推「现在谁在干活」，那在结构上
+// 就是错的（永远无法确定一条没有 `done` 的 `declared` 是因为还在跑，还是因为进程被
+// 杀了）。权威在途信号只有 `AttentionController.getActiveClaims()`（实时状态），
+// 回归覆盖見 context-concurrency-notebook.test.ts。
 
 let dir: string;
 let file: string;
@@ -41,39 +45,6 @@ describe('ConcurrentHandoffLog', () => {
     const reloaded = new ConcurrentHandoffLog(file);
     reloaded.load();
     expect(reloaded.size).toBe(0);
-  });
-
-  it('inFlight() 按 (worker, 实体) 配对：一个 worker 的多个在途实体全部可见', () => {
-    const log = new ConcurrentHandoffLog(file, 64);
-    log.append('declared', 1, 'task:t1', 'worker1 开始 t1');
-    log.append('declared', 1, 'task:t2', 'worker1 开始 t2');
-    log.append('declared', 2, 'task:t3', 'worker2 开始 t3');
-
-    const flight = log.inFlight();
-    // 旧实现只按 workerId 去重 → 只会剩 worker1 的最后一条 + worker2 的一条 = 2
-    expect(flight).toHaveLength(3);
-    expect(flight.map(r => r.entityKey).sort()).toEqual(['task:t1', 'task:t2', 'task:t3']);
-
-    // t1 完成后，只有它退出在途；t2 不受影响
-    log.append('done', 1, 'task:t1', 'worker1 完成 t1');
-    const after = log.inFlight();
-    expect(after.map(r => r.entityKey).sort()).toEqual(['task:t2', 'task:t3']);
-  });
-
-  it('inFlight() 不因环形缓冲挤出 declared 而误判（长任务仍在途）', () => {
-    const log = new ConcurrentHandoffLog(file, 8);
-    log.append('declared', 1, 'task:long', '长任务开始');
-    // 其他 worker 产生大量噪音记录，把环形缓冲填满
-    for (let i = 0; i < 20; i++) {
-      log.append('done', 2, `task:noise${i}`, `噪音 ${i}`);
-    }
-    // 旧实现在 worker1 的 declared 被挤出后，会认为 worker1 不在途
-    const flight = log.inFlight();
-    const stillOpen = flight.some(r => r.entityKey === 'task:long')
-      || !log.recent(64).some(r => r.entityKey === 'task:long');
-    // 契约：要么仍在在途集合里，要么已被挤出窗口（不能再声称一个不确定的状态）
-    expect(stillOpen).toBe(true);
-    expect(log.size).toBeLessThanOrEqual(8);
   });
 
   it('磁盘文件有界：超过压实阈值后行数收敛，且与内存视图一致', () => {

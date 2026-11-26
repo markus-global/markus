@@ -62,7 +62,8 @@ function tickValue(): number | null {
 
 /** Every class the tick must drive. Keep in sync with TICK_SELECTOR. */
 const CONSUMER_CLASSES = [
-  'animate-pulse',
+  // 'animate-pulse' 已从 TICK_CLASSES 移除（2026-11-16）：它在聊天消息体里大量存在，
+  // 每 250ms 写属性会触发消息体子树的 MutationObserver → React 重渲染。回归原生 CSS。
   'animate-spin',
   'animate-bounce',
   'activity-text-shimmer',
@@ -77,7 +78,7 @@ beforeEach(() => {
   document.documentElement.removeAttribute(TICK_ATTR);
 
   consumer = document.createElement('span');
-  consumer.className = 'animate-pulse';
+  consumer.className = 'animate-spin';
   document.body.appendChild(consumer);
 
   // 真实计时器会被 tick 用到，统一用 fake timers 避免 250ms 真实定时器在用例之间泄漏。

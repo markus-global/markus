@@ -408,16 +408,35 @@ export function resolveTurnBubbleIdx(msgs: ChatMsg[], id?: string): number {
  * 正确语义：只有你要发的那个会话自身有在途流时，才谈得上"打断它"；
  * 否则交给后端 mailbox 排队/合并，一个字节都不要动别人的流。
  */
+/**
+ * 发送消息时是否应当"打断并重发"。
+ *
+ * ## 判据：**服务端确认**的在途状态，不是任何本地副本
+ *
+ * 旧实现读两样本地副本：`sending`（Agent 级一个布尔）与 `getStreamSession(convKey)`
+ * （传输附着登记簿）。两者都是**记账式**的：正确性依赖每一条路径都记得销账 ——
+ * abort、切 tab、组件重挂、catch 分支、重启，漏一条就永久为真。而它恰好是打断决策
+ * 的输入，于是下次发送会 abort 掉刚起的那一轮：
+ *
+ *   真机 2026-11-17（runtime log）：`cancelActiveStream: scoped target matched no
+ *   active stream — ignoring` 命中 8 次，全部落在“上一轮早已结束、下一轮开始前
+ *   11–49 秒”= 用户按下发送的那一刻。客户端说在跑，服务端说没有。
+ *
+ * 新判据只问一件事：“服务端确认这个会话此刻在输出吗？”
+ *   · 是 → 打断重发（真的还在跑，重发合理）；
+ *   · 否 / 问不到 → **不打断**，交给 mailbox 排队/合并。
+ *
+ * 代价不对称：多排一次队只是慢一点，错打断是“回答被撕掉”。这与 `decideOnStreamEnd`
+ * 里“歧义时永远 reattach”是同一条原理。
+ */
 export function shouldInterruptForSend(input: {
-  /** convKey 维度当前登记的在途会话（含 NEW_CHAT 占位）。 */
-  liveSessions: ReadonlySet<string> | undefined | null;
+  /** 服务端确认该会话正在输出（`sessionStreamState.isServerConfirmedStreaming`）。 */
+  authorityStreaming: boolean;
   /** 本次发送所属的会话（新 tab 时为 NEW_CHAT 占位 id）。 */
   sendSessionId: string | undefined | null;
 }): boolean {
   if (!input.sendSessionId) return false;
-  const live = input.liveSessions;
-  if (!live || live.size === 0) return false;
-  return live.has(input.sendSessionId);
+  return input.authorityStreaming;
 }
 
 /**
@@ -439,6 +458,36 @@ export function shouldSettleDetachedSession(input: {
   if (!live || live.size === 0) return true;
   if (!input.sessionId) return true;
   return !live.has(input.sessionId) && !live.has(input.placeholderId);
+}
+
+/**
+ * 页面从隐藏恢复可见（移动端浏览器休眠 / 切应用 / bfcache 返回）时，应当对哪个
+ * 会话做一次「DB 软刷新 + 权威重连」恢复。返回该会话 id；无可恢复对象时返回 null。
+ *
+ * 为什么需要这条独立的恢复边：存活性权威供给（`reconcileOpenSessions`）只更新
+ * 「在不在输出」，从不搬运消息内容；而重连 effect 只在会话**仍在输出**时才接管。
+ * 于是当浏览器休眠期间 agent **已经把这一回合跑完**，恢复可见时权威翻成
+ * `streaming:false`，重连闸门直接跳过 —— 没有任何路径把此刻已落库的最终回复从 DB
+ * 拉进显示缓冲（流式进行中 DB 加载只写缓存、不写显示）。用户就只看到自己发的那条
+ * 消息，直到手动退出再进对话（`switchSession → loadSessionMessages`）才看见回复。
+ * 本闸门点名的正是「恢复可见时需要补这条 DB 软刷新」的会话。
+ *
+ * 判据与重连 effect 同源：必须是当前激活页、非预览、direct 模式、选中了 agent、
+ * 且会话是真实 id（非新建占位）。任一不满足 ⇒ 无可恢复对象（返回 null）。
+ */
+export function resumeRecoveryTarget(input: {
+  isActive: boolean;
+  previewMode?: boolean;
+  chatMode: ChatMode;
+  selectedAgent?: string | null;
+  activeSessionId: string | null | undefined;
+  placeholderId: string;
+}): string | null {
+  if (!input.isActive || input.previewMode) return null;
+  if (input.chatMode !== 'direct' || !input.selectedAgent) return null;
+  const sid = input.activeSessionId;
+  if (!sid || sid === input.placeholderId) return null;
+  return sid;
 }
 
 /**

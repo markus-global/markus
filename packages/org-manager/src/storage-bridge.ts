@@ -2,6 +2,7 @@ import { createLogger, markusDbPath } from '@markus/shared';
 import { statSync, statfsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { SqliteFactService } from './fact-service.js';
 
 const log = createLogger('storage-bridge');
 
@@ -31,12 +32,26 @@ export interface StorageBridge {
   migrationStatus(): unknown;
   /** 把迁移释放的页真正还给文件系统（VACUUM；不满足条件时是 no-op）。 */
   reclaimSpace(): { reclaimed: boolean; freeBytes: number; reason?: string; durationMs?: number };
+  /**
+   * 清理终态邮件项（M5）。
+   *
+   * 为什么必须由桥接层暴露：`pruneTerminalMailboxItems` 早已实现并被单测覆盖，
+   * 但**没有任何生产调用者** —— 真库实测 243,692 行中 243,531 行是终态（99.93%）、
+   * 文件 12.3 GB。一个只在测试里被调用的清理函数等于不存在。
+   */
+  pruneMailbox(opts?: { olderThanDays?: number; dryRun?: boolean }): {
+    dryRun: boolean;
+    candidates: number;
+    deleted: number;
+    bytes: number;
+    vacuumed: boolean;
+    error?: string;
+  };
   orgRepo: any;
   taskRepo: any;
   taskLogRepo: any;
   agentRepo: any;
   teamRepo: any;
-  messageRepo: any;
   chatSessionRepo: any;
   channelMessageRepo: any;
   userRepo: any;
@@ -55,6 +70,10 @@ export interface StorageBridge {
   groupChatRepo?: any;
   auditRepo?: any;
   statusTransitionRepo?: any;
+  /** 第七刀 C7-A：WorkUnit 的存储写者（唯一一处 SQL）。 */
+  workUnitRepo?: any;
+  /** 第九刀 C9-A：facts 的唯一写者（facts 的写语句只在 fact-service.ts）。 */
+  factService?: any;
   readCursorRepo?: any;
   workflowRunRepo?: any;
   workflowScheduleRepo?: any;
@@ -63,6 +82,10 @@ export interface StorageBridge {
   /** Messaging gateway: bot instances + channel bindings (G1 tables). */
   platformInstanceRepo?: any;
   channelBindingRepo?: any;
+  /** 邮箱地址绑定（第六刀 C1）：channel_bindings 上的 address 语义 + address_bindings 视图。 */
+  addressBindingRepo?: any;
+  /** C10-B：外部信号源（webhook/RSS）持久配置 + kill switch 的唯一写者。 */
+  externalSourceRepo?: any;
 }
 
 function resolveSqlitePath(url?: string): string {
@@ -228,6 +251,21 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
         return migrationRunner.run();
       },
       migrationStatus: () => migrationRunner.status(),
+      pruneMailbox: (opts) => {
+        try {
+          return storage.pruneTerminalMailboxItems(db, opts);
+        } catch (err) {
+          // 清理失败绝不能影响服务：退化成 no-op 并让调用方看到原因。
+          return {
+            dryRun: opts?.dryRun ?? true,
+            candidates: 0,
+            deleted: 0,
+            bytes: 0,
+            vacuumed: false,
+            error: String(err).slice(0, 200),
+          };
+        }
+      },
       reclaimSpace: () => storage.reclaimSpace(db, {
         freeDiskBytes: () => {
           try {
@@ -241,7 +279,6 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       taskLogRepo: new storage.SqliteTaskLogRepo(db) as any,
       agentRepo: new storage.SqliteAgentRepo(db) as any,
       teamRepo: new storage.SqliteTeamRepo(db) as any,
-      messageRepo: new storage.SqliteMessageRepo(db) as any,
       chatSessionRepo: new storage.SqliteChatSessionRepo(db) as any,
       channelMessageRepo: new storage.SqliteChannelMessageRepo(db) as any,
       userRepo: new storage.SqliteUserRepo(db) as any,
@@ -260,12 +297,19 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       groupChatRepo: new storage.SqliteGroupChatRepo(db),
       auditRepo: new storage.SqliteAuditRepo(db),
       statusTransitionRepo: new storage.SqliteStatusTransitionRepo(db),
+      // 第七刀 C7-A：WorkUnit 的唯一存储写者。
+      workUnitRepo: new storage.SqliteWorkUnitRepo(db),
+      // 第九刀 C9-A：facts 的唯一写者。直接拿 db 句柄（SQL 全在 fact-service.ts），
+      // 不经 repo 中转 —— 中转等于给「第二个写者」留一个可以空转的层。
+      factService: new SqliteFactService(db as unknown as ConstructorParameters<typeof SqliteFactService>[0]),
       readCursorRepo: new storage.SqliteReadCursorRepo(db),
       workflowRunRepo: new storage.SqliteWorkflowRunRepo(db),
       workflowScheduleRepo: new storage.SqliteWorkflowScheduleRepo(db),
       integrationRepo: new storage.SqliteIntegrationRepo(db),
       platformInstanceRepo: new storage.SqlitePlatformInstanceRepo(db),
       channelBindingRepo: new storage.SqliteChannelBindingRepo(db),
+      addressBindingRepo: new storage.SqliteAddressBindingRepo(db),
+      externalSourceRepo: new storage.SqliteExternalSourceRepo(db),
       pendingCallbackRepo: new storage.SqlitePendingCallbackRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });

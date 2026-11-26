@@ -142,7 +142,7 @@ describe('createMailboxTools', () => {
         item_id: 'item-2',
         reason: 'Stale notification',
       }));
-      expect(result.status).toBe('dropped');
+      expect(result.status).toBe('bounced');
       expect(dropItem).toHaveBeenCalledWith('item-2', 'Stale notification');
     });
 

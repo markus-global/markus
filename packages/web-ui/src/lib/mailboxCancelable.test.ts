@@ -39,7 +39,8 @@ describe('canCancelMailboxItem', () => {
   });
 
   it('非 processing 状态 → 不可取消', () => {
-    for (const st of ['queued', 'completed', 'dropped', 'deferred', 'merged', 'failed']) {
+    // 当前取值域的全部非 processing 态：均不可取消（bounced/catch_all 只能从概览认领/归档）。
+    for (const st of ['queued', 'completed', 'bounced', 'catch_all', 'deferred', 'merged']) {
       expect(canCancelMailboxItem({ ...base, itemStatus: st })).toBe(false);
     }
   });

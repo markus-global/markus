@@ -1,6 +1,29 @@
 # Mailbox & Attention System
 
-> Last updated: 2026-07
+> Last updated: 2026-11-15 — the A2A chapter (§11) and the user-notification chapters
+> (§12/§13) were extracted to [a2a-communication.md](./a2a-communication.md) and
+> [notification-delivery.md](./notification-delivery.md). Only pointers remain here.
+
+---
+
+## 本文件范围 — Scope of this file
+
+**This document owns the mailbox queue and the attention controller, and nothing else.** It is
+the single source of truth for *how a signal enters, waits, is merged, is claimed, is retried
+and is finally delivered to an agent*: the item-type registry (§3), the attention controller
+(§4), the enqueue API (§5), persistence (§6), state-machine integration (§7), enqueue-time
+deduplication (§14), restart/retry (§17/§18), the attention decision rules (§21), and the
+address/envelope/bounce layer (§28). Priorities and the delivery invariants stated here are
+binding for every producer.
+
+- **Agent-to-agent (A2A)** — DM/group channels, the one-message-one-delivery-fact invariant,
+  the reply sink, tools & transport, `PendingCallbackRegistry`, heartbeat integration: see
+  [a2a-communication.md](./a2a-communication.md) (was §11; §11 below is a pointer).
+- **User notification / IM delivery** — in-app notification store, `notify_user` vs
+  `request_user_input`, destination resolution and approval cards: see
+  [notification-delivery.md](./notification-delivery.md) (was §12/§13; §12/§13 below are pointers).
+- The mailbox is the **transport** for both: it guarantees enqueue, priority and serialised
+  attention; it does not define *what* a notification means or *who* should receive it.
 
 ---
 
@@ -13,7 +36,7 @@ This is implemented through two core abstractions:
 - **Agent Mailbox** — A priority queue that serialises all incoming stimuli.
 - **Attention Controller** — An event-driven focus manager that processes mailbox items one at a time, with interrupt handling at safe yield points.
 
-**Concurrent processing (default on, opt-out).** The attention loop can instead run as a pool of N isolated **worker loops** so the agent handles several *independent* entities at once — see [concurrent-processing.md](./concurrent-processing.md). Serialisation is preserved **per entity**: an entity-affinity lock in the mailbox guarantees a given task / requirement / conversation / user is never processed by two workers simultaneously, and each worker holds its own `SessionWorkspace`, so the "one thing at a time" guarantee still holds for any single line of work. Setting `agent.concurrent.enabled = false` (or `maxWorkers = 1`) restores a strictly single-worker loop with identical behaviour to the original design.
+**Concurrent processing (default on, opt-out).** The attention loop can instead run as a pool of N isolated **worker loops** so the agent handles several *independent* entities at once — see [concurrent-processing.md](./concurrent-processing.md). Serialisation is preserved **per entity**: an entity-affinity lock in the mailbox guarantees a given task / requirement / conversation / user is never processed by two workers simultaneously, and each worker holds its own `SessionWorkspace`, so the "one thing at a time" guarantee still holds for any single line of work. Setting `agent.concurrent.enabled = false` (or `maxWorkers = 1`) restores a strictly single-worker loop with identical behaviour to the original design. Beyond exclusion, the mailbox also keeps **sticky entity→worker ownership**: an entity's items are claimable across turns only by the worker that first claimed them, with explicit liveness overrides (busy-owner grace steal / gone-owner transfer / pool-epoch reset) — see [concurrent-processing.md §3.4](./concurrent-processing.md).
 
 ### Why was processing originally serialised?
 
@@ -25,7 +48,7 @@ Early Markus let an agent handle multiple messages simultaneously, which caused:
 The mailbox model fixed this by treating the agent's attention as a scarce, serial resource. Concurrent processing re-introduces parallelism **only *between* entities**, and addresses each of these three failures directly:
 
 - **Memory contamination** → per-worker [`SessionWorkspace`](../../packages/core/src/session-workspace.ts) isolation via `AsyncLocalStorage`.
-- **Cognitive interference** → concurrent worker loops are pure consumers; triage / deliberation / preempt logic runs only in the serial loop.
+- **Cognitive interference** → concurrent worker loops are pure consumers; decide / preempt logic runs only in the serial loop.
 - **Non-deterministic races** → entity-affinity lock in the mailbox + an agent-level tool write-lock.
 
 See [concurrent-processing.md](./concurrent-processing.md) for the full guarantees, configuration, and known limitations.
@@ -90,6 +113,38 @@ All mailbox item types, their metadata, and their processing behaviour **should*
 > Line numbers were removed from these annotations on 2026-10-25: they had all
 drifted (e.g. the sets were cited as lines 1493-1500 but live at 1595-1597), and a
 stale line number is worse than none because it looks authoritative.
+
+### 3.2 Identity on every enqueue
+
+Every `AgentMailbox.enqueue` must declare **where the item came from**. Otherwise the
+identity column is silently NULL and the item cannot be attributed to a turn — which is
+what produced the 2026-11-15 incident where terminal gates required a fact that the
+executing turn could not attribute.
+
+| Field | Meaning |
+|---|---|
+| `workUnitRef` | The turn that produced the item: `session:<id>:r<N>` for a chat turn, `task_<taskId>_r<N>` for a task execution, `a2a:<entity>` for agent-to-agent. This is the intended normal case — measured coverage was 0.18% before the enqueue gate became mandatory (2026-11-18); see §6.7. |
+| `refOrigin` | The caller's declaration of where identity comes from: `"entity"` / `"turn"` (a ref is present), or `"platform-internal"` (the platform itself, not an agent turn). **Required whenever `workUnitRef` is absent** — see §6.7 for why an undeclared NULL is rejected rather than logged. C10-0B removed the former `"pending-link"` declaration: identity must exist at enqueue (memory + DB, one writer); a post-enqueue link wrote only the DB column and left the in-memory item null. |
+
+Enforcement is in `AgentMailbox.enqueue` (`packages/core/src/mailbox.ts`): an item carrying
+neither field logs an ERROR and is **rejected**, rather than being stored with a NULL
+identity. Adding a new caller means declaring one of the two — not adding a carve-out.
+
+**Ensure at assembly (C10-0A).** A declared ref is a promise that the entity exists.
+At the same enqueue assembly point, `AgentMailbox` calls the identity port
+(`MailboxIdentityPort.ensureIdentity`, wired by `APIServer.wireWorkUnits`) to
+insert-or-nothing the `work_units` row **before** the item is stored — a reference
+without an entity is the dangling-identity defect this gate exists to prevent.
+Owner resolution belongs to org-manager (task → assignee, requirement → creator,
+fallback: the recipient); core never guesses entity semantics. Ensure failure does
+not break the business path: it is counted (`takeIdentityEnsureFailedCount`) and
+surfaced, never silent. Entity refs (`requirement:<id>`, `task_<taskId>_r<N>`) are
+constructed only via `WORK_UNIT_REF` in `packages/shared/src/work-unit.ts`.
+
+A WU pre-created `idle` by a notification is transitioned to `running` by
+`TaskService.linkExecutionEpoch` when execution actually starts (an
+`execution_started` row in `status_transitions`) — a turn must never run on an
+idle WU, and the transition reuses the same row (ensure is insert-or-nothing).
 
 <!-- verified-against-code: 2026-10-25, packages/core/src/attention.ts (USER_INTERACTION_TYPES, PEER_INTERACTION_TYPES, heuristicDecision) -->
 
@@ -275,7 +330,7 @@ Registration flow: when an agent starts an async operation the completion is reg
 
 On completion/firing the registry entry is resolved and delivered via the shared `Agent.deliverCallback()` helper according to its `deliveryMode`.
 
-See §11.3 for the full `PendingCallbackRegistry` specification.
+See [a2a-communication.md](./a2a-communication.md) §11.3 for the full `PendingCallbackRegistry` specification.
 
 ---
 
@@ -301,7 +356,7 @@ There is **no polling**. When a new item arrives while the agent is focused:
 1. The mailbox emits `mailbox:new-item` via the EventBus.
 2. The `AttentionController` sets an **interrupt signal**.
 3. At the next **safe yield point** (between LLM turns in the tool loop), the agent calls `checkYieldPoint()`.
-4. The controller evaluates the pending item using **heuristics first** (fast, no LLM call), then optionally falls back to an **LLM interrupt judge** for ambiguous cases where heuristics return `continue`. The LLM judge sees both the current work context and the full content of the new message, enabling it to understand semantic intent (e.g., "stop publishing" → cancel, "hold off for now" → preempt).
+4. The controller evaluates the pending item with `heuristicDecision()` — a **pure rule table** (priority + type + session identity), no LLM call at any point. There is no "ask a model when the table says `continue`" fallback: the table's `continue` is final.
 
 ### Decision Types
 
@@ -323,7 +378,7 @@ These two decisions handle fundamentally different situations:
 - **Preempt (pause)**: "暂停" — The current work is saved. The mailbox item is moved to `deferred` status and will automatically resurface when the agent is idle. Session context (conversation history) is preserved by `sessionId`, so processing continues from where it left off.
 - **Cancel (stop)**: "取消" — The current work is permanently abandoned. The mailbox item is marked as `completed` and will NOT be resumed. Used when the incoming message explicitly revokes or invalidates the current work.
 
-The heuristic interrupt rules (`heuristicDecision`) never produce `cancel` — only the **LLM interrupt judge** can make this semantic distinction, since it requires understanding message content (e.g., distinguishing "wait before deploying" from "cancel the deployment entirely").
+The heuristic interrupt rules (`heuristicDecision`) never produce `cancel`, and nothing else in the decision path does either — there is no model in the loop to infer "the user meant stop". Cancellation is an **explicit act** (the user aborts, or the item is cancelled through its own terminal path); an ambiguous instruction like "wait before deploying" lands as `continue` or `preempt`, never as a silent irreversible cancel.
 
 ### Priority Invariant: User Interactions First
 
@@ -333,7 +388,7 @@ Only user chat (`human_chat`) is assigned **priority 0 (critical)** — the high
 2. **R1**: If a new `human_chat` arrives while the agent is focused on any non-user work, the agent **always preempts** to handle it immediately. Only `human_chat` is in `USER_INTERACTION_TYPES`, so comments do **not** preempt this way — a `task_comment` / `requirement_comment` on the focused task/requirement is **merged** into context instead (R2 / R3).
 3. When idle with multiple items queued, the priority queue ensures user interactions are dequeued first.
 4. The agent's system prompt includes a **summary** of the mailbox queue — the pending count plus the top items, each truncated to `SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS` (`ContextEngine.buildMailboxSection`). It is deliberately a truncated view. An earlier revision claimed the opposite ("the full mailbox queue, not a truncated view"); the code has always sliced.
-5. **Deliberation abort**: If a `human_chat` arrives during active deliberation, the deliberation is aborted immediately and the user message is processed first. Deliberation results are discarded; items remain in queue for next cycle.
+5. **Preemption is resumable**: if a `human_chat` arrives while the agent is working, R1 returns `preempt` — the running item is parked with `deferDequeued()` and the user message is processed first; the parked item keeps its session and resumes on the next idle cycle (§22). Nothing is discarded.
 
 <!-- verified-against-code: 2026-10-25, packages/shared/src/types/mailbox.ts (category tables), packages/core/src/attention.ts (USER_INTERACTION_TYPES, heuristicDecision, checkYieldPoint) -->
 
@@ -671,11 +726,81 @@ Historical activities without `mailbox_item_id` remain valid but lack the causal
 6. **Completed** → `mailbox_items.status = 'completed'`, `completed_at` set; activity `ended_at` set
 7. If **deferred** → `status = 'deferred'` with optional `deferred_until`
 8. If **merged** → `status = 'merged'` with `merged_into` pointing to the absorbing item
-9. If **abandoned** → `status = 'dropped'`. This includes stale rows that recovery
-   refused to requeue, retry-exhausted background items, and duplicates spliced out
-   by dedup. `dropped` is a first-class terminal state, not an error case — the
-   earlier revision of this list omitted it even though it is the most frequent
-   terminal status written by `mailbox.ts`.
+9. If **abandoned** → `status = 'bounced'` with a mandatory `drop_reason`, then collected into
+   `catch_all` with `bounce_target`. This includes stale rows that recovery refused to
+   requeue, retry-exhausted background items, duplicates spliced out by dedup, and explicit
+   cancel decisions (see §28.5). `dropped` **is not in the status value domain** — historical
+   rows carrying it are read-only and normalised to `bounced` on the read path.
+   A bounce is a first-class terminal state, not an error case — and never a silent one.
+
+### 6.6 Item state machine
+
+```plantuml
+@startuml
+skinparam defaultTextAlignment center
+hide empty description
+
+title mailbox_items — states and the transitions that write them
+
+[*] --> queued : enqueue()\n**identity gate**: ref or refOrigin,\nelse rejected
+
+queued --> processing : dequeue / dequeueAsync\n+ lease claimed
+queued --> merged : dedup / consolidateByEntity\nmerged_into → survivor
+queued --> deferred : deferItem()\ndeferred_until
+queued --> bounced : bounceSignal / duplicate /\nstale purge — **drop_reason mandatory**
+
+deferred --> queued : resurfaceDue()
+
+processing --> completed : turn produced a reply\nor typed end_turn
+processing --> queued : requeue()\nabnormal reply, retries left
+processing --> bounced : retry exhausted /\norphan abandoned /\ncancel — with reason
+processing --> catch_all : bounce collected\nbounce_target set
+
+merged --> [*]
+completed --> [*]
+bounced --> [*]
+catch_all --> [*]
+
+note right of bounced
+  `dropped` is **not** in the value domain.
+  Historical rows are read-only and
+  normalised to `bounced` on read.
+  Rows with no reason are labelled
+  `legacy_unexplained` by migration —
+  unexplained is a fact, not a blank.
+end note
+
+note right of processing
+  Entering this state always leaves a
+  `pick` row in agent_decisions:
+  processFocusedItem is the single
+  recording point for both loop paths.
+end note
+@enduml
+```
+
+### 6.7 Identity is mandatory at enqueue
+
+An item carries either a `workUnitRef` or an explicit `refOrigin` declaration:
+
+| Declaration | Meaning |
+|---|---|
+| `entity` / `turn` | a ref is present (entity identity / current turn identity) |
+| `platform-internal` | genuinely no entity (receipts, internal events) |
+
+(C10-0B deleted `pending-link`: "identity arrives later" licensed a second writer
+that UPDATE-ed only the DB column — the in-memory item the decision ledger reads
+stayed null. Identity is built before enqueue and lands with the enqueue itself.)
+
+Neither present ⇒ **`enqueue()` rejects** with an actionable message. The guard is
+not opt-in: an optional strictness guards nothing. Under the previous
+`MARKUS_STRICT_IDENTITY=1` opt-in, production took the "log and let it through"
+branch and 242,496 inputs ended up with 0.18% identity coverage (measured
+2026-11-18). `MARKUS_LENIENT_IDENTITY=1` is an explicit, auditable escape hatch —
+used by the test harness for synthetic fixtures, never the default.
+
+The distinction that matters: **"no entity yet" and "forgot to pass it" must not be
+the same value.** Both are NULL in the column; only the declaration tells them apart.
 
 ---
 
@@ -749,7 +874,7 @@ The Agent Mind tab provides a unified view of the agent's cognitive state and hi
    `callback_result`. Labels stay in i18n: copying English labels here would fight
    the translation layer.
 4. **Expandable detail** — clicking a mailbox item shows: (a) decision badge(s), (b) activity summary, (c) lazy-loaded activity logs.
-5. **Status indicators**: `completed` (green), `processing` (blue pulse), `merged` (blue), `deferred` (purple), `dropped` (red), `queued` (amber).
+5. **Status indicators**: `completed` (green), `processing` (blue pulse), `merged` (blue), `deferred` (purple), `bounced` (red), `catch_all` (amber-red, bounces awaiting collection), `queued` (amber).
 
 ---
 
@@ -761,9 +886,9 @@ All paths that invoke the LLM are routed through the mailbox:
 - **Task execution** (runTask / runTaskFresh) → `sendTaskExecution`
 - **Post-task comment reply** → `sendSessionReply`
 - **Daily report** (API trigger) → `generateDailyReport` → `sendMessage(sourceType: 'daily_report')`
-- **Heartbeat** (periodic timer) → `heartbeat:trigger` event → `mailbox.enqueue('heartbeat')` — includes active goals review and timed-out callback checks (§11.4)
+- **Heartbeat** (periodic timer) → `heartbeat:trigger` event → `mailbox.enqueue('heartbeat')` — includes active goals review and timed-out callback checks ([a2a-communication.md](./a2a-communication.md) §11.4)
 - **Memory consolidation** (dream cycle) → `dreamConsolidateMemory` → `sendMessage(sourceType: 'memory_consolidation')`
-- **Cross-agent messages** (A2A / delegation) → DM channel → `enqueueToMailbox('a2a_message')` (§11)
+- **Cross-agent messages** (A2A / delegation) → DM channel → `enqueueToMailbox('a2a_message')` ([a2a-communication.md](./a2a-communication.md) §11)
 - **Async operation completions** (`background_exec`, etc.) → `PendingCallbackRegistry` → `enqueueToMailbox('callback_result')`
 - **Notifications** (task status, requirement, comments) → `enqueueToMailbox`
 
@@ -771,452 +896,40 @@ No LLM call is made outside this architecture.
 
 ---
 
-## 11. Agent-to-Agent Communication (A2A via Mailbox)
+## 11. Agent-to-Agent Communication (A2A) — moved
 
-Inter-agent messaging is fully consolidated into the Mailbox system. The legacy `A2ABus` class has been retired — it added a redundant routing layer when the mailbox already provides serialised attention handling.
+A2A messages reach another agent as `a2a_message` **mailbox items** and nothing else;
+`channel_messages` is only a projection (UI history + the context slice the recipient reads),
+never a delivery channel, and "persisted but not awake" is a forbidden state. The mailbox is the
+single delivery mechanism, `AgentDelivery.deliver()` is its only inter-agent caller, and a reply
+never triggers the peer — there is no automatic reply chain.
 
-### 11.1 A2A DM Channels
-
-A2A messages now route through **deterministic DM channels** that reuse the group-chat infrastructure for persistence, WebSocket delivery, and mailbox enqueue:
-
-```
-Channel key: dm:a2a:{sorted_id_1}:{sorted_id_2}
-             (agent IDs sorted lexicographically — one channel per pair)
-```
-
-```
-Agent A                              Agent B
-────────                             ────────
-tool: agent_send_message ──►  AgentManager.sendMessage()
-                                     │
-                                     ▼
-                               ensureDmChannel(dm:a2a:...)
-                                     │
-                                     ▼
-                               sendGroupMessage(channelKey, ...)
-                               ├─ persist to channel_messages
-                               ├─ WebSocket broadcast
-                               └─ enqueueToMailbox('a2a_message', { extra: { channelKey } })
-                                     │
-                                     ▼
-                               AttentionController picks it up
-                               (stable session: channel_{channelKey}_{agentId})
-```
-
-Benefits over ephemeral session IDs:
-
-- **Persistent history** — both agents recall past exchanges via `recall_context` with `scope: "channel"` and `channel_key`. Personal user↔agent DM **chat sessions** (`chat_sessions` table) use `recall_context` with `scope: "chat_session"` and `session_id` (pagination via `before` / `limit`) — see [learning-loop.md](./learning-loop.md) §9.3.
-- **Stable sessions** — all messages in a pair share one session ID derived from the channel key
-- **Enqueue-time dedup** — messages from the same `channelKey` coalesce (§14)
-- **Group chat parity** — DM channels use the same `groupChatRepo`, member resolution, and API paths as custom group chats
-
-When `groupChatHandlers` are not wired (e.g., unit tests), A2A falls back to direct `sendMessage()` with `sourceType: 'a2a_message'` and the same `channelKey` in `extra`.
-
-### 11.1.1 Delivery invariant — one message, one delivery fact
-
-> **Normative.** This section is the contract; the code must not have a second way
-> to reach another agent. It replaces the previous, unwritten arrangement in which
-> some paths persisted + woke the peer directly and others enqueued (see §14.5).
-
-1. **Exactly one delivery mechanism.** Every inter-agent message — DM
-   (`dm:a2a:*`), group/team channel, `@mention`, review/comment notification — MUST
-   reach the recipient as a mailbox item:
-   `enqueueToMailbox('a2a_message', { extra: { channelKey } })`.
-   `channel_messages` is a **projection** (UI history + the context slice the
-   recipient reads when it processes the item). It is **not** a delivery channel:
-   persisting a row has never delivered anything and must never be reported as if
-   it had.
-
-2. **No half-state.** Either a pending mailbox item exists for the recipient
-   (possibly merged with siblings, §14) or the message was never sent. The state
-   `delivered-but-not-awake` is forbidden — it is invisible to the sender and to
-   the UI, and it was the direct cause of the 2026-10-25 repeat-notification
-   incident.
-
-3. **Reply generation is not delivery.** `processGroupChatReply` exists to produce
-   a reply for an item the peer is **already** processing. It MUST NOT be used to
-   hand a new message to a peer; that is the mailbox's job.
-
-4. **Storm control is causal, never temporal.**
-   - *Chain*: `chainId` propagates trace-style. When an item is processed its
-     `extra.chainId` becomes the turn's current chain (per-worker
-     `SessionWorkspace.chainId`, so concurrent workers never share one); anything
-     the turn sends inherits it, and `sendGroupMessage` hands the parent to
-     `deliver()` with `depth + 1`. A fresh id is minted only when a delivery truly
-     starts a conversation. The context is cleared in the processing `finally` so
-     it cannot leak into the next turn.
-
-     > **Failure mode worth remembering**: this shipped once and did nothing,
-     > because the send logic existed **twice** in `AgentManager` — two
-     > near-identical `sendMessage` closures in different tool-context factories —
-     > and only one forwarded the chain. The A2A tools received the other one, so
-     > every delivery still minted a fresh id while the code read correctly. Both
-     > copies are now deleted in favour of one private `deliverA2AMessage()`.
-     > Reading either copy alone could not have revealed it: only the pair did.
-   - *Coalescing*: messages on the same `channelKey` merge into **one** mailbox
-     item at enqueue time (§14), with the full text preserved in the channel.
-   - Wall-clock throttles MUST NOT drop a wake. `a2aCooldowns` (per-channel 30 s)
-     and `wakeBudget` (global per-agent quota) were removed for exactly this
-     reason — both could answer "sent" for a message the peer never received.
-
-5. **The sender is told the truth.** `agent_send_message` returns
-   `{ deliveryState: 'queued' | 'coalesced', deliveryId, peerPendingItems,
-   coalescedCount }`. `coalesced` means "your message is part of the item the peer
-   will process next" — it is a delivery outcome, not a silent drop.
-
-6. **One place decides.** `AgentDelivery.deliver()` is the only caller of the
-   mailbox enqueue for inter-agent traffic. Any new feature that wants to reach
-   another agent calls it; it must not re-implement "persist + wake".
-
-### 11.1.2 Reply sink — one writer for "an agent said something in a channel"
-
-A2A has two facts, and each needs exactly one writer:
-
-| Fact | Writer | Never |
-|---|---|---|
-| "A message is addressed to agent X" | `AgentDelivery.deliver()` → `mailbox.enqueue('a2a_message')` | never a direct `getAgent(...).handleMessage(...)` |
-| "Agent Y produced a reply in channel C" | `AgentDelivery.postReply()` — persists to `channel_messages`, broadcasts, and **does not** auto-trigger anyone | never a second persist/broadcast path |
-
-`processGroupChatReply` used to be **both** — it woke the peer *and* wrote the
-reply — which is why an A2A message had two possible lifecycles depending on which
-branch produced it. Under this contract it has no role: the mailbox item wakes the
-agent (with its own lease/retry/merge semantics), and the reply returns through
-`responsePromise` to the single sink.
-
-**No automatic reply chain.** A reply never triggers the peer. If the other side
-has something to add it must call `agent_send_message` — a deliberate act. This
-removes the class of incident in which two agents re-replied for 43 turns /
-35 minutes after a single proactive message.
-
-### 11.1.3 Replies are a decision, never a chain
-
-The platform does not decide that an agent should answer. It delivers the message
-and the agent decides:
-
-* **Perception is automatic, response is optional.** A delivered message wakes the
-  agent (mailbox semantics); whether it says anything back is its own call. Ending
-  a turn without replying (`end_turn`) is a legitimate, expected outcome — for
-  human messages too.
-* **No automatic reply chain.** A reply never triggers the peer. If the
-  conversation should continue, the replying agent calls `agent_send_message`
-  itself — a deliberate act with its own cost. There is therefore no "reflection"
-  to bound: without a chain, `DM_MAX_DEPTH`, per-round `respondedAgents`,
-  `shouldChainDmReply`'s regex, the 30 s `a2aCooldowns` and `wakeBudget` have **no
-  subject matter left**. They existed only to bound a chain the platform itself
-  was creating.
-* **`chainId` is correlation, not a guard.** It is inherited from the inbound item
-  (§11.1.1 point 4), so a request and the answer it provokes share one id; it is
-  never used to throttle or to drop.
-* **Nothing is lost when someone stays silent.** The message is in the channel and
-  in the recipient's mailbox history; silence is observable, not a delivery failure.
-
-Rationale (learned the hard way, 2026-10): every storm guard we ever added was a
-consequence of the platform auto-replying on the agent's behalf. Removing the
-auto-reply removes the storm; keeping it forced us to invent judges (wall clock,
-quota, regex) that had to guess "does this reply need an answer?" — and when they
-guessed wrong they discarded the wake while still reporting success.
-
-### 11.1.4 Entry-point inventory (nothing may bypass the delivery service)
-
-| Entry | Path | Notes |
-|---|---|---|
-| `agent_send_message` (DM) | `AgentDelivery.deliver` | one item per `channelKey`, mergeable |
-| group chat, no @mention | `AgentDelivery.deliver` (`throttled` when a chain is hot) | awareness, not a reply request |
-| group chat, @mention | `AgentDelivery.deliver` with `mentions` + `chainId` | the chain decision happens **after** delivery |
-| `agent_delegate_task` | delegation manager → `deliver` | protocol on top of the same transport |
-| review / comment / requirement notifications | `task-service` mailbox items | their own item types, not A2A; they must not invent a second wake path |
-
-**Addressedness** (who is this message for): a message aimed at a specific agent —
-a DM, or a group message where the agent was `@mentioned` — is delivered with a
-one-line `[MENTIONED] This message is addressed to you …` prefix so the recipient
-knows it is the target. Open/broadcast messages carry no marker. Single writer:
-`DeliveryRequest.addressedTargetIds` (a list of the target ids that are actually
-addressed) in `AgentDelivery.deliver()`; callers must not construct the marker
-themselves.
-
-The prefix also carries the **count**: `… Others also addressed: N.` Knowing that
-nobody else was addressed ("this is yours to handle") is a different action from
-knowing two others were ("whoever picks it up first"). The count is emitted
-always, including `0`, for two reasons:
-
-- **One template, one stable prefix.** The marker line is a prompt prefix shared by
-every a2a message. Two shapes (with/without the clause) would fork that prefix and
-degrade prompt-cache hits; a fixed template with only the trailing number varying
-keeps the common prefix intact. Put variable content at the **end** of a stable
-template, never by making the template conditional.
-- **It is the decision-relevant part, and only that.** Names are deliberately not
-included: the list would grow the line without bound and would expose unrelated
-agents' identities to a third party. A count answers "must I act" without leaking.
-
-It is an id list, deliberately, not a boolean. One group message can address two
-of ten members: with a boolean a caller can only mark the whole batch (bystanders
-think they were singled out) or none of it (the mentioned agent never learns it
-was the target). With a list the ambiguous state is not expressible — which is
-the point.
-
-**Origin** (who sent it): `DeliveryRequest.origin` — `[FROM HUMAN] <name> … humans can
-see this channel` versus `[FROM AGENT] … no human is waiting on this`. Produced
-only in `deliver()`, like the addressedness marker. It is load-bearing: a human
-group message delivered as a bare `a2a_message` would be read under the a2a prompt
-section ("humans do NOT see this conversation"), so the agent misjudges the context
-and answers the wrong audience.
-
-**Machine-checkable**: `enqueueToMailbox('a2a_message'` may appear only inside
-`agent-delivery.ts`; a direct `handleMessage`/`processGroupChatReply` used to hand a
-message to another agent is a regression.
-
-### 11.2 Tools & Transport
-
-- **`agent_send_message`**: Always asynchronous — returns immediately with `conversation_id` and `channel_key`. Messages are tagged `[conversation:...]` for multi-turn correlation.
-- **`agent_delegate_task`**: Uses `DelegationManager` for protocol orchestration; transport goes through the DM channel path above.
-- **`agent_broadcast_status`**: Lightweight path — writes to target agent's daily log without an LLM call. Does not use DM channels.
-- **`agent_send_group_message`**: Team/custom group channels (`group:<teamId>`, `group:custom:<id>`). @mentions control which peer agents receive `a2a_message` mailbox items.
-
-The `@markus/a2a` package retains `DelegationManager` and protocol types. `A2ABus` is exported with a `@deprecated` annotation for backward compatibility only.
-
-### 11.3 PendingCallbackRegistry
-
-`PendingCallbackRegistry` (`packages/core/src/pending-callback.ts`) tracks async operations that must report results back through the mailbox rather than injecting directly into an active session.
-
-```typescript
-type CallbackType = 'background_exec' | 'wakeup' | 'a2a_reply';
-type CallbackDelivery = 'in_session' | 'mailbox';
-
-interface PendingCallback {
-  id: string;                    // Unique callback ID (e.g., background session ID, a2a_<conversation_id>)
-  agentId: string;               // Originating agent
-  originSessionId: string;       // Session to resume on completion (in_session mode)
-  type: CallbackType;            // Operation type
-  deliveryMode?: CallbackDelivery; // in_session (default) → callback_result; mailbox → system_event
-  command?: string;              // Optional context (shell command, etc.)
-  note?: string;                 // Free-text label (wakeup reason, delegation goal)
-  correlationId?: string;        // Correlates an external event (conversation_id)
-  wakeAt?: number;               // Scheduled wakeups: epoch ms when due
-  recurringMs?: number;          // Recurring wakeups: re-arm interval
-  registeredAt: number;          // Epoch ms
-  timeoutMs: number;             // 10 min for background_exec; 30 min for a2a_reply; effectively ∞ for wakeup
-}
-```
-
-**Lifecycle:**
-
-1. **Register** — An async operation is registered as a `PendingCallback` and persisted via `SqlitePendingCallbackRepo`:
-   - `background_exec` → `registerBackgroundSession()` (called from `Agent.executeTool` on the tool result).
-   - `agent_send_message` with `reply_in_session` (alias `await_in_session`) → an `a2a_reply` callback keyed by `conversation_id`.
-   - `schedule_wakeup` → a `wakeup` callback with `wakeAt` (+ optional `recurringMs`).
-2. **Complete / fire** — On completion (`background_exec`, `a2a_reply`) or when a wakeup is due, the entry is resolved and delivered via the shared `Agent.deliverCallback()` helper: `in_session` → `callback_result` (bound to `originSessionId`); `mailbox` → `system_event`. Recurring wakeups re-arm.
-3. **Timeout** — Heartbeat calls `getTimedOut()` to find expired callbacks, then `expireTimedOut(id)` removes each from the registry. Timed-out operations are surfaced in the heartbeat prompt (§11.4) for agent investigation — they do not silently disappear. (Wakeups use an effectively infinite timeout and are never flagged.)
-
-**Wakeup scheduler:** each agent runs a coarse (~1-minute) sweep (`Agent.sweepDueWakeups`) that fires any `wakeup` callbacks whose `wakeAt` has passed. This lets an agent register precise time-based follow-ups (`schedule_wakeup`) and stay idle in between, rather than relying on the periodic heartbeat.
-
-**Heartbeat as coarse safety-net:** the periodic heartbeat is a fallback patrol (`DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h), not the primary timing mechanism — `schedule_wakeup` is. The interval is configurable live by the user (Heartbeat tab / `PATCH /api/agents/:id/config`) and by the agent itself via the `set_heartbeat_interval` tool (clamped 5min–24h). Both paths go through `Agent.setHeartbeatInterval()`, which restarts the scheduler immediately; agent-initiated changes persist via the `agent:heartbeat-interval-changed` event → `agentRepo.updateConfig`.
-
-The registry is a process singleton (`pendingCallbackRegistry`), restored from SQLite on startup so callbacks survive server restarts.
-
-### 11.4 Heartbeat Integration
-
-Periodic heartbeat items (`priority: 3 — low`) drive proactive agent patrol. Beyond the standard checklist, heartbeat now integrates:
-
-**Active goals review** — When `goalFetcher` is wired (from org-manager requirement service), the heartbeat prompt includes an **Active Goals** section listing each goal's title, status, iteration count (`currentIteration` / `maxIterations`), and completion criteria. The agent is instructed to:
-
-1. Check linked tasks for progress
-2. Create follow-up tasks if needed
-3. Mark requirements complete when criteria are met
-4. Escalate or adjust approach if stuck
-
-**Callback timeout handling** — Before building the heartbeat prompt, `handleHeartbeat()` calls `pendingCallbackRegistry.getTimedOut()`. For each expired callback:
-
-1. `expireTimedOut(id)` removes it from the registry (and persistence)
-2. Details are injected into the heartbeat prompt under **Timed-Out Async Operations** (background exec or an awaited A2A delegation whose reply never arrived)
-3. The agent investigates and takes corrective action during the heartbeat LLM session
-
-This ensures orphaned async operations are surfaced even when the completion handler never fires (process crash, hung command, etc.).
-
-Background process completions that *do* finish normally are still routed as separate `callback_result` mailbox items (priority 1) — the heartbeat section only handles the timeout case.
-
-### 11.5 Async-Only A2A (Deadlock Prevention)
-
-The `wait_for_reply=true` parameter is **deprecated and ignored**. All A2A messaging is non-blocking. This eliminates deadlocks that occurred when two agents simultaneously awaited each other's reply.
-
-**Correlation pattern**: Each message carries a `conversation_id` (auto-generated UUID). Agents record pending questions in working memory and recognize replies by the `[conversation:...]` tag prepended to the message content. Multi-turn exchanges use the same `conversation_id` for context continuity.
+The full contract lives in [a2a-communication.md](./a2a-communication.md) §11 — DM channels
+`dm:a2a:{sorted_ids}` (§11.1), the delivery invariant (§11.1.1), the reply sink (§11.1.2), the
+entry-point inventory (§11.1.4), tools & transport (§11.2), `PendingCallbackRegistry` (§11.3),
+heartbeat integration (§11.4) and async-only correlation (§11.5).
 
 ---
 
-## 12. User Notifications (Human Mailbox)
+## 12. User Notifications (human mailbox) — moved
 
-Just as agents have a mailbox for incoming stimuli, users have a **persistent notification system** for events that require their attention. This is the user-facing counterpart to the agent mailbox.
-
-### 12.1 Storage
-
-```sql
-CREATE TABLE user_notifications (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  type TEXT NOT NULL,             -- UserNotificationType
-  title TEXT NOT NULL,
-  body TEXT DEFAULT '',
-  priority TEXT DEFAULT 'normal', -- 'low' | 'normal' | 'high' | 'urgent'
-  read INTEGER DEFAULT 0,
-  action_type TEXT,               -- 'navigate' | 'open_chat' | null
-  action_target TEXT,             -- JSON: { path } or { agentId, sessionId }
-  metadata TEXT DEFAULT '{}',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-```
-
-### 12.2 Notification Type Registry
-
-Analogous to `MAILBOX_TYPE_REGISTRY`, user notification types are defined in `USER_NOTIFICATION_TYPE_REGISTRY` in `@markus/shared`:
-
-| Type | Label | Icon | Default Priority | Action | Category |
-|------|-------|------|-----------------|--------|----------|
-| `approval_request` | Approval Request | 🔐 | high | navigate | approval |
-| `task_created` | Task Created | 📋 | normal | navigate | task |
-| `task_completed` | Task Completed | ✅ | normal | navigate | task |
-| `task_review` | Task Review | 👁️ | normal | navigate | task |
-| `task_failed` | Task Failed | ❌ | high | navigate | task |
-| `requirement_created` | Requirement Proposed | 📝 | high | navigate | task |
-| `requirement_decision` | Requirement Decision | ⚖️ | normal | navigate | task |
-| `agent_report` | Agent Report | 📊 | normal | none | agent |
-| `system` | System | ⚙️ | normal | none | system |
-
-### 12.3 Action Types
-
-Notifications can be **actionable** — clicking them navigates the user to the relevant context:
-
-| `action_type` | `action_target` format | Behaviour |
-|---------------|----------------------|-----------|
-| `navigate` | `{ "path": "/work?task=T123" }` | Navigate to the specified route |
-| `open_chat` | `{ "agentId": "...", "sessionId": "..." }` | Open chat with agent, resume session |
-| `none` | — | Notification only, no navigation |
-
-### 12.4 REST API
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/notifications?type=...&limit=...&offset=...` | List notifications with filtering, returns `totalCount` and `unreadCount` |
-| POST | `/api/notifications/:id/read` | Mark single notification as read |
-| POST | `/api/notifications/mark-all-read` | Mark all notifications as read |
-
-### 12.5 Real-Time Delivery
-
-When a notification is created (via `HITLService.notify()`), a WebSocket `notification` event is broadcast. The frontend `App.tsx` listens for this and dispatches a `markus:notifications-changed` custom DOM event, which triggers the `NotificationBell` component to refresh.
+The delivery contract for user notifications is defined in
+[notification-delivery.md](./notification-delivery.md) §12 (storage, type registry, action
+types, REST API, real-time delivery). **The mailbox only owns enqueueing and priority**: it
+carries the resulting items — type, default priority, merge with siblings — but it does not
+define what a notification means or how it reaches a person.
 
 ---
 
-## 13. Agent-to-User Communication
+## 13. Agent-to-User Communication — moved
 
-Agents have two distinct modes for communicating with users. **They are not
-interchangeable** — the choice is decided by one question: *do I need an answer
-before I can continue?*
-
-| I need… | Tool | Semantics |
-|---|---|---|
-| to inform (status, report, alert, finding) | `notify_user` | **one-way**; do NOT expect a reply; must not wait for it |
-| an answer / authorization / a decision | `request_user_input` | **blocks** until the human responds; returns the answer |
-
-A question asked through `notify_user` does not block, brings no answer back, and
-leaves the agent permanently blocked — which in practice produces repeated
-notifications of the same ask (2026-10-25: 12 identical sends in 3 minutes). A
-notification sent through `request_user_input` would hold a turn open for an
-answer nobody needs to give. Each tool's own description states this boundary;
-it is enforced by the tools' contracts, not by caller discipline.
-
-### 13.1 `notify_user` — Proactive Chat Message + Notification
-
-Proactive messages that appear in the agent's chat **and** the user's notification bell. The user can reply in chat, and the agent has full context of what it sent.
-
-```typescript
-// Tool schema
-{
-  name: 'notify_user',
-  parameters: {
-    title: string,     // Short headline (1 line)
-    body: string,      // Full message content (visible in chat)
-    priority: 'low' | 'normal' | 'high' | 'urgent',  // optional, default 'normal'
-    related_task_id?: string,  // deep-link to task if applicable
-    target_user_id?: string    // target specific user (defaults to currentInteractingUserId)
-  }
-}
-```
-
-**When to use**: Status updates, task completion notices, FYI messages, findings, alerts — any proactive communication where the user may want to reply.
-
-**Flow**: `agent.executeTool('notify_user')` → builds formatted message with embedded context → `memory.appendMessage()` (in-memory session) → `eventBus.emit('agent:notify-user')` → `start.ts` handler: `chatSessionRepo.appendMessage()` (with `notifyUser` metadata) + `ws.broadcastProactiveMessage()` (with metadata) + `hitlService.notify()`
-
-**Notification routing**: With `related_task_id` → `actionType: 'navigate'` to Work page. Without task → `actionType: 'open_chat'` with `sessionId` to agent's chat.
-
-#### Message Metadata & Context Embedding
-
-Every `notify_user` message is persisted with **two layers of context**:
-
-1. **DB metadata** (`metadata` column): `{ notifyUser: true, priority, taskId?, requirementId? }` — used by the frontend to display context links and badges.
-
-2. **Embedded context comment** (appended to message content): `<!-- notify_context: task_id=xxx, requirement_id=yyy -->` — survives through `restoreSessionFromHistory()` (which only reads `role` + `content`), ensuring the agent retains context about what it notified the user about when the user replies.
-
-The agent's `chat` scenario system prompt instructs it to parse these `notify_context` references and use tools like `recall_activity` or `search_tasks` to retrieve full context before responding to user follow-ups.
-
-> **Referencing resources in the body**: `notify_user` bodies (and any chat/comment/report markdown) should reference Markus resources using the conventions in [prompt-engineering.md §2.2 "Referencing Markus Resources"](./prompt-engineering.md#referencing-markus-resources) — bare IDs (`tsk_…`, `dlv_…`, …), titled links `[Title](task:tsk_…)`, or a reference alone on its own line to render a card. This is separate from the `related_task_id` metadata (which drives the notification's deep-link badge).
-
-#### Real-time Visibility
-
-All `notify_user` messages are buffered in the frontend for every agent conversation immediately upon WebSocket receipt — regardless of whether the user is currently viewing that agent's chat. This ensures messages are visible as soon as the user navigates to the agent, without requiring a page reload.
-
-### 13.2 `request_user_input` — Blocking Decision Request
-
-Requests input or a decision from the user. The tool **blocks** until the user
-responds — no timeout. Supports multiple questions, default Approve/Reject
-options, custom options, and optional freeform text input.
-`request_user_approval` is a deprecated alias with identical behaviour, kept only
-so older prompts keep working.
-
-**Use it whenever you cannot continue without an answer** — an authorization, a
-scope call, an ambiguous choice, a fact only the human has ("I am blocked, I need
-one line of approval"). Asking through `notify_user` instead leaves the turn
-unblocked, brings no answer back, and produces repeated notifications of the same
-ask; the blocking tool is the only correct choice for a question that needs an
-answer.
-
-```typescript
-// Tool schema
-{
-  name: 'request_user_input',
-  parameters: {
-    title: string,           // Short headline
-    description: string,     // Detailed context
-    options?: Array<{        // Custom options (defaults to Approve/Reject)
-      id: string,
-      label: string,
-      description?: string
-    }>,
-    allow_freeform?: boolean, // Allow user to type custom text
-    related_task_id?: string,
-    priority?: 'normal' | 'high' | 'urgent'
-  }
-}
-// Returns: { status: 'ok', approved: boolean, selected_option: string, comment: string }
-```
-
-**When to use**: Approval requests, design decisions, choosing between approaches, anything requiring user input or decision.
-
-**Flow**: `agent.executeTool('request_user_input')` → `attentionController.setWaitingForApproval(true)` → `HITLService.requestApprovalAndWait(options)` → notification + WebSocket → NotificationBell renders options → user responds → `HITLService.respondToApproval(selectedOption)` → promise resolves → agent receives result
-
-The attention controller uses `APPROVAL_WAIT_TIMEOUT_MS` (24h) instead of the normal 45-minute backstop (`MAILBOX_PROCESSING_TIMEOUT_MS`) while waiting for approval, preventing the mailbox item from being requeued prematurely.
-
-### 13.3 Prompt Guidance
-
-The system prompt includes scenario-specific guidance on which tool to use:
-
-| Situation | Tool |
-|-----------|------|
-| Status report, progress update, FYI alert | `notify_user` — one-way; the user may reply, but do not wait |
-| Task completed notification | `notify_user` with `related_task_id` |
-| **Blocked: needs an authorization / decision to continue** | **`request_user_input`** (blocks, returns the answer) |
-| Need user to approve/reject something | `request_user_input` (default options) |
-| Need user to choose between approaches | `request_user_input` with custom `options` |
-| Need user freeform input | `request_user_input` with `allow_freeform: true` |
-| Want to discuss interactively | Mention user via task/requirement comment |
-| Need to review past execution details | `recall_activity` (list activities or get logs) |
+The `notify_user` (one-way, non-blocking) versus `request_user_input` (blocking, returns the
+answer) contract, the `notify_context` metadata rules and the prompt guidance are defined in
+[notification-delivery.md](./notification-delivery.md) §13. Mailbox-side, all that stays here is
+the enqueue and priority of the produced items, plus one timing fact: while an item waits for
+approval the attention controller uses `APPROVAL_WAIT_TIMEOUT_MS` (24 h) instead of the normal
+45-minute backstop (`MAILBOX_PROCESSING_TIMEOUT_MS`), so the item is not requeued prematurely
+(§4).
 
 ---
 
@@ -1248,7 +961,7 @@ This prevents scenarios where 5 rapid-fire comments on the same task each trigge
 
 ### Channel Coalescing
 
-Group chat and A2A messages from the same `channelKey` are coalesced both at enqueue time and during pre-triage consolidation. The merged item carries a `messages` array providing structured context:
+Group chat and A2A messages from the same `channelKey` are coalesced both at enqueue time and during entity consolidation. The merged item carries a `messages` array providing structured context:
 
 ```typescript
 payload.messages: Array<{
@@ -1261,7 +974,7 @@ payload.messages: Array<{
 
 ### Burst Coalescing Window
 
-After dequeuing a non-user item, the attention loop pauses for `MAILBOX_COALESCE_WINDOW_MS` (default 200ms) before starting triage. This gives rapid-fire messages time to arrive and merge via enqueue-time dedup, reducing redundant processing for burst scenarios (e.g., multiple agents posting to the same group chat within milliseconds).
+After dequeuing a non-user item, the attention loop pauses for `MAILBOX_COALESCE_WINDOW_MS` (default 200ms) before purge/consolidation. This gives rapid-fire messages time to arrive and merge via enqueue-time dedup, reducing redundant processing for burst scenarios (e.g., multiple agents posting to the same group chat within milliseconds).
 
 **Execution-trigger safety**: Items with `extra.triggerExecution` (task execution triggers) are **never merged** — neither as the incoming item nor as the merge target. Execution items carry critical callbacks (`onLog`, `cancelToken`, `taskProjectContext`) in their `extra` field that would be lost during a content merge. They must always remain standalone queue entries.
 
@@ -1273,7 +986,7 @@ stayed persisted:
 
 | Guard | Where | Judgement | Outcome on match |
 |---|---|---|---|
-| ~~`DM_MAX_DEPTH`~~ | ~~reply chain~~ | **deleted** | bounded a chain that no longer exists (§11.1.3) |
+| ~~`DM_MAX_DEPTH`~~ | ~~reply chain~~ | **deleted** | bounded a chain that no longer exists ([a2a-communication.md](./a2a-communication.md) §11.1.3) |
 | `a2aCooldowns` | api-server, per (channel, peer) | 30 s wall clock | **drop the wake, keep the row** |
 | `wakeBudget` | api-server, per agent | global quota | **drop the wake, keep the row** |
 | mailbox coalescing | enqueue (§14) | same `channelKey` | merge into one item |
@@ -1289,7 +1002,7 @@ question twelve times" (must be coalesced) from "twelve different messages" (all
 must arrive), so it thinned real information while doing nothing about the
 duplicate asks themselves.
 
-Hence the rule in §11.1.1: **coalescing is the only thinning mechanism for a
+Hence the rule in [a2a-communication.md](./a2a-communication.md) §11.1.1: **coalescing is the only thinning mechanism for a
 channel**, and the chain guard may only prevent a chain from growing — it must
 never discard an addressed message. Regression detector: a `suppressed by
 cooldown` log line or a `wakeBudget.tryConsume` call existing anywhere in the tree
@@ -1332,7 +1045,8 @@ The frontend Agent Mind view supports filtering by both **category** and **statu
 | `completed` | Green | Successfully processed |
 | `merged` | Blue | Absorbed into another item |
 | `deferred` | Purple | Postponed for later |
-| `dropped` | Red | Discarded |
+| `bounced` | Red | Delivery failed — `drop_reason` is mandatory |
+| `catch_all` | Amber-red | Bounce collected into the overview, awaiting collection |
 
 Both category and status filters are passed as query parameters to the mailbox API endpoint.
 
@@ -1361,7 +1075,7 @@ agent_id = ? AND status = 'processing'
    Those carry work that cannot be recreated from scratch, so dropping them would lose
    it. After requeue the row no longer matches the predicate, so the next step leaves
    it alone.
-3. **Drop the remainder** (`UPDATE ... SET status='dropped'`).
+3. **Bounce the remainder** (`status='bounced'` + `drop_reason='stale_signal'` → `catch_all`).
 
 If the candidate SELECT or the payload parse throws, the method logs and **falls back
 to drop-only** — the conservative pre-existing behaviour — rather than proceeding with
@@ -1370,13 +1084,13 @@ a half-computed split.
 This is safe because:
 - `resumeInProgressTasks()` already re-creates execution items for any tasks that need to continue.
 - The stale items' callbacks (`onLog`, `cancelToken`, etc.) are garbage-collected references that cannot be resumed.
-- Marking as `dropped` (not `completed`) preserves the audit trail — these items did not complete successfully.
+- Marking as `bounced` (not `completed`) preserves the audit trail — these items did not complete successfully, and the reason is queryable.
 
 ### Post-Recovery Deduplication
 
 After all queued items are restored from the database, `recoverStaleItems()` runs `deduplicateQueue()` to collapse redundant entries that accumulated before the restart:
 
-1. **Heartbeat collapse**: Multiple queued heartbeats are reduced to a single entry (the most recent). Older heartbeats are marked `dropped`.
+1. **Heartbeat collapse**: Multiple queued heartbeats are reduced to a single entry (the most recent). Older heartbeats are marked `bounced` with a `drop_reason` (`dropped` is not in the status value domain — see §28.5).
 2. **Comment merging**: `task_comment` items with the same `taskId` are merged. Same for `requirement_comment` by `requirementId`.
 3. **Channel coalescing**: `a2a_message` items with the same `extra.channelKey` are merged (`CHANNEL_DEDUP_TYPES`). This rule was missing from earlier revisions of this list at §17 (it appeared only in §14).
 4. **Priority escalation**: When merging, the survivor inherits the highest priority of all merged items.
@@ -1448,7 +1162,6 @@ task:failed         ──────────►  task:failed         ─�
 mailbox:new-item    ──────────►  mailbox:new-item    ──────►  agent:mailbox WS event
 attention:decision  ──────────►  attention:decision  ──────►  agent:decision WS event
 attention:state-changed ──────►  attention:state-changed ──►  agent:attention WS event
-attention:triage    ──────────►  attention:triage    ──────►  agent:triage WS event
 ```
 
 Events emitted directly on the manager's bus (no forwarding needed):
@@ -1550,210 +1263,181 @@ finish cleanly.
 
 ---
 
-## 21. Mailbox Triage System
+## 21. Attention Decision: One Rule Table, Zero Model Calls
 
-When an agent dequeues a mailbox item and additional items remain in the queue, the Attention Controller triggers an LLM-driven **triage phase** before processing. This ensures the agent considers all pending work holistically rather than blindly following priority order.
+When an agent dequeues a mailbox item while other items are still queued, **nothing is
+"triaged"**. There is exactly one decision surface, and it is a deterministic rule table in
+`packages/core/src/attention.ts`. There is no second model call, no batch decision phase,
+no decision protocol the agent must answer before it is allowed to work, and no prompt that
+turns "what should I do next?" into a paid inference question. An earlier revision of this
+document described a three-tier model (Tier 0 reflex / Tier 1 LLM classifier / Tier 2
+full-session deliberation, with a `[DELIBERATION MODE]` prompt and a structured
+decision-tool result); that whole stack has been deleted. What follows is what the code
+does today.
 
-### Pre-Triage Entity Consolidation
+### 21.1 The single entry point: `heuristicDecision(current, new)`
 
-Before triage (or processing), the system automatically consolidates queued items that share the same `taskId` or `requirementId` — regardless of `sourceType`. This is a cross-type merge: a `task_status_update`, `a2a_message`, `mention`, and `task_comment` all referencing `tsk_abc123` are collapsed into a single rich-context item.
+`AttentionController.heuristicDecision()` (`packages/core/src/attention.ts`, ~:1515) is a
+top-to-bottom rule table — **first match wins**, zero model calls:
+
+| Rule | Condition | Decision |
+|------|-----------|----------|
+| R0 | Same sender, same session, both `human_chat` | `merge` |
+| R0x | New `human_chat` is an explicit NEW session | `continue` |
+| R1 | New is `human_chat`, current is not | `preempt` |
+| R1.5 | New is `a2a_message`, current is background | `preempt` |
+| R2 | `task_comment` on the same `taskId` as current | `merge` |
+| R3 | Requirement update/comment on the same requirement | `merge` |
+| R4 | New priority is `critical`, current is not | `preempt` |
+| R6 | New has strictly higher priority (lower number) | `preempt` |
+| R8 | Same priority, current is background/system | `preempt` |
+| R9 | New is a mention, current priority ≥ normal | `preempt` |
+| — | Otherwise | `continue` |
+
+The production delegate (`agent.ts` → `evaluateInterrupt`) returns exactly
+`heuristicDecision(current, new)`; the model-based interrupt judge it once consulted is
+gone, so no interrupt can cost a model call. Note also what the table does **not** produce:
+`cancel`. The heuristic never cancels, and nothing else in the decision path infers a
+cancel either — cancellation is an explicit terminal act.
+
+Every decision is recorded (`recordDecision` → `attention:decision` ledger row with the
+rule's reasoning), which makes the whole surface reproducible and testable: same queue
+state, same decision.
+
+### 21.2 Entity consolidation before processing
+
+Before anything is decided, a non-user item's queue is cleaned up:
+
+- **Stale purge** — `purgeStaleItems()` drops expired informational items (old heartbeats,
+  superseded status updates) that would only cost a turn.
+- **Cross-type entity merge** — the head item is temporarily put back
+  (`putBack(headItem)`), `consolidateByEntity()` collapses queued items sharing the same
+  `taskId` / `requirementId` (and `a2a_message`s sharing a `channelKey`) into a single
+  rich-context item, and the head is re-dequeued.
 
 This differs from enqueue-time dedup (which only merges same-type comments):
 - **Enqueue-time**: `task_comment` + `task_comment` for same task → merged (fast, prevents accumulation)
-- **Pre-triage**: `task_comment` + `a2a_message` + `task_status_update` for same task → consolidated (comprehensive, gives agent full entity context)
+- **Pre-processing**: `task_comment` + `a2a_message` + `task_status_update` for same task → consolidated (comprehensive, gives agent full entity context)
 
-The headItem is temporarily put back into the queue so it participates in consolidation, then re-dequeued.
+Strict state items are never used as merge targets (see §21.4), so a formal task execution
+cannot be folded into a neighbour's context.
 
-### Three-Tier Cognitive Model
-
-The triage system implements a three-tier cognitive model inspired by Dual Process Theory (Kahneman, 2011):
-
-- **Tier 0 (Reflexive / System 1)**: Queue depth = 0 after consolidation, or priorities clearly separate items → no LLM call needed. Process immediately.
-- **Tier 1 (Quick Classification / System 1+)**: Interrupt arrives during focused work, heuristic says "continue" but LLM may disagree → single LLM call returning one word (`continue`/`preempt`/`cancel`/`merge`/`defer`).
-- **Tier 2 (Full Deliberation / System 2)**: Multiple items with overlapping priorities AND `performDeliberation` configured → full agent session with complete tool access and memory.
-
-### Triage Flow
+### 21.3 Decision flow
 
 ```
-dequeueAsync() → headItem
+dequeueAsync() → item
   │
-  ├─ queue empty? → TIER 0: record 'pick' → process(headItem)
+  ├─ USER INTERACTION (human_chat)? → skip cleanup, process immediately
   │
-  └─ queue non-empty?
-       ├─ CONSOLIDATION: putBack(headItem) → consolidateByEntity() → dequeue()
-       │    (items sharing same taskId/requirementId merged cross-type)
-       │
-       ├─ queue empty after consolidation? → TIER 0
-       │
-       └─ priorities clearly separate? → TIER 0
-       │
-       └─ ambiguous priorities AND (performDeliberation OR triageJudge)?
+  └─ otherwise
+       ├─ COALESCE WINDOW: MAILBOX_COALESCE_WINDOW_MS pause when the queue is non-empty
+       │    (lets rapid-fire messages merge via enqueue-time dedup)
+       ├─ putBack(item) → purgeStaleItems() → consolidateByEntity() → dequeue()
+       ├─ record 'pick' — which item is next is decided by the priority queue alone
+       └─ processFocusedItem(item)
             │
-            ├─ performDeliberation available?
-            │    → TIER 2: Full-session deliberation (scenario='deliberation')
-            │         ├─ Agent deliberates AS ITSELF with full identity
-            │         ├─ Access to memory, recall_activity, task tools
-            │         ├─ Can handle simple items INLINE (notify, comment, message)
-            │         ├─ Calls complete_deliberation tool with decision
-            │         ├─ Apply inline-completed / defer / drop / choose
-            │         └─ Working memory updated (`deliberation` key from situational awareness)
-            │
-            └─ triageJudge only (fallback)?
-                 → Mini triage loop (up to TRIAGE_MAX_TOOL_ITERATIONS rounds)
-                      ├─ Build prompt with candidates + context
-                      ├─ LLM calls read-only tools to gather context
-                      ├─ Returns JSON: { processItemId, deferItemIds, dropItemIds }
-                      └─ Apply decisions
+            └─ new item arrives mid-processing?
+                 → heuristicDecision(current, new)   ← one rule table, first match wins
+                      ├─ merge / continue → keep working (merge injects context)
+                      ├─ preempt          → suspend current (deferDequeued → resumes
+                      │                     with its session context when idle)
+                      └─ defer            → park the NEW item (refused for strict state)
 ```
 
-### Full-Session Deliberation (Tier 2)
+There is no third branch to take: ordering is not a judgement call. The priority queue
+(priority + enqueue sequence) is the only producer of "which item is next", and the rule
+table is the only producer of "should this one interrupt that one".
 
-When `delegate.performDeliberation` is available (always in production), the attention controller delegates triage to a full agent session:
+### 21.4 Strict state items are never deferred
 
-1. The agent receives all queued items formatted as a `[DELIBERATION MODE]` prompt.
-2. It uses `handleMessage()` with `scenario: 'deliberation'` — the same code path as chat/task but with restricted tool access (`DELIBERATION_ALLOWED_TOOLS`).
-3. The agent deliberates **as itself** (full system prompt, identity, memory access).
-4. It can handle simple items **inline** (e.g., send a quick notification, post a comment).
-5. It calls `complete_deliberation` with its structured decision.
-6. The attention controller applies the decision: mark inline items completed, defer/drop others, choose the focus item.
-
-**Deliberation is atomic**: yield points are suppressed during deliberation (new mail sets the interrupt signal but is not evaluated until deliberation completes).
-
-**Strict state items are excluded from deliberation (critical safety)**:
-
-Items carrying formal task/requirement/workflow state transitions — collectively **strict state items** (predicate `isStrictStateItem` in `@markus/shared`):
+Items carrying formal task/requirement/workflow state transitions — collectively **strict
+state items** (predicate `isStrictStateItem` in `@markus/shared`):
 - `task_status_update` with `extra.triggerExecution` (formal task execution)
 - `review_request` (review request)
 - `requirement_update` / `workflow_update` with `extra.actionRequired` (closure action)
 
-are **filtered out of the deliberation view entirely**:
+are protected at four points:
 
-1. **They are invisible to the LLM during deliberation** — `performDeliberation` receives only non-strict items; the optionality prompt (`[DELIBERATION MODE]`) and tool docs instruct the agent that `isStrictState: true` items seen via `check_mailbox` may only be reordered, never deferred/dropped/batched/inline-completed.
-2. **They never trigger deliberation** — `needsLLMTriage` returns false when the head or any queued item is strict, so tasks/reviews are processed by the normal single-item execution path with the full tool set (including `task_update` / `task_submit_review` / shell / file).
-3. **Yield-point defer is refused** — if the interrupt evaluator returns `defer` for a strict item, it falls back to the heuristic (high-priority task execution → `preempt` → executed as its own item).
-4. **Mailbox tools refuse them** — `defer_mailbox_item` / `drop_mailbox_item` return an error for strict items (defense in depth), and `complete_deliberation` rejects results that list strict items in `defer/drop/inline/batch`. The orphan-completeness check **excludes** strict items (they are not part of the deliberation view).
-5. **Lost-closure recovery** — if a task execution item ever resurfaces from persistence **without its callback closures** (e.g. deferred before start, then resurfaced after restart), the agent no longer silently completes it: it emits an `agent:incomplete` event with `reason: resurfaced-task-execution-lost-closures`, and the org-manager `TaskService` subscribes to that event and calls `recoverLostTaskExecution(taskId)` — re-dispatches the task via `runTask` (with proper closures) if it is still `in_progress` and has no active execution. This prevents tasks from hanging in `in_progress` forever.
+1. **`defer` is refused and falls back to the table** — if the evaluated decision is
+   `defer` for a strict item, the controller logs the refusal and re-runs
+   `heuristicDecision` (`attention.ts` ~:1442-1465). A high-priority task execution comes
+   back `preempt`, i.e. it is executed as its own item.
+2. **Mailbox tools refuse them** — `defer_mailbox_item` / `drop_mailbox_item` return an
+   error (defense in depth); only `prioritize_mailbox_item` may change their priority.
+3. **Consolidation never swallows them** — `consolidateByEntity()` skips strict items, so
+   they cannot be merged away into another item's context.
+4. **Lost-closure recovery** — if a task execution item ever resurfaces from persistence
+   **without its callback closures** (e.g. deferred before start, then resurfaced after
+   restart), the agent no longer silently completes it: it emits an `agent:incomplete`
+   event with `reason: resurfaced-task-execution-lost-closures`, and the org-manager
+   `TaskService` subscribes to that event and calls `recoverLostTaskExecution(taskId)` —
+   re-dispatches the task via `runTask` (with proper closures) if it is still `in_progress`
+   and has no active execution. This prevents tasks from hanging in `in_progress` forever.
 
-Why this matters: task execution, review, and requirement/workflow finalization must run through their dedicated state machines (`executeTask(taskId, onLog)` with live `onLog`/`cancelToken`/`responsePromise` closures). If they were deferred/dropped/merged/batched by deliberation, the closures are lost with persistence, task logs never land under the task, and the task can remain `in_progress` with nobody working it.
+Why this matters: task execution, review, and requirement/workflow finalization must run
+through their dedicated state machines (`executeTask(taskId, onLog)` with live
+`onLog`/`cancelToken`/`responsePromise` closures). Deferral persists the item and loses the
+closures with it, so task logs never land under the task and the task can remain
+`in_progress` with nobody working it.
 
-### Tool Access During Deliberation
+**Preemption is a pause, not a loss.** When a running item is preempted, the controller
+parks it with `mailbox.deferDequeued(item)`; the payload keeps its `sessionId`, so when it
+resurfaces on the next idle cycle it resumes where it left off (§22). Only an explicit
+cancel resolves an item as `dropped` — and even then it is recorded as a bounce with a
+reason and collected into the catch-all overview (§28), never silently erased.
 
-Defined by `DELIBERATION_ALLOWED_TOOLS` in `@markus/shared`:
+### 21.5 Mailbox management tools
 
-| Category | Tools |
-|----------|-------|
-| Context gathering | `task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`, `team_status`, `recall_activity`, `memory_search` |
-| Inline communication | `notify_user`, `task_comment`, `requirement_comment`, `agent_send_message`, `agent_send_group_message`, `agent_create_group_chat`, `agent_list_group_chats` |
-| Mailbox management | `check_mailbox`, `defer_mailbox_item`, `drop_mailbox_item`, `prioritize_mailbox_item` |
-| Working memory | `notebook_upsert`, `notebook_clear`, `notebook_read` |
-| Memory | `memory_save`, `memory_update`, `memory_update_longterm` |
-| Decision output | `complete_deliberation` |
+The agent manages its own queue with per-item tools (registered in the `mailbox-admin`
+domain, available in every scenario):
 
-**Excluded**: `task_create`, `task_update`, `requirement_propose`, code/shell tools, `spawn_subagent`. These are heavy side-effect tools that belong in the processing phase.
-
-### Agent Mailbox Management Tools
-
-In addition to the batch decision via `complete_deliberation`, agents can manage
-individual mailbox items using dedicated tools:
-
-| Tool | Available In | Purpose |
-|------|-------------|---------|
-| `check_mailbox` | All scenarios | Read-only queue inspection |
-| `defer_mailbox_item` | Deliberation + focused processing | Postpone an item |
-| `drop_mailbox_item` | Deliberation + focused processing | Discard stale item |
-| `prioritize_mailbox_item` | Deliberation only | Re-prioritize item |
-| `notebook_upsert` | All scenarios | Update situational awareness |
-| `notebook_clear` | All scenarios | Clear stale awareness |
+| Tool | Purpose |
+|------|---------|
+| `check_mailbox` | Read-only queue inspection |
+| `defer_mailbox_item` | Postpone an item (optional `defer_minutes`) |
+| `drop_mailbox_item` | Discard a stale item — recorded as a `stale_signal` bounce, not a silent drop |
+| `prioritize_mailbox_item` | Re-prioritize an item (0-4) |
+| `notebook_upsert` | Update situational awareness |
+| `notebook_clear` | Clear stale awareness |
 
 **Safety**: `human_chat` items are protected — they cannot be deferred, dropped,
 or reprioritized by tool calls. **Strict state items** (formal task execution / review /
-requirement·workflow closure actions — see above) are protected too: `defer_mailbox_item` /
+requirement·workflow closure actions — see §21.4) are protected too: `defer_mailbox_item` /
 `drop_mailbox_item` return an error, and only `prioritize_mailbox_item` may change their priority;
 they are ultimately executed one at a time by the normal dequeue path.
 
-**Relationship to `complete_deliberation`**: The individual tools take immediate
-effect. `complete_deliberation` handles remaining items in bulk. They are additive.
+Each tool takes effect immediately on the queue. There is no second, batched interface to
+pair them with — one item, one call, observable in the queue right away.
 
-### DeliberationResult
-
-```typescript
-interface DeliberationResult {
-  processItemId: string;       // Primary item (backward compat)
-  processItemIds?: string[];   // Batch: multiple items to process together
-  batchContext?: string;       // Synthesis/instruction for batch processing
-  deferItemIds: string[];      // Postpone for later
-  dropItemIds: string[];       // Discard (stale/redundant)
-  inlineCompletedIds: string[]; // Already handled during deliberation
-  reasoning: string;
-  situationalAwareness?: string; // Agent-authored metacognitive summary
-  memoryUpdates?: Array<{      // Memory operations applied after deliberation
-    type: 'working' | 'longterm';
-    key: string;
-    content: string;
-  }>;
-}
-```
-
-### Batch Processing
-
-When `processItemIds` contains more than one item, the attention controller dequeues all of them and composes their content into a single LLM session. This is efficient for:
-- Multiple `a2a_message` items from the same channel (already partially merged by dedup)
-- Related notifications about the same project/topic
-- Multiple low-priority items that can be acknowledged together
-
-All batch items share one LLM call. If processing is interrupted (preempt/cancel/timeout), all batch items are requeued.
-
-### Memory Updates During Deliberation
-
-Deliberation can produce `memoryUpdates` — both working memory (volatile, per-session) and long-term memory (curated, persisted to MEMORY.md). This enables the agent to:
-- Record team decisions observed in merged messages
-- Note user preferences inferred from multiple interactions
-- Build context continuity across processing cycles
-
-Tools `memory_save` and `memory_update_longterm` are also available during deliberation for immediate effect.
-```
-
-### Working Memory Injection
+### 21.6 Notebook (keyed working memory)
 
 The agent maintains a **keyed working memory store** (`workingMemory` Map) that
 replaces the former `currentCognition` string. Each entry has:
-- A key (agent-chosen label, e.g., "deliberation", "task-priorities")
+- A key (agent-chosen label, e.g., "task-priorities")
 - Content text
 - Update timestamp
 
-Working memory is populated from three sources:
-1. **Deliberation**: `situationalAwareness` → key `"deliberation"`
-2. **Triage**: reasoning → key `"triage-decision"`
-3. **Agent tools**: `notebook_upsert` / `notebook_clear`
+Entries have exactly two writers: the agent itself through `notebook_upsert` /
+`notebook_clear`, and a one-shot import of the retired `state.md` (`legacy-state` key).
+The former machine-written `deliberation` / `triage-decision` keys disappeared with the
+mechanisms that produced them — nothing writes a decision summary into the notebook behind
+the agent's back.
 
 All entries are injected into every system prompt as a `## Notebook` block with
 age labels per entry. (The internal field is still named `workingMemory`; the prompt
 heading was renamed to `## Notebook`, so the old name survives only in code.) The agent decides what to keep, update, or expire.
 
-### Mini Triage Loop (Fallback)
-
-When `performDeliberation` is unavailable, the system falls back to the legacy mini triage loop:
-- Triage LLM uses the agent's name and role in its system prompt.
-- Can call tools from `TRIAGE_ALLOWED_TOOLS` (including `recall_activity`, `memory_search`) up to `TRIAGE_MAX_TOOL_ITERATIONS` (6) rounds.
-- Returns a structured JSON decision (same as `TriageResult`).
-
-### Key Methods
+### 21.7 Key methods
 
 | Method | Location | Purpose |
 |--------|----------|---------|
-| `performDeliberation()` | `agent.ts` | Full-session deliberation via handleMessage(scenario='deliberation') |
-| `applyDeliberationResult()` | `attention.ts` | Applies inline/defer/drop/choose from deliberation |
-| `complete_deliberation` (tool) | `agent.ts` executeTool | Captures structured decision during deliberation |
-| `applyTriageResult()` | `attention.ts` | Applies defer/drop/choose from mini triage (fallback) |
-| `performTriage()` | `attention.ts` | Mini triage loop (fallback path) |
-| `buildTriagePrompt()` | `attention.ts` | Constructs the triage prompt with candidates + context |
-| `consolidateByEntity()` | `mailbox.ts` | Merges items sharing same taskId/requirementId (cross-type) |
-| `updateCognitionFromDeliberation()` | `agent.ts` | Writes deliberation `situationalAwareness` into `workingMemory` under key `"deliberation"` |
-| `evaluateWithLLMFallback()` | `attention.ts` | Heuristic-first interrupt decision with optional LLM fallback |
-
-### Triage Prompt Identity
-
-Both deliberation (Tier 2) and the mini triage loop (fallback) use first-person perspective: "You are {agentName}." The agent deliberates **as itself** with its role context, not as an external "attention manager."
+| `heuristicDecision()` | `attention.ts` (~:1515) | The entire decision surface: top-to-bottom rule table, first match wins |
+| `evaluateInterrupt()` (delegate) | `agent.ts` | Returns `heuristicDecision(current, new)` unchanged — no model call |
+| `consolidateByEntity()` | `mailbox.ts` | Merges items sharing same taskId/requirementId (cross-type); skips strict state items |
+| `purgeStaleItems()` | `mailbox.ts` | Drops expired informational items before consolidation |
+| `deferDequeued()` | `mailbox.ts` | Parks a preempted item so it can resume; only an explicit cancel drops |
+| `recordDecision()` | `attention.ts` | Writes the `attention:decision` ledger row (reasoning + queue context) |
+| `defer_mailbox_item` / `drop_mailbox_item` / `prioritize_mailbox_item` | `tools/mailbox-tools.ts` | Per-item queue management; refuse strict state items |
 
 ---
 
@@ -1773,30 +1457,47 @@ Deferred mailbox items are automatically resurfaced when the agent is idle:
 - **→ `review`**: Notifies reviewer (agent via mailbox, or human via approval request)
 - **Terminal states**: Checks and unblocks dependent tasks
 
-Agents do NOT need to take action on these notifications — they serve as episodic memory and triage decision context. Agents should NOT send A2A messages to duplicate what the side-effect system already does.
+Agents do NOT need to take action on these notifications — they serve as episodic memory and processing context. Agents should NOT send A2A messages to duplicate what the side-effect system already does.
 
-## 24. Cognitive Science Foundation
+## 24. Why a Rule Table (and not a model)
 
-The three-tier triage model (§21) is grounded in established cognitive science:
+§21's decision surface is a lookup table on purpose. The earlier three-tier framing
+(Kahneman's System 1 / System 2) described a mechanism that no longer exists in the code:
+there is one tier, it costs zero tokens, and it is decidable from the queue alone.
 
-| Theory | Application in Markus |
-|--------|----------------------|
-| **Dual Process Theory** (Kahneman, 2011) | Tier 0/1 = System 1 (fast, automatic); Tier 2 = System 2 (slow, deliberative) |
-| **Situational Awareness** (Endsley, 1995) | Full deliberation achieves Level 2+3 SA (comprehension + projection) via memory access |
-| **Working Memory / Episodic Buffer** (Baddeley, 2000) | `recall_activity` and `memory_search` serve as the episodic buffer linking current stimuli to long-term memory |
-| **Metacognition** (Flavell, 1979) | `situationalAwareness` field in `DeliberationResult` enables agent self-monitoring |
-| **Prospective Memory** (Einstein & McDaniel, 2005) | During deliberation, agents can check pending commitments and proactively notify users |
-| **Cognitive Load Theory** (Sweller, 1988) | Unified identity in deliberation eliminates task-switching cost between "triage assistant" and "agent self" |
+| Concern | How the rule table answers it |
+|--------|------------------------------|
+| **Dual Process Theory** (Kahneman, 2011) | The fast path *is* the only path — an interrupt is decided by priority and type, never by reflection |
+| **Determinism** | Same queue state ⇒ same decision; no sampling, no model variance, no unrepeatable ordering |
+| **Observability** | Every decision lands in the `attention:decision` ledger with the rule's reasoning and the queue context that produced it |
+| **Interaction cost** | 0 model calls and 0 added latency per interrupt — the agent's budget goes to the work, not to deciding what the work is |
+| **Working Memory / Episodic Buffer** (Baddeley, 2000) | The `## Notebook` block carries keyed, agent-authored context across processing cycles |
+| **Prospective Memory** (Einstein & McDaniel, 2005) | `rest(wakeOn)` declares a wait and gets a turn back when it matches or expires — the mailbox, not a poll loop, is the reminder |
 
 ### Design Rationale
 
-- **Why not always use Tier 2?** Cost and latency. Tier 2 deliberation costs 5-15K tokens vs 0 for Tier 0. Now with `TRIAGE_BACKLOG_THRESHOLD = 2`, deliberation fires whenever 2+ items are queued (non-user head). The cost increase is acceptable because:
-  - (a) most single-item processing still takes the fast path,
-  - (b) deliberation with 2-3 items is much cheaper than with 5+, and
-  - (c) the agent can now use `drop_mailbox_item` during deliberation to clean up before committing to expensive processing.
-- **Why allow inline handling?** Cognitive science shows humans handle simple items (quick email replies) during triage rather than queuing them separately. This reduces total cognitive load and latency.
-- **Why suppress yield points during deliberation?** Deliberation is a metacognitive process — interrupting it would break the agent's reasoning coherence (analogous to interrupting someone mid-thought during planning).
-- **Why inject working memory into future prompts?** This implements **metacognitive regulation** — keyed summaries (deliberation, triage, agent-authored entries) persist across processing contexts, maintaining behavioral consistency.
+- **Why not let a model reorder the queue?** Because it is a decidable question. Priority +
+  enqueue sequence already produce the order; paying a full tool-enabled turn for it bought
+  nothing and made the order unobservable (the decision only landed in a log). The original
+  motivation — several messages about the same entity — is absorbed structurally by the
+  merge layers (enqueue-time dedup, coalescing window, `consolidateByEntity`), not by a
+  smarter judge.
+- **Why not let a model classify interrupts?** Same reason: "is a `human_chat` more
+  important than a status update?" is answered by the rule table without inference. An
+  interrupt that costs a model call is an interrupt that can be delayed by the very work it
+  is meant to interrupt.
+- **Why keep the per-item tools?** `defer` / `drop` / `prioritize` are still the agent's own
+  judgement about its queue — but expressed one item at a time, immediately, and visibly in
+  the queue. That is the opposite trade-off from a bulk model decision: local, cheap,
+  auditable.
+- **Why does `preempt` defer instead of drop?** Because "interrupted" is not "finished":
+  the paused item keeps its session and resumes (§22).
+- **Why is `defer` refused for strict state items?** Persistence loses the closures a task
+  execution runs on; a resurfaced execution cannot actually execute and the task hangs in
+  `in_progress` (§21.4).
+- **Why inject the notebook into future prompts?** This is **metacognitive regulation** —
+  keyed, agent-authored summaries persist across processing contexts and keep behaviour
+  consistent without a machine-written decision trail.
 
 ---
 
@@ -1818,7 +1519,7 @@ The three-tier triage model (§21) is grounded in established cognitive science:
 | Notification bell | **Yes** — `HITLService.notify()` creates persistent notification |
 | Target specific user by ID | **Yes** — `target_user_id` parameter (optional) |
 | Fallback when no target specified | Uses `currentInteractingUserId` (last human who chatted), then team owner |
-| Initiate first-ever conversation with user | **Yes** — via `target_user_id` during deliberation or heartbeat |
+| Initiate first-ever conversation with user | **Yes** — via `target_user_id` during any processing turn |
 
 **Flow**:
 ```
@@ -1846,11 +1547,10 @@ Agent calls notify_user(title, body, target_user_id?)
 | Message visible to all channel members | **Yes** — persisted + WebSocket broadcast |
 | Triggers other agents in channel | **Yes** — enqueues `a2a_message` to peer agents |
 | Create new group chat | **Yes** — `agent_create_group_chat` tool |
-| Available during deliberation | **Yes** — in `DELIBERATION_ALLOWED_TOOLS` |
 
 ### 25.3 Agent-to-Agent (A2A)
 
-A2A messages route through persistent DM channels (`dm:a2a:{sorted_ids}`) — see §11.1.
+A2A messages route through persistent DM channels (`dm:a2a:{sorted_ids}`) — see [a2a-communication.md](./a2a-communication.md) §11.1.
 
 | Tool | Capability |
 |------|-----------|
@@ -1858,37 +1558,32 @@ A2A messages route through persistent DM channels (`dm:a2a:{sorted_ids}`) — se
 | `agent_broadcast_status` | Status update to all colleagues (lightweight, no LLM) |
 | `agent_delegate_task` | Formal task delegation with protocol |
 
-### 25.4 Proactive Messaging During Deliberation
+### 25.4 Proactive Messaging During Focused Processing
 
-During full-session deliberation (Tier 2), agents can handle simple items inline by calling communication tools directly:
+There is no separate decision turn in which to speak: every proactive message is sent from
+the item's own processing turn, where the agent already has memory, activity recall and the
+task/requirement tools.
 
 ```
-Deliberation session starts (5 items queued)
+Focused turn starts (item #1 dequeued)
   → Agent calls memory_search to check commitments
-  → Agent calls notify_user(target_user_id="usr_alice", ...) — handles item #3 inline
-  → Agent calls task_comment(...) — handles item #5 inline
-  → Agent calls complete_deliberation({
-      process_item_id: "item_1",
-      inline_completed_ids: ["item_3", "item_5"],
-      defer_item_ids: ["item_4"],
-      drop_item_ids: ["item_2"],
-      reasoning: "Item 1 is an urgent review request; handled notifications inline"
-    })
+  → Agent calls notify_user(target_user_id="usr_alice", ...)  — the notification this item called for
+  → Agent calls task_comment(...)                             — records the finding on the task
+  → Agent calls defer_mailbox_item("item_4", reason)          — parks unrelated work (refused for strict items)
 ```
 
-This collapses what would have been 5 separate triage+process cycles into a single deliberation + 1 processing cycle.
+One item, one turn, one LLM call. Work that needs its own turn gets its own turn — that is
+what the queue is for, and there is no protocol by which the agent can declare other items
+"handled inline".
 
 ---
 
 ## 26. Future Work
 
-- **Proactive messaging scheduler** *(implemented)*: Agents schedule time-based follow-ups via `schedule_wakeup` (one-shot or recurring); a coarse per-agent sweep fires due wakeups into the mailbox. See §11.3.
+- **Proactive messaging scheduler** *(implemented)*: Agents schedule time-based follow-ups via `schedule_wakeup` (one-shot or recurring); a coarse per-agent sweep fires due wakeups into the mailbox. See [a2a-communication.md](./a2a-communication.md) §11.3.
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Decision pattern learning**: Use long-term decision history to adaptively tune heuristic thresholds.
-- **Deliberation cost optimization**: Implement adaptive deliberation depth — use cheaper models or shorter budgets for simple multi-item scenarios, full budget only for genuinely complex triage.
 - **Working memory persistence**: Persist keyed working memory across agent restarts (currently volatile).
-- **Adaptive deliberation model selection**: Use cheaper models for simple 2-item queues; reserve fuller budgets for genuinely complex triage.
-- **Recursive deliberation**: Allow deliberation to trigger sub-deliberation for complex multi-step planning (with depth limits).
 
 ---
 
@@ -1910,10 +1605,10 @@ This collapses what would have been 5 separate triage+process cycles into a sing
 
 ### 27.2 Known gaps (no-timeout awaits)
 
-- **GAP-A — triage deliberation is NOT inside the backstop**: `deliberate` (Tier-2 full
-  deliberation) can await the model with no timeout — the **closest existing path to a
-  permanent block**. Mitigation today: only reachable with a non-empty queue; still, it
-  deserves a timeout + fail-loud.
+- **GAP-A — ~~triage deliberation is NOT inside the backstop~~ (stale, closed)**: the
+  Tier-2 decision-model await was deleted with LLM triage (§21). The decision path is a
+  pure rule table with no model call, so the only unbounded model work in a mailbox turn
+  is the item's own processing turn — covered by the 45-min watchdog above.
 - **GAP-B — ~~task-queue has no per-task timeout~~ (stale, closed)**: `TaskService.checkTimeouts()`
   enforces `task.timeoutMs` against `startedAt` and fails the task with an explicit message.
   Do not spend time "adding" this — it exists.
@@ -1930,6 +1625,429 @@ visibility-first invariant as §4.1 — a failure must never look like success.
 ### 27.4 Design intent
 
 The chain is allowed to **stall (bounded) but never to block silently forever**. Any new
-`await` inserted into the main loop or attention/triage path must be either (a) bounded by
+`await` inserted into the main loop or attention path must be either (a) bounded by
 a timeout/backstop, or (b) explicitly justified as blocking by design. Watchdog + backstop
 values are single-source constants in `packages/core/src/` — do not fork them per caller.
+
+---
+
+## 28. Addresses, Envelopes and Bounces
+
+> Last updated: 2026-11-12. This is the **canonical description of current behaviour**.
+> Execution narrative and evidence live in
+> [records/cut6-mailbox-address-envelope-design-2026-11-12.md](../records/cut6-mailbox-address-envelope-design-2026-11-12.md)
+> and [records/cut6-c4-verification-2026-11-12.md](../records/cut6-c4-verification-2026-11-12.md).
+
+### 28.1 The problem this layer removes
+
+Before this layer, "who is this signal from, and who is it for" existed only as an
+**inference** over `payload.extra` flags and a handful of `sourceType === '…'` branches,
+and a signal that could not be routed was written as `status = 'dropped'` — a terminal
+state with no reason field, no echo, and no reader. The production DB held ≥28,621 such
+rows. Structure was being derived from payload; nothing was queryable.
+
+Three structural rules replace that:
+
+1. **Structure is never inferred from payload.** Identity is a column, not a guess.
+2. **A signal that cannot be delivered is never silently discarded.** It becomes a
+   *bounce*: a row with a structured reason, collected into a catch-all overview that a
+   human or agent can claim.
+3. **One fact, one writer.** One address format writer, one envelope builder, one
+   resolver, one status-transition execution point.
+
+### 28.2 Address format (v1)
+
+An internal mailbox address is `<local>.<org>@markus.global`: exactly one dot, lowercase
+ASCII `[a-z0-9-]`, no leading/trailing/doubled hyphens, `local` ≤ 32 chars, `org` ≤ 30.
+The dot count defines the namespace: **0 dots = platform-reserved**, **1 dot = org**,
+**≥2 dots = external domain (kept opaque)**.
+
+| Rule | Enforcement point |
+|---|---|
+| `formatAddress()` / `parseAddress()` are the **only** format entry points | `packages/shared/src/address.ts`; no other module may `split('.')` an address |
+| Reserved names (platform + ops/host names) are a **closed set** | `PLATFORM_RESERVED_ADDRESSES` / `LOCAL_RESERVED` / `ORG_RESERVED`, locked by tests |
+| Out-of-range input is **rejected with an actionable hint**, never silently rewritten | `AddressResult` carries `{ ok: false, reason, hint }` |
+| A string that looks like an internal address is **not** an identity | `parseAddress()` returns `MailAddressRef`, which cannot produce `agent` / `im` |
+| Human `users.email` may not be an org-format `markus.global` address | single guard in `SqliteUserRepo.assertHumanEmail()` (all three write paths) |
+
+`AddressRef` (the envelope's `from`/`to` type) is a discriminated union wider than
+`MailAddressRef`: it adds `{ kind: 'agent', agentId }` and
+`{ kind: 'im', platform, nativeUserId }` — **delivery-party identities, not mailboxes**.
+`fromVerified` rides on the envelope, not on the address object, so an external string
+can never be mistaken for a verified internal identity.
+
+### 28.3 Bindings and the resolver
+
+Addresses are bound to targets in `channel_bindings` (`address` + `revoked_at`, plus the
+`address_bindings` view). The unique index is
+`uq_channel_bindings_address_active ON channel_bindings(address) WHERE revoked_at IS NULL`
+— **`org_id` is deliberately absent from the key**: the org slug is already encoded in the
+address, and scoping by the *current* org would make `cto.acme@markus.global` unresolvable
+from any other org's instance. Revoking stamps `revoked_at`; rows are never deleted.
+
+**C10-A slug ownership.** `organizations.org_slug` (nullable, partial unique index
+`uq_organizations_org_slug`) is the registry fact "which org owns this slug". `bind()`
+checks the address's org segment — taken from the single parser, never a second split —
+against the binding org's declared slug: no declared slug ⇒ `bounced/org_slug_unset`
+(fail closed), mismatch ⇒ `bounced/org_slug_mismatch` (anti-squatting: the global unique
+index prevents collisions, not squatting). Slugs are owned by markus.global:
+`createOrg` and the one-time upgrade backfill share the single derivation point
+`registryOrgSlug(id) = local-<hash>` — **never derived from `name`** — and the real
+slug arrives from the Hub (`bindHubOrg` / `syncHubOrgIdentity`). There is deliberately
+no local write entry point: global uniqueness can only be adjudicated by the Hub's
+unique index. `revoke()` deliberately has no ownership
+gate: releasing your own historical binding must not be locked out by registry state.
+The `address_bindings` view is **recreated on every init** (`DROP VIEW IF EXISTS` +
+`CREATE VIEW`; a view holds zero rows, so this is non-destructive) and exposes `kind`
+(frozen closed set `{agent, role, platform}`, metadata only); `bind()` writes
+`kind='agent'`. Bind/revoke record `status_transitions` rows with `entity_type='address'`
+through the single transition execution point.
+
+`resolveEnvelopeTarget(envelope, catchAllOwner, lookup?)` is the **single resolver** and
+reads the envelope only — its signature makes `payload` / `sourceType` physically
+unreachable (rule 1 expressed as a type boundary, not a comment). It returns exactly two
+shapes: `{ matched: true, targetRef, agentId }` or
+`{ matched: false, reason, catchAll }`. There is no third "quietly undefined" outcome.
+
+| `to.kind` | Behaviour |
+|---|---|
+| `agent` | Direct internal delivery — the target identity is already given |
+| `markus` | Look up the address book; hit ⇒ unique active target, miss ⇒ `no_active_target` |
+| `platform` / `external` / `im` | Not a delivery recipient in v1 ⇒ `unresolved_address` (platform addresses are senders, external mail is not implemented, `im` is a sender identity) |
+
+### 28.4 The delivery envelope
+
+Every inbound signal carries a `DeliveryEnvelope` persisted in `mailbox_items.envelope`
+(JSON). `buildDeliveryEnvelope()` in `packages/shared/src/mail.ts` is the **only** shape
+writer; no module may hand-write the object literal.
+
+| Field | Role |
+|---|---|
+| `from` / `to` | `AddressRef` — identity, queryable |
+| `messageId` | Idempotency identity. Projected into `mailbox_items.message_id` because uniqueness must be adjudicated by an **index**, not by parsing a JSON blob |
+| `intent` | `deliver` \| `trigger_execution` \| `action_required` — promoted out of `payload.extra.{triggerExecution,actionRequired}` |
+| `signalClass` | `chat` \| `a2a` \| `callback` \| `governance_event` \| `record` \| `system` — assigned by the single routing decision |
+| `externalThreadRef` | Causal chain (In-Reply-To / References). **Read-only**: never routes, never dedups |
+| `auth` / `replyTo` / `workUnitRef` | Reserved slots, **always `null`** until a writer exists. C10-A froze `auth` as four nullable fields `{spf, dkim, dmarc, verified}`; values are written only by an adapter that actually verifies (C10-D). `auth.verified` is the authentication verdict — not `fromVerified` (the routing trust bit) |
+
+Reserved slots are written as explicit `null`s rather than omitted: omitting makes the
+JSON shape vary with the input, which forces a branch per shape on the read side.
+`parseEnvelope()` returns `undefined` for NULL / empty / malformed JSON and **never
+synthesises** a plausible-looking envelope.
+
+Three delivery points supply only what they actually know; assembly happens once, in
+`AgentMailbox.enqueue()`:
+
+| # | Delivery point | Supplies |
+|---|---|---|
+| 1 | IM inbound (`cli/src/commands/start.ts` `messageRouter.setAgentHandler`) | `from = im:<platform>:<senderId>`, `messageId = message.id` (adapter re-delivery lands one row) |
+| 2 | Gateway `createTask()` (`org-manager/src/api-server.ts`) | `from = agent:<createdBy>`, `messageId = gateway-task:<taskId>` |
+| 3 | A2A `AgentDelivery.deliver()` | `from = agent:<fromAgentId>`, `messageId = deliveryId`, `externalThreadRef = chainId` |
+
+A2A deliberately does **not** dedup on `chainId`: two different messages in the same chain
+at the same hop are both legitimate, and deduping on the chain would silently swallow one.
+
+### 28.5 Bounces and the catch-all overview
+
+`dropped` is **no longer in the status value domain**. Historical rows are read-only and
+are normalised to `bounced` on the read path by `normalizeSignalStatus()`; no `UPDATE` is
+ever run against them.
+
+```
+queued ─▶ processing ─▶ completed | deferred | merged
+   │            │
+   └────────────┴──▶ bounced ──▶ catch_all ──▶ queued (claimed by a human/agent)
+                        ▲            ▲
+                   reason + why   bounce_target
+```
+
+`drop_reason` is mandatory and draws from a **closed set** — six producible reasons plus
+one reserved:
+
+| Reason | Meaning |
+|---|---|
+| `unresolved_address` | The `to` kind is not a delivery recipient in v1 |
+| `no_active_target` | Org address has no active binding |
+| `lease_expired` | Claim expired mid-flight |
+| `duplicate_message_id` | Same `(agent, messageId)` delivered twice |
+| `stale_signal` | Superseded / TTL-expired / deliberately discarded. **Only** this meaning |
+| `payload_invalid` | The signal cannot be read as a turn at all — request-shape validation rejected it (`SignalPayloadInvalidError`) |
+| `processing_error` | The platform threw while handling a signal it *could* read. Not the sender's fault, and not a decision: this is the platform's own regression surfaced as data |
+| `dsn_bounce` *(reserved)* | External DSN; shape fixed, **never produced** in v1 |
+
+**Each reason names one actor and one action** — that is the whole point of the closed set, and the
+criterion used to decide what belongs in it:
+
+| Reason family | Who acts | Action |
+|---|---|---|
+| `unresolved_address`, `no_active_target` | operator / org admin | fix the binding |
+| `payload_invalid` | sender / ingest site | fix the payload |
+| `duplicate_message_id` | sender | none (idempotency worked) |
+| `lease_expired` | platform | observe (self-heals) |
+| `processing_error` | platform | fix the code; a rising rate is a regression signal |
+| `stale_signal` | **nobody** | it is a *decision*, not a failure |
+
+`processing_error` exists because without it "the platform broke" had no name and kept being
+recorded as `stale_signal` — which asserts that someone decided the signal was not worth handling.
+Recording "we failed" as "this was worthless" is the same lie as the C5 defect, one layer down.
+`stale_signal` is therefore narrowed to exactly one meaning: a human or agent deliberately decided
+not to handle this signal. Both directions are pinned by tests — the failure family may not write
+`stale_signal`, the decision family may not write `processing_error`.
+
+`payload_invalid` exists because the first real-instance probe exposed a lying reason:
+a chat request missing `payload.content` was recorded as `stale_signal` under the event
+name `duplicate_delivery_dropped`. A reason that lies is worse than no reason — the
+overview aggregating by reason conflated "expired" with "malformed". The observability
+event is `mailbox.signal_bounced`.
+
+**The classification predicate is a fact, not an exception class.** A second
+real-instance probe (2026-11-13) caught the first fix still lying on one path: the same
+missing-`content` request this time threw a plain `TypeError` (`… reading 'trim'`) from a
+line *earlier* than the validation layer, so an `instanceof SignalPayloadInvalidError`
+check returned `undefined` and `drop()` fell back to its `stale_signal` default. In other
+words "what reason gets recorded" depended on **which line threw first** — coincidence,
+not a criterion. The projection is now
+`bounceReasonOfFailure(err, item)`: any failure on an item whose payload cannot be read
+as a turn (`isPayloadUnreadable()`, the *same* predicate `turnContentOf()` validates
+with) is `payload_invalid`. The reverse edge stays closed: an unknown exception on a
+**readable** payload is not projected, so `payload_invalid` cannot become the next
+catch-all bucket, and no exception at all yields no failure-family reason (deliberate
+drops stay `stale_signal`).
+
+`bounceSignal()` performs two real transitions through the single execution point
+(`AgentMailbox.updateSignalStatus()`): `X → bounced` (the fact that delivery failed) and
+`bounced → catch_all` (the fact that it is now nobody's to collect yet). Collapsing them into
+one state would make "recorded but not yet collected" inexpressible.
+
+### 28.6 Invariants (guarded by behavioural tests)
+
+| # | Invariant | Test |
+|---|---|---|
+| I1 | At most one active target per address | Concurrent binds ⇒ exactly one success; the partial unique index is the backstop |
+| I2 | `resolve()` never reads payload | Mutating `payload.extra` leaves the resolution unchanged |
+| I3 | No silent discard | A recipient-less signal yields a `bounced` row with a non-empty reason, visible in the catch-all overview; `dropped` delta = 0 |
+| I4 | All three links carry an envelope | Triggering chat / task / a2a yields `envelope IS NOT NULL` on each row |
+| I5 | Binding someone else's address is refused | Binding as another identity ⇒ rejection with an actionable hint |
+| — | Envelope uniqueness is index-adjudicated | `uq_mailbox_agent_message ON (agent_id, message_id) WHERE message_id IS NOT NULL AND status <> 'bounced'` (bounce rows record a *failed* delivery, not a second copy) |
+
+### 28.7 Tool surface
+
+| Tool | Semantics |
+|---|---|
+| `bind_address` | Claim / rebind an address; omitting `targetRef` means self. Binding another agent's address is refused; the org segment must be your org's declared `org_slug` (C10-A anti-squatting) |
+| `address_list` | Read own (optionally org-wide) active bindings |
+| `address_revoke` | Stamp `revoked_at` on one's own binding |
+| `message_route` | Read one signal's resolution, `drop_reason` and catch-all bucket — the取证 path for I3 |
+| `catch_all` | Read/claim the catch-all overview |
+
+Failure returns are written from the caller's point of view: a resolution failure returns
+`{ status: 'bounced', reason, catchAll }` rather than only logging — the agent cannot see
+logs, it can only model from the return value.
+
+### 28.8 Migration and rollback
+
+Idempotent `ALTER TABLE … ADD COLUMN` for every new column (`mailbox_items.envelope`,
+`work_unit_ref`, `signal_class`, `intent`, `message_id`, `drop_reason`, `bounce_target`;
+`channel_bindings.address`, `revoked_at`; C10-A: `organizations.org_slug`,
+`agents.agent_alias`). The `address_bindings` view is recreated on every init so
+upgraded DBs expose `kind` (zero rows — non-destructive). **No backfill except one
+explicit write**: when the upgrade adds `org_slug`, existing orgs receive `org_<id>`
+via the single derivation point (never from `name`), once; all other historical rows
+keep `NULL` and the read path warns and falls back to
+`agent_id`. Old rows without `intent` / `round` are decoded once at the persistence →
+memory boundary (`rehydrateStructuredFields()`); that shim's removal condition is
+"`envelope IS NULL` rows = 0". Rollback is `git revert` per card; the resolver has an
+off-switch that restores the legacy `explicitAgentId → channel → instance` chain.
+
+### 28.9 Explicit boundaries (what v1 does not do)
+
+No mail send/receive, no DNS/MX/SPF/DKIM/DMARC, no cross-org delivery, no alias
+self-service. C10-A built the `org_slug` / `agent_alias` columns (nullable + unique
+constraints, slug ownership enforced at bind); `role_slug` stays a reserved name with
+no table. `agent_alias` has **no writer yet** — the issuance/revocation lifecycle
+arrives with a later card; the envelope `auth` slot stays `null` until an adapter
+actually verifies (C10-D). `work_unit_ref` is a column with a **write count of zero** — the only writer
+arrives with WorkUnits, and creating a reference before the entity would be a dangling
+reference by construction.
+
+## 29. External Source Adapters (Webhook / RSS)
+
+C10-B adds the first external-source ingestion path: events that originate outside the
+platform enter the mailbox as `external_signal` items under the same identity discipline
+as internal chains. Two consumers ship first — webhook and RSS — chosen because they need
+no DNS change and no auth chain: everything arrives `verified=false`, so the observe
+ceiling is exercised from day one.
+
+### 29.1 Adapter contract (translate, never route)
+
+`ExternalSourceAdapter` (comms `external-source.ts`) translates a raw external event into
+a delivery envelope and nothing else. It does not resolve recipients, does not dedupe,
+does not write storage. The envelope shape:
+- `from: AddressRef{kind:'external', raw, verified:false}` — the external sender is never
+  trusted; `verified` stays false until an adapter actually verifies (C10-D).
+- `to`: the resolved internal address (the bound agent).
+- `messageId`: the idempotency key supplied by the source.
+- `external_thread_ref`: opaque, read-only; it never routes and never dedupes.
+- `auth: null` — the envelope auth slot is untouched (single-writer rule, C10-A).
+
+### 29.2 Identity: one constructor, ensured before enqueue
+
+External signals get their `work_unit_ref` from the single `WORK_UNIT_REF.external`
+constructor in shared `work-unit.ts` — shape `external:<sourceId>:<messageId>`, idempotent
+per `messageId`. The ref is ensured **before** enqueue at the single ingest point;
+`identity-single-constructor.guard.test.ts` bites on any second construction point. The
+fail-closed assembly guard rejects a ref-less external enqueue. No adapter gets a private
+write path and no adapter may resurrect a "link later" token.
+
+### 29.3 Single ingest point + ceiling
+
+`ExternalSourceService` (org-manager) is the only ingest point: it constructs the ref,
+applies the signal-level ceiling, and enqueues. The ceiling is a single predicate: a
+`verified=false` external signal cannot create a task or send a message (behavior test
+bites: flip the ceiling → red). Adapters translate; the service decides.
+
+### 29.4 Kill switch (durable, read fresh)
+
+Each source has its own `enabled` column in the `external_sources` table (storage). The
+ingest path reads `enabled` fresh from the DB on every event — not an in-memory flag — so
+toggling a source off stops ingestion immediately and the disabled state survives a
+process restart (post-#474 durable-store pattern). Going offline never drops already-queued
+items.
+
+### 29.5 Idempotency + overview
+
+A duplicate `messageId` is bounced (`duplicate_message_id`) and produces exactly one
+mailbox item and one `work_units` row. External work units are identity anchors
+(`status=idle`), visible via `GET /api/agents/:id/work-units?status=idle`; they are not
+`running` turns. The L5 tool face (`external_source_register` / `list` / `toggle`, mirroring
+address-tools) plus `bind_address` lets an agent self-bind and register a source; full
+autonomous next-step observation is the post-B L5 gate.
+
+### 29.6 Worklog entity: the envelope is the declaration
+
+Owner-visible defect (2026-11-26): every C10 signal landed in the overview's "history"
+bucket instead of a conversation. Root cause was **not** the frontend and **not** a missing
+field at ingest — the delivery address was *already* written by the single ingest point into
+`mailbox_items.envelope` (`to.address`). The resolver (`org-manager/worklog-entity.ts`,
+branch ⑥) only read `payload.extra.channelKey`, which is the **IM gateway's** declaration;
+C10 never writes that key, so resolution returned `null` → frontend "history".
+
+Contract: **one fact, one writer, one reader.** Two entrances declare the conversation key
+in their own shape, and the resolver reads whichever is present:
+
+| Entrance | Declaration | Stable across messages |
+| --- | --- | --- |
+| IM gateway (Feishu/Telegram/…) | `payload.extra.channelKey` (`im:<bot>:<scope>:<chat>`) | yes |
+| C10 external source (webhook/RSS) | `envelope.to.address` (`kind='markus'`) | yes — one address = one conversation |
+
+Do **not** "fix" this by also writing `channelKey` at the C10 ingest point: that would be a
+second writer for a fact the envelope already carries, and the two would drift.
+`workUnitRef` is a **per-message** idempotency key and can never be reverse-parsed into a
+conversation — reading a declaration is the only correct path.
+
+Two semantics that look like defects but are contracts (both cost a wrong defect report):
+
+1. **`catch_all` rows carry NULL `work_unit_ref` / `message_id` projections.** The envelope
+   retains both. Evidence queries must therefore go by `envelope` (or by the returned
+   `itemId`) — a `work_unit_ref LIKE …` probe reports a false zero.
+2. **Bounced rows do not occupy the `messageId` unique key** (predicate `status <> 'bounced'`,
+   pinned by `storage/test/mailbox-envelope.test.ts`). Replaying one `messageId` against an
+   unbound address legitimately appends another bounce row: once the address is later bound,
+   the same `messageId` must still be deliverable. A bounce row holding the key would block
+   that redelivery forever.
+
+Real-instance readings (2026-11-26, live DB, agent `agt_b56cd…`): 30 `external_signal` rows →
+**0 unresolved**, grouped into 2 address conversations (23 + 7). Unbound-address path: 20
+webhook posts → 20 `bounced/no_active_target` rows collected under
+`bounce_target=catchall:agt_b56cd…`, each retaining its own `messageId` in the envelope.
+Note the HTTP status is only an ACK — `200` with `{"status":"bounced"}` in the body is a
+bounce, not an ingest; discarding the body (`curl -o /dev/null`) reads it as success.
+
+**L5 end-to-end gate: all five conditions PASS** (verified 2026-11-26 on the live
+instance). The gate needs: self-bind without UI, first real signal received, a
+**proposed next step**, a `work_units` row, and a `facts` row. Conditions 1/2/4 were
+confirmed in the first round; conditions 3 and 5 were confirmed in a second round
+with a signal that actually demanded a next step. The agent did not restate the
+input — it **rejected it on evidence**: the incoming item claimed "15s single take,
+cost −40%", the vendor's own pages say "30s single take, up to 50 omni-modal
+references, region-level editing" with no official 40% figure, and the release date
+conflicts (official 2026-07-31 vs the Seed Chinese homepage 2026.11.16). It named
+the next step ("verify first-party sources before the item enters the topic
+pipeline") and wrote `fact_d1c34d0a461491a2981fb36c`, whose `work_unit_ref` is
+exactly the signal's ref. Turn telemetry: ≈70 s, 340 `execution_stream_logs` rows.
+Signals also group into one address conversation instead of "history", whose newest
+row remains 2026-11-14.
+
+Caveat, recorded rather than glossed: the receiving agent was `Secretary`, not a
+"content agent" as the gate's wording asks — the content agents are stopped and the
+platform refuses to wake them. The structural conditions are agent-agnostic and were
+genuinely exercised; the content-agent qualifier is not satisfied by this run.
+Readings: `docs/records/c10-l5-gate-verification-2026-11-26.md`.
+
+### 29.7 Boundaries
+
+No mail send/receive, no DNS/MX/SPF/DKIM/DMARC (C10-D). `verified=false` is observe-only;
+the envelope `auth` slot stays `null` until an adapter verifies. Real-instance probe
+readings (second instance, HOME redirect, port 18731) are recorded in the C10-B delivery
+report; the traffic gate (≥1 real event → envelope row → resolving work_unit_ref →
+overview visible) is satisfied for both webhook and RSS.
+
+### 29.8 Organization ingress policy (three states, one reader)
+
+`organizations.external_ingress ∈ {off, observe, accept}`, default **`off`**.
+
+| state | inbound | owes a turn | intent floor |
+|---|---|---|---|
+| `off` | refused (`403`, nothing stored) | no | — |
+| `observe` | accepted, recorded | no | `deliver` |
+| `accept` | accepted, recorded | yes | `action_required` |
+
+Why three states and not a boolean: "may outside systems reach us" and "may a received
+signal drive an agent" are different questions. A boolean forces an admin who wants a
+quiet inbox to also cut the wire, which loses the record they wanted.
+
+Why the default is `off`: for an open-source product the default **is** the configuration
+most installs run, so the safe state must be the one you get without asking. The `ALTER
+TABLE … DEFAULT 'off'` backfills existing rows at migration time — no data rewrite, and an
+upgrading install lands on the safe side (Owner ruling 2026-11-19: no data migration, no
+DROP).
+
+**One reader.** The only place the policy is consulted is the single ingest point
+(`ExternalSourceService.ingest`). The public webhook entry, RSS polling and the
+operator-delivery path all funnel through it, so no adapter can hold its own copy of the
+decision and no second gate can disagree with the first. Two consequences worth stating:
+
+- Per-source `enabled` is **ANDed** with the policy, never a substitute. A source switched
+  on under `off` is not delivering, and the settings UI reports it as `blocked_by_switch`
+  rather than `delivering` — an "on" badge under a closed door is exactly the misreading the
+  screen exists to prevent.
+- Operator delivery is gated too. It is a member-authenticated path, but its whole purpose
+  is to exercise the external-signal pipeline; letting it bypass the org switch would mean
+  the org's answer to "do we take outside input" has an exception nobody can see from the UI.
+
+**One writer.** `OrganizationService.setExternalIngress(orgId, policy, actorUserId)`:
+the actor must resolve to a `users` row (agents have none — so an agent id or ghost id is
+refused), and every successful change writes exactly one `audit_logs` row
+(`external_ingress_changed`, with `from`/`to`). Downgrades are audited too: "when did we
+close this" must be answerable from the audit log alone. The storage repo method
+(`setExternalIngress`) is this method's instrument, not a public elevation path.
+
+**Agents may register, humans open the door** (Owner ruling A, 2026-11-26). An agent keeps
+`external_source_register` / `_toggle` (RSS subscription is its job), and its receipts now
+carry the current policy plus an `ingressNote` when it is not `accept` — a silent success
+would let an agent believe it wired up something that can never fire. Changing the org
+policy is not on the tool surface at all.
+
+**Secret rotation.** `ExternalSourceService.rotateSecret` replaces `config.token` through
+the repo's single `setConfig` writer. The previous secret stops working immediately and the
+new one is returned once; the list receipt only ever exposes `hasSecret` + the last four
+characters. Rotation deliberately does not re-run the registration gate: ownership is
+decided once, not re-litigated because a secret changed.
+
+**Settings surface.** Settings → Connections → External signals: the policy selector and the
+per-agent source list (address, inbound URL, secret status, last event, last error) come from
+one response (`GET /api/external-sources` returns `{policy, sources}`) so the screen cannot
+render sources under a policy that has already changed. The URL is joined against the
+tunnel's `publicUrl`; with no tunnel it is shown as a local-only path with a warning, because
+a copyable `localhost` URL is indistinguishable from a working one until the first delivery
+fails.

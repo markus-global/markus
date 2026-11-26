@@ -1,6 +1,6 @@
 # Concurrent Processing
 
-> Status: **implemented** · Last updated: 2026-09-11
+> Status: **implemented** · Last updated: 2026-11-22 (sticky entity→worker routing, §3.4)
 > Scope: how a single agent processes **multiple mailbox items / sessions at once**
 > through a pool of isolated workers, while preserving factual consistency.
 > Design origin: the original design memo (rationale, alternatives, phase plan) — superseded by this
@@ -34,10 +34,16 @@ independent consumer of the same mailbox:
 - Worker activity is made visible to every other worker through a persistent
   **concurrent handoff log**, injected into the system prompt.
 
-The invariant is simple to state:
+The invariants are simple to state:
 
 > **Concurrency only ever happens *between* entities. A single entity is never
 > processed by two workers at the same time.**
+>
+> **An entity's work is handled by its *owner* worker — the one that first claimed
+> it — across turns, not just within one turn.** Rotating workers inside an entity
+> buys no parallelism (the mutex already serialises it) and only pays costs: context
+> rebuild, cold prompt cache, lost in-flight continuity. Stickiness is the default;
+> liveness overrides it under the explicit rules of §3.4.
 
 `maxWorkers = 1` reproduces the pre-concurrency behaviour exactly — that is the
 compatibility floor and the regression contract.
@@ -154,6 +160,56 @@ deliberately does **not** run triage, LLM deliberation, or interrupt/preempt log
 Those remain the serial `runLoop`'s job. This keeps the concurrent path small and
 predictable: a worker only ever dequeues, locks, processes, unlocks, and loops.
 
+**Skipping judgement does not mean skipping the books.** The original wording let
+"no deliberation" swallow "no recording" as well, and the cost was measured on
+2026-11-18: a full day of 116 inputs produced 3 ledger rows, all `drop`, while 388
+execution epochs ran. The ledger had become a refusal log — every `pick` was
+recorded inside `runLoop`, which the worker pool never enters.
+
+The invariant now is structural rather than per-path: **`processFocusedItem` is the
+single recording execution point**, and both loops call it. A worker cannot process
+an item without leaving a `pick` row, because there is no second place to put it.
+
+```plantuml
+@startuml
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment center
+
+title One recording execution point, two loop paths
+
+rectangle "runLoop (workerCount = 1)" as Serial {
+  card "dequeue" as S1
+  card "pre-triage\n(purge + consolidate)" as S2
+  card "coalesce window" as S3
+}
+
+rectangle "concurrentWorkerLoop × N (workerCount > 1)" as Conc {
+  card "dequeueAsync" as C1
+  card "lockEntities\n(entity ∪ session keys,\nall-or-nothing)" as C2
+  card "conflict → putBack\n+ 250+retry×250ms backoff" as C3
+}
+
+rectangle "processFocusedItem" as Shared #LightGreen {
+  card "recordDecision('pick', source='rule')\n**only writer**" as P1
+  card "delegate.processMailboxItem\n(the LLM turn)" as P2
+  card "terminal projection\n(complete / requeue / bounce)" as P3
+}
+
+database "agent_decisions" as Ledger
+
+S1 --> S2
+S2 --> S3
+S3 --> P1
+C1 --> C2
+C2 --> P1 : lock acquired
+C2 --> C3 : any key held
+C3 --> C1
+P1 --> P2
+P2 --> P3
+P1 --> Ledger
+@enduml
+```
+
 - `workerCount === 1` → the original `runLoop` is used verbatim (no behavioural drift).
 - Worker state (current focus, processing start time, in-flight user cancel) is held
   per worker in `workerStates: Map<number, AttentionWorkerState>`.
@@ -180,7 +236,7 @@ into a per-worker `SessionWorkspace`:
 | `processingMailboxItemId` | `Agent.processingMailboxItemId` |
 | `lastInjectedActivityType` | dedup hint for injected activities |
 | `turnModelOverride` | per-turn model pick |
-| `volatileState` / `pendingDeliberationResult` | per-turn transient state |
+| `volatileState` | per-turn volatile prompt tail (time, mailbox summary, status, memories…) — rebuilt deterministically on every turn |
 | `toolSticky` | `Agent.toolSticky` (recent/activated tool schema names) |
 | `activatedSkills` | `Agent.activatedSkillInstructions` (skill instruction bodies) |
 
@@ -246,6 +302,76 @@ Two additions make the queue safe for multiple consumers:
 
    <!-- verified-against-code: 2026-09-11, packages/core/src/mailbox.ts:437-489, packages/shared/src/types/mailbox.ts:102-118 -->
 
+### 3.4 Sticky entity→worker routing — ownership, not just exclusion
+
+**Problem (observed 2026-11-22).** The entity-affinity lock is a *mutex*: it answers
+"may two workers touch this entity **at the same time**?" (no). It does not answer
+"**which** worker should handle this entity's next item?" — `dequeueAsync()` was a
+broadcast race, so any idle worker won. A real conversation (`cs_0203031913ba4072`)
+bounced worker 3 → 1 → 2 across four turns. Every bounce re-orients a fresh worker,
+rebuilds the session context, and risks a cold prompt cache — for zero parallelism
+gain, because the entity was serialised anyway.
+
+**First principles.**
+
+1. Workers exist to parallelise *across* entities. Within an entity the mutex already
+   serialises, so worker rotation inside an entity is pure cost.
+2. Therefore ownership must persist **across turns**: first successful claim assigns
+   the entity to that worker; later items of the same entity are claimable only by it.
+3. **Liveness is a hard invariant and beats stickiness.** An item must never starve
+   while capacity is idle. Stickiness yields under exactly three conditions (below).
+4. One fact, one writer, one enforcement point: ownership lives in the mailbox next
+   to `entityLocks`, enforced inside `dequeue(workerId)` — the same place the lock
+   filter already runs. Worker liveness is owned by the attention controller, which
+   supplies a probe; the mailbox never guesses worker state.
+
+**Ownership key = the item's *primary* entity key** (`entityKeysOf(item)[0]`), not the
+full key set. `req:` / `user:` are *coordination* dimensions: pinning them would nail
+every task of a requirement (or every session of a user) to one worker and destroy
+cross-entity parallelism. The mutex still locks **all** keys; ownership pins only the
+continuity dimension. A `user:`-primary item (no task/req/conversation resolves) gets
+no owner at all.
+
+**Claimability rule** — `dequeue(workerId)` skips an item unless, for its ownership key:
+
+| Owner state | Rule |
+|---|---|
+| unowned / self | claimable; a successful claim (re)assigns ownership |
+| owner **idle** | not claimable by others — the owner is awake and will take it |
+| owner **busy**, item waited < `STICKY_STEAL_GRACE_MS` (30 s, from `queuedAt`) | not claimable — wait for the owner |
+| owner **busy**, item waited ≥ grace | **steal**: any idle worker may claim; ownership transfers; logged as `mailbox.sticky_transfer` (reason `steal`) |
+| owner **gone** (not in the live pool) | immediate transfer, no grace (reason `owner-gone`) |
+| no probe installed | claimable (fail-open: liveness first) |
+
+**Lifecycle.** Ownership is in-memory and epoch-scoped: `launchWorkerPool()` calls
+`resetEntityOwnership()` and installs a fresh probe (`gone` if the id is not in
+`activeWorkerIds`, else `idle`/`busy` from the worker's state). Persisting ownership
+across restarts would claim a warmth that no longer exists. Serial mode
+(`dequeue()` / `dequeueAsync()` without a `workerId`) neither filters nor records —
+the §6 equivalence contract is untouched.
+
+**Wake-up correctness** (three places where stickiness could have introduced stalls):
+
+- `idleWaiters` is keyed by worker id, so the unicast wake (`review_request`) prefers
+  the **owner's** registered waiter; the deterministic hash remains the fallback.
+- `dequeueAsync(workerId)` arms a **timed wake** at the earliest steal deadline among
+  items blocked only by a busy owner — a steal never depends on an unrelated event.
+- The lost-wakeup recheck (`hasRunnableItem(workerId)`) uses the same claimability
+  predicate as `dequeue`, so a worker never spins on items it may not claim.
+
+**Trade-offs (deliberate, documented).**
+
+- Head-of-line latency: while its owner is busy elsewhere, an entity's item waits up
+  to the grace window even if other workers are idle. That is the price of continuity;
+  30 s bounds it.
+- A steal transfers continuity — unavoidable when liveness demands it — and is always
+  observable (`mailbox.sticky_transfer`), never silent.
+- Items whose entity is *currently locked* are skipped by the pre-existing lock filter
+  before ownership is consulted; when the owner finishes, the unlock broadcast lets the
+  owner reclaim first (its `dequeue` runs in the same synchronous continuation).
+
+<!-- verified-against-code: 2026-11-22, packages/core/src/mailbox.ts (entityOwners/dequeue/dequeueAsync/wakeIdleLoop), packages/core/src/attention.ts (launchWorkerPool/concurrentWorkerLoop) -->
+
 ## 4. Consistency model
 
 Concurrency is safe only if every worker can reason about what the others are doing.
@@ -258,18 +384,20 @@ points:
 
 | `kind` | When | Purpose |
 |---|---|---|
-| `declared` | worker starts an item | declares intent → prevents duplicate work |
-| `fact` | worker establishes a global fact | makes side effects visible |
+| `declared` | worker starts an item | declares intent (history only — **never** read as "still running") |
 | `done` | worker finishes / fails | summary of result + leftovers |
 | `conflict` | worker meets a locked entity | surfaces contention |
 
-- Storage: in-memory ring buffer (last `HANDOFF_MAX_KEEP = 64`) **plus** JSONL
-  persistence under the agent's data dir. `O_APPEND` single writes make concurrent
-  appends atomic — no interleaving, and history survives restart.
-- `inFlight()` reconstructs "who is doing what right now" from `declared`/`fact`
-  records that have no matching `done`/`conflict`, paired by **(worker, entity)** — a
-  worker serving several entities keeps *all* of them visible (keying by `workerId`
-  alone silently dropped all but the last).
+- **This log is history, not state.** A `declared` record means "at some past moment I
+  started this"; it never expires on its own, so it cannot answer "who is working on X
+  right now". The old `inFlight()` helper tried to reconstruct liveness from
+  `declared`/`fact` records without a matching `done`, and the prompt rendered those as
+  "in progress" — which is how the same conversation once appeared under both "in
+  progress" and "completed" in a single prompt, making a worker announce "another worker
+  is handling this" and stop (2026-11-17 incident). `inFlight()` is deleted.
+- **Authoritative liveness lives elsewhere**: `AttentionController.getActiveClaims()`
+  returns the live snapshot (workers that hold the entity lock and are mid-turn). No other
+  code path may claim that an entity is occupied.
 - The JSONL file **compacts** once `HANDOFF_COMPACT_THRESHOLD = 512` lines accumulate:
   the in-memory ring buffer is rewritten wholesale, so the file is bounded by
   `HANDOFF_MAX_KEEP + threshold` instead of growing without limit for the process
@@ -286,18 +414,25 @@ points:
 ### 4.2 Prompt injection — `packages/core/src/context-engine.ts`
 
 `buildSystemPrompt` appends a **`## Concurrency Context（并发上下文）`** block when
-concurrency is active and more than one worker is running. It contains:
+concurrency is active and more than one worker is running. It contains two clearly
+separated halves:
 
-- the current worker id and total worker count;
-- other workers' in-flight intents;
-- the most recent handoff records (`HANDOFF_CONTEXT_LIMIT = 8`, own records filtered);
-- three consistency rules — *do not assume exclusive cognition*, *never process an
-  entity another worker holds*, *report conflicts instead of overwriting*.
+- **who is holding something right now** — `liveClaims`, i.e. the live snapshot from
+  `AttentionController.getActiveClaims()`: worker id, the actual lock keys it holds
+  (`conv:` / `session:` / `task:` …) and the item type. Deliberately **content-free**:
+  occupancy is a structural fact, and shipping the item body would leak one session's
+  text into another session's prompt.
+- **handoff history** — the most recent terminal records (`done` / `conflict`, own records
+  filtered, capped). Rendered under a heading that says explicitly that history does not
+  mean "occupied".
+- three consistency rules — *do not assume exclusive cognition*, *only entities listed
+  under "currently held" are off-limits; a name that merely appeared in history is free to
+  take*, *report conflicts instead of overwriting*.
 
-The block is injected into the **volatile** segment only, so the stable prompt prefix
-(and its cache) is untouched. This is precisely the owner's requirement: a worker knows
-it is one of several, knows what others finished, and can avoid contradictory or
-duplicate actions.
+The block keeps a **fixed shape**: when nothing is held it prints an explicit `（无）` line
+instead of dropping the section, so the prompt never changes template with the data and a
+worker can tell "nothing is held" from "this section was not injected". It is injected into
+the **volatile** segment only, so the stable prompt prefix (and its cache) is untouched.
 
 ### 4.3 Tool write lock — `packages/core/src/agent.ts` + `packages/core/src/resource-locks.ts`
 
@@ -327,7 +462,7 @@ argument so that *different* resources run in parallel:
 > `packages/core/src/lock-resources.ts` (`AGENT_MEMORY_RESOURCE_DOMAIN = 'agent-memory'`,
 > `memoryResourceForPath()`, `memoryResourceLock()`). Table entries for memory tools now
 > carry `{ domain: 'agent-memory', resource: 'knowledge' | 'notebook' }`, and
-> `Agent.resourceLocksFor(toolCall, dataDir)` rewrites an `fs`-domain lock into the memory
+> `Agent.resourceLocksFor(toolCall, opts)` rewrites an `fs`-domain lock into the memory
 > resource lock when the path names an agent memory file (`knowledge.md`, `NOTEBOOK.md`,
 > `state.md`, `role/ROLE.md`, `role/HEARTBEAT.md`).
 > Invariant pinned by `packages/core/test/lock-resource-keys.test.ts`: **same resource ⇒ same lock key**
@@ -336,8 +471,9 @@ argument so that *different* resources run in parallel:
 
 | Domain | Keyed by | Examples |
 |---|---|---|
-| `'*'` | — (global exclusive) | `shell_execute`, `apply_patch`, `package_install`, `hub_install`, `background_exec`, `process` |
-| `fs` | normalized path | `file_write`, `file_edit`, `generate_image`, `office_generate` |
+| `'*'` | — (global exclusive) | `package_install`, `hub_install`, `process` |
+| `shell-session` | shell session key (per execution context, `shellSessionIdFor`) | `shell_execute` |
+| `fs` | normalized path | `file_write`, `file_edit`, `apply_patch` (per `patches[].file`), `shell_execute` / `background_exec` static write targets, `generate_image`, `office_generate` |
 | `task` / `requirement` / `workflow` / `project` / `deliverable` | entity id | `task_update`, `requirement_update_status`, `workflow_run`, `deliverable_update` |
 | `terminal` / `browser` | terminal id / page id | `exec_terminal`, `click`, `navigate_page` |
 | `a2a-out` | target agent / channel | `agent_send_message`, `feishu_send_message` |
@@ -363,6 +499,21 @@ Two important subtleties:
   `shell_execute` released `'*'`). Lesson: a tool whose own work is nanoseconds must
   never inherit global serialisation — the reported duration becomes a lie about the
   tool. Regression: `test/agent-write-lock.test.ts` → "discover_tools 不得排队等全局写锁".
+- **Shell/patch locks are resource-derived, not capability-derived (2026-11-22).**
+  `shell_execute` / `apply_patch` / `background_exec` used to take `'*'` for the whole
+  command duration. A worker polling CI with `sleep 210` froze every write tool of every
+  other worker: `session` rename waited **151.9 s**, `git diff --stat` waited **148.6 s**
+  (actual work: 10 ms / 93 ms — DB activity-log evidence, 08:33–08:39 UTC). Now
+  `shell_execute` locks its persistent shell process (keyed per execution context via
+  `shellSessionIdFor` — the SAME formula the executor uses) plus statically parsed write
+  targets (`extractShellWriteTargets`); `apply_patch` locks each `patches[].file`;
+  `background_exec` locks its command's write targets at dispatch. The default shell
+  session is per-conversation, so concurrent workers no longer share one shell process
+  (cap `SHELL_MAX_SESSIONS_PER_AGENT = 16`, one-shot spawn fallback at the cap).
+  Residual: implicit writes of arbitrary programs (build output) are statically
+  unknowable — the platform guarantees only *decidable* mutual exclusion, exactly as
+  with lock-free readers; workspace isolation and branch discipline cover the rest.
+  Regression: `test/agent-write-lock.test.ts` → “纯读/纯等待的 shell_execute 不再冻结其他 session 的写工具”.
 - **Unknown tools get `tool:<name>`, not `'*'`.** MCP/skill/dynamically-registered tools
   are capability-unknown, but serialising *all* of them against *all* writes would break
   the platform's "multiple tool calls in one turn run in parallel" contract and stall the
@@ -469,6 +620,7 @@ See [streaming-and-reattach.md](./streaming-and-reattach.md) for the stream life
 | Loop | original `runLoop` | `concurrentWorkerLoop` × N |
 | Workspace | shared `rootWorkspace` | one per worker |
 | Attention/triage/deliberation | full pipeline | not run in worker loops |
+| Decision recording (`pick`) | `processFocusedItem` | `processFocusedItem` — **same execution point** |
 | Entity lock | no-op (no contention) | enforced |
 | Handoff log | written on lifecycle (harmless) | injected into prompts |
 | Status | instance-level | aggregated across workers |
@@ -499,9 +651,13 @@ These are deliberate trade-offs, documented rather than hidden:
      `shell_execute` even if it mutates the same resources. Builtins are safe because a
      test asserts every one of them is classified.
    - **`background_exec` / `process` are protected at *dispatch*, not for the job's
-     lifetime.** The lock covers registering the job in the process table; the spawned
-     process then runs outside the lock and may write files concurrently with other
-     workers. Treat long background jobs as a handoff-log *fact*, not as lock-covered.
+     lifetime.** `background_exec` locks its command's static write targets (fs domain)
+     at dispatch; `process` keeps `'*'` for the consumption action. The spawned process
+     then runs outside the lock and may write files concurrently with other workers.
+     Treat long background jobs as a handoff-log *fact*, not as lock-covered.
+     `process poll/log` shares the domain: the lock covers the *consumption* action
+     (marking the result consumed + resolving the callback entry). In-turn delivery
+     (`injectTurnDelta`) consumes the row inside the turn loop, not at tool dispatch.
 
 3. **Write-lock nesting is fail-fast.** A call chain that requests a lock conflicting
    with one it already holds raises `LockNestingConflictError` (§4.3) instead of
@@ -537,11 +693,14 @@ Concurrency-specific suites under `packages/core/test/`:
 |---|---|
 | `attention-concurrent.test.ts` | worker pool start/stop, directed cancel, conflict policy |
 | `mailbox-concurrent.test.ts` | broadcast wake-up, entity lock/unlock, key derivation |
+| `mailbox-sticky-routing.test.ts` | ownership establishment, idle-owner exclusion, busy-owner grace + steal, gone-owner transfer, primary-key-only pinning, unicast owner preference, timed steal wake, serial-mode equivalence |
 | `agent-concurrent-activity.test.ts` | per-worker `currentActivity` isolation |
 | `agent-write-lock.test.ts` | domain-lock serialisation, per-path/per-entity parallelism, no-leak on throw, **write-tool classification totality**, lock-free HITL tools, unknown-tool per-name domain |
 | `resource-locks.test.ts` | domain conflict matrix, FIFO fairness, reentrancy |
 | `resource-locks-chain.test.ts` | **nested conflicting acquisition fails fast (no self-deadlock)**, cross-chain exclusion not weakened, parallel siblings still serialised |
-| `concurrent-handoff.test.ts` | **`clear()` truncates disk**, `inFlight()` pairs by (worker, entity), **file compaction bound**, id uniqueness across instances, corrupt-line tolerance |
+| `concurrent-handoff.test.ts` | **`clear()` truncates disk**, **file compaction bound**, id uniqueness across instances, corrupt-line tolerance |
+| `context-concurrency-notebook.test.ts` | **history never renders as "in progress"**, live claims render with lock keys + item type, notebook snapshot caps |
+| `agent-concurrent-e2e.test.ts` | two chat sessions truly overlap, no session-id bleed, **two items of one session never run in parallel**, no dropped message |
 | `memory-session-debounce.test.ts` | **per-session debounce isolation** (two workers' sessions both persist) |
 | `attention-directed-cancel.test.ts` | `cancelActiveStream(target)` routing |
 

@@ -5,6 +5,7 @@ import type { RoleTemplate } from '@markus/shared';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { startSettled } from './helpers/agent-start.js';
 
 let tempDir: string;
 
@@ -114,7 +115,7 @@ describe('executeTask and task lifecycle', () => {
     const logs: Array<{ type: string; content: string }> = [];
     await agent.sendTaskExecution('task_exec_1', 'Implement a small feature', (entry) => {
       if (entry.persist) logs.push({ type: entry.type, content: entry.content });
-    });
+    }, undefined, undefined, 1, undefined, undefined, undefined, () => {});
 
     expect(logs.some(l => l.type === 'status' && l.content === 'started')).toBe(true);
     expect(logs.some(l => l.type === 'status' && l.content === 'execution_finished')).toBe(true);
@@ -131,7 +132,7 @@ describe('executeTask and task lifecycle', () => {
 
     await agent.executeTask('task_direct', 'Run unit tests', (entry) => {
       logs.push(entry.type);
-    });
+    }, undefined, undefined, 1);
 
     expect(logs).toContain('status');
     expect(agent.getActiveTasks()).toEqual([]);
@@ -160,7 +161,7 @@ describe('executeTask and task lifecycle', () => {
     const agent = createAgent(router);
     const cancelToken = { cancelled: true };
 
-    await agent.executeTask('task_cancel', 'Cancelled task', () => {}, cancelToken);
+    await agent.executeTask('task_cancel', 'Cancelled task', () => {}, cancelToken, undefined, 1);
 
     expect(router.chatStream).not.toHaveBeenCalled();
   });
@@ -431,26 +432,13 @@ describe('callbacks, hooks, and helpers', () => {
     expect(router.chat).toHaveBeenCalled();
   });
 
-  it('consumeDeliberationResult returns and clears pending result', () => {
-    const agent = createAgent(makeMockRouter());
-    expect(agent.consumeDeliberationResult()).toBeUndefined();
-
-    (agent as unknown as { pendingDeliberationResult: unknown }).pendingDeliberationResult = {
-      decision: 'proceed',
-      reasoning: 'test',
-    };
-    const result = agent.consumeDeliberationResult();
-    expect(result?.decision).toBe('proceed');
-    expect(agent.consumeDeliberationResult()).toBeUndefined();
-  });
-
   it('getAgentStatusSummary reflects active tasks without state manager path', async () => {
     const router = makeMockRouter({
       streamFn: async () => makeResponse('Working.', 'end_turn'),
     });
     const agent = createAgent(router);
 
-    const execPromise = agent.executeTask('task_busy', 'Busy work', () => {});
+    const execPromise = agent.executeTask('task_busy', 'Busy work', () => {}, undefined, undefined, 1);
     await new Promise(r => setTimeout(r, 20));
     const summary = agent.getAgentStatusSummary();
     expect(summary.isBusy || summary.activeTaskCount >= 0).toBe(true);
@@ -546,18 +534,25 @@ describe('mailbox scenarios not covered elsewhere', () => {
     });
   }
 
-  it('routes memory_consolidation scenario', async () => {
+  it('acknowledges memory_consolidation in clock mode (C8-C: the clock owns the dream)', async () => {
     const router = makeMockRouter();
     const agent = createAgent(router);
-    await agent.start();
+    await startSettled(agent);
+    // The startup wake legitimately spends LLM calls; this test's subject is the
+    // consolidation row only, so start counting after startup has settled.
+    vi.mocked(router.chat).mockClear();
 
     const reply = await processViaMailbox(agent, 'memory_consolidation', {
       summary: 'Consolidate',
       content: 'Review and consolidate memories',
     });
 
-    expect(typeof reply).toBe('string');
-    expect(router.chat).toHaveBeenCalled();
+    // C8-C — the named clock source is the single dream producer, so a persisted row is
+    // acknowledged with a typed result instead of being replayed into a second dream.
+    // The rollback path (`MARKUS_DREAM_PATH=dual`, row still replays) is covered by
+    // dream-single-trigger.test.ts.
+    expect(String(reply)).toMatch(/skip/i);
+    expect(router.chat).not.toHaveBeenCalled();
     await agent.stop();
   });
 
@@ -582,7 +577,7 @@ describe('mailbox scenarios not covered elsewhere', () => {
     const agent = createAgent(router);
     await agent.start();
 
-    const taskPromise = agent.sendTaskExecution('task_cmt_active', 'Long running task', () => {});
+    const taskPromise = agent.sendTaskExecution('task_cmt_active', 'Long running task', () => {}, undefined, undefined, undefined, undefined, undefined, undefined, () => {});
     await new Promise(r => setTimeout(r, 30));
 
     await processViaMailbox(agent, 'task_comment', {
@@ -688,7 +683,7 @@ describe('task execution with prior history', () => {
       if (entry.type === 'tool_start' || entry.type === 'tool_end') {
         toolEvents.push(entry.type);
       }
-    });
+    }, undefined, undefined, 1);
 
     expect(streamCalls).toBeGreaterThanOrEqual(2);
     expect(toolEvents).toContain('tool_start');
@@ -704,7 +699,7 @@ describe('task execution with prior history', () => {
 
     await expect(agent.executeTask('task_err', 'Fail this task', (entry) => {
       if (entry.type === 'error') errors.push(entry.content);
-    })).rejects.toThrow('LLM stream failed');
+    }, undefined, undefined, 1)).rejects.toThrow('LLM stream failed');
 
     expect(errors.some(e => e.includes('LLM stream failed'))).toBe(true);
   });
@@ -800,6 +795,8 @@ describe('agent lifecycle and metrics', () => {
   it('start sets idle and stop sets offline', async () => {
     const agent = createAgent(makeMockRouter());
     await agent.start({ initialHeartbeatDelayMs: 999999 });
+    // start() also wakes the Loop, so `idle` is the SETTLED state, not a snapshot.
+    await startSettled(agent);
     expect(agent.getState().status).toBe('idle');
     await agent.stop();
     expect(agent.getState().status).toBe('offline');
@@ -888,50 +885,14 @@ describe('agent lifecycle and metrics', () => {
   });
 });
 
-describe('performDeliberation and cognitive pipeline', () => {
-  it('performDeliberation completes via complete_deliberation tool', async () => {
-    const router = makeMockRouter({
-      chatFn: async (req: unknown) => {
-        const messages = (req as { messages: Array<{ role: string; content: unknown }> }).messages;
-        const userContent = messages
-          .filter(m => m.role === 'user')
-          .map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
-          .join('\n');
-
-        if (userContent.includes('[DELIBERATION MODE]')) {
-          const allIds = [...userContent.matchAll(/id="([^"]+)"/g)].map(m => m[1]);
-          const processId = allIds[0] ?? 'mbx_head';
-          return makeResponse('', 'tool_use', [{
-            id: 'tc_delib',
-            name: 'complete_deliberation',
-            arguments: {
-              process_item_id: processId,
-              reasoning: 'Focus on highest priority peer message',
-              defer_item_ids: allIds.filter(id => id !== processId),
-              inline_completed_ids: [],
-              memory_updates: [{ type: 'working', key: 'delib_focus', content: 'Handle peer messages first' }],
-            },
-          }]);
-        }
-        return makeResponse(`Handled.`, 'end_turn');
-      },
-    });
-
-    const agent = createAgent(router);
-    const headItem = agent.enqueueToMailbox('a2a_message', { summary: 'msg-1', content: 'first peer message' });
-    const queuedItem = agent.enqueueToMailbox('a2a_message', { summary: 'msg-2', content: 'second peer message' });
-
-    expect(typeof (agent as unknown as { performDeliberation?: unknown }).performDeliberation).toBe('function');
-
-    const result = await (agent as unknown as {
-      performDeliberation: (head: typeof headItem, all: typeof headItem[]) => Promise<unknown>;
-    }).performDeliberation(headItem, [headItem, queuedItem]) as {
-      processItemId: string;
-      reasoning: string;
-    } | null;
-    expect(result).not.toBeNull();
-    expect(result!.processItemId).toBe(headItem.id);
-    expect(result!.reasoning).toContain('Focus');
+// The block below covers the cognitive pipeline that is actually left after the
+// multi-stage CPP removal: deterministic context assembly inside handleMessage, plus
+// the mailbox-driven turns that feed it. (The old LLM deliberation step is gone —
+// nothing here exercises it.)
+describe('cognitive pipeline over handleMessage', () => {
+  it('cognitive pipeline helpers remain wired', () => {
+    const agent = createAgent(makeMockRouter());
+    expect(typeof agent.getMindState).toBe('function');
   });
 
   it('makes NO CPP LLM calls — the multi-stage pipeline is removed (审计 §8.1)', async () => {
@@ -982,7 +943,7 @@ describe('performDeliberation and cognitive pipeline', () => {
       },
     });
     const agent = createAgent(router);
-    const execPromise = agent.executeTask('task_status_live', 'Long running work', () => {});
+    const execPromise = agent.executeTask('task_status_live', 'Long running work', () => {}, undefined, undefined, 1);
     await vi.waitFor(() => agent.getActiveTasks().length > 0, { timeout: 2000 });
 
     const summary = agent.getAgentStatusSummary();
@@ -1042,10 +1003,11 @@ describe('performDeliberation and cognitive pipeline', () => {
         content: 'Run the integration tests',
         taskId: 'task_mbx_exec',
         extra: {
-          triggerExecution: true,
           onLog: (entry: { type: string; content: string }) => { logs.push(entry.type); },
+          // 派发侧是 round 的唯一缺省点：不带 round 的派发现在会被 fail closed
+          executionRound: 1,
         },
-      }, { metadata: { taskId: 'task_mbx_exec' }, runtime: { responsePromise: { resolve: () => resolve(), reject } } });
+      }, { metadata: { taskId: 'task_mbx_exec' }, intent: 'trigger_execution', runtime: { responsePromise: { resolve: () => resolve(), reject } } });
     });
 
     expect(logs).toContain('status');
@@ -1054,7 +1016,7 @@ describe('performDeliberation and cognitive pipeline', () => {
 
   it('injectFollowUp enqueues with image metadata', () => {
     const agent = createAgent(makeMockRouter());
-    agent.injectFollowUp('See attached screenshot', 'user_1', { name: 'User', role: 'human' }, ['data:image/png;base64,abc']);
+    agent.injectFollowUp('See attached screenshot', 'user_1', { name: 'User', role: 'human' }, ['data:image/png;base64,abc'], { workUnitRef: null });
     const depth = agent.getMailbox().depth;
     expect(depth).toBe(1);
   });
@@ -1116,7 +1078,7 @@ describe('performDeliberation and cognitive pipeline', () => {
     await agent.stop('maintenance');
     expect(agent.getState().status).toBe('offline');
     expect(agent.getStopReason()).toBe('maintenance');
-    await agent.start();
+    await startSettled(agent);
     expect(agent.getState().status).toBe('idle');
     expect(agent.getStopReason()).toBeUndefined();
     await agent.stop();

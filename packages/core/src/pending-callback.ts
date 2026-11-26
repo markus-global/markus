@@ -49,6 +49,13 @@ export interface PendingCallback {
    * Kept as a loose `string` for the same decoupling reason as `type` above.
    */
   originScenario?: string;
+  /**
+   * Work-unit identity of the turn that registered this callback (`workUnitRef`).
+   * Persisted alongside the scenario so the completion lands on the SAME entity
+   * (task/session) even after a process restart — lineage lives in ONE durable
+   * store (this registry), never in a parallel in-memory map.
+   */
+  workUnitRef?: string;
   /** For scheduled wakeups: epoch ms at which the wakeup is due. */
   wakeAt?: number;
   /** For recurring wakeups: re-arm interval in ms after firing. */
@@ -82,6 +89,7 @@ export interface PersistedCallback {
   note?: string;
   correlationId?: string;
   originScenario?: string;
+  workUnitRef?: string;
   wakeAt?: number;
   recurringMs?: number;
   registeredAt: number;
@@ -92,6 +100,11 @@ export interface CallbackPersistence {
   save(cb: PersistedCallback): void;
   remove(id: string): void;
   loadAll(): PersistedCallback[];
+  /**
+   * P3 -- claim-before-deliver. Optional so an in-memory or test adapter keeps
+   * working unchanged: absent means "one process, nothing to arbitrate".
+   */
+  claim?(id: string, owner: string, leaseMs: number): boolean;
 }
 
 export class PendingCallbackRegistry {
@@ -118,6 +131,11 @@ export class PendingCallbackRegistry {
     log.debug('Registered pending callback', { id: cb.id, agentId: cb.agentId, type: cb.type });
   }
 
+  /** Read an entry WITHOUT removing it (bus handlers peek before claiming). */
+  get(id: string): PendingCallback | undefined {
+    return this.callbacks.get(id);
+  }
+
   resolve(id: string): PendingCallback | undefined {
     const cb = this.callbacks.get(id);
     if (cb) {
@@ -138,6 +156,45 @@ export class PendingCallbackRegistry {
       if (cb.agentId === agentId && cb.correlationId === correlationId) return cb;
     }
     return undefined;
+  }
+
+  /**
+   * 丢弃某个关联实体（通常是任务）名下的全部待回调。
+   *
+   * 第一性原理：回调是**一个答案**，而答案只相对于「当初问它的前提」才有意义。
+   * 任务被取消 / 失败 = 那个前提没了；此时后台活干完再唤醒一个回合，只会让它
+   * 烧 token 去猜自己在干什么（实测：取消后回执仍会 resume 发起会话）。
+   * 丢弃登记 = 完成事件不再唤醒任何人；后台进程本身照旧跑完。
+   *
+   * @returns 被丢弃的条数（供调用方记日志，不静默）
+   */
+  discardByCorrelation(correlationId: string, reason: string): number {
+    if (!correlationId) return 0;
+    let dropped = 0;
+    for (const [id, cb] of [...this.callbacks.entries()]) {
+      if (cb.correlationId !== correlationId) continue;
+      this.callbacks.delete(id);
+      this.persistence?.remove(id);
+      dropped += 1;
+    }
+    if (dropped > 0) {
+      log.info('Discarded pending callbacks (premise gone)', { correlationId, reason, dropped });
+    }
+    return dropped;
+  }
+
+  /**
+   * P3 -- claim a due callback before delivering it.
+   *
+   * Returns false when another process won the claim, and the caller must then NOT
+   * deliver. Without persistence (single process) there is nothing to arbitrate, so
+   * the claim succeeds and the entry is dropped from memory -- the semantics
+   * `resolve()` already had.
+   */
+  claimDue(id: string, owner: string, leaseMs: number): boolean {
+    const claimed = this.persistence?.claim ? this.persistence.claim(id, owner, leaseMs) : true;
+    if (claimed) this.resolve(id);
+    return claimed;
   }
 
   /** Scheduled wakeups whose `wakeAt` is due (<= now). */

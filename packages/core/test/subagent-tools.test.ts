@@ -265,8 +265,10 @@ describe('subagent tool wrappers', () => {
     expect(elapsed).toBeLessThan(500);
   });
 
-  it('B4: spawn_subagents reports budgetExceeded when the fan-out exhausts the shared budget', async () => {
-    // Every child loops forever (always tool_use) → the shared aggregate budget must cap them.
+  it('C7-B: a fan-out has NO shared pool — every child stops on its OWN finite budget', async () => {
+    // Every child loops forever (always tool_use). Before C7-B the fan-out pre-allocated
+    // `{ remaining: 100 }` and let siblings eat each other's rope; now each child owns a
+    // finite, independent budget and stops itself.
     const router = makeMockRouter([{
       content: 'loop',
       finishReason: 'tool_use',
@@ -284,8 +286,15 @@ describe('subagent tool wrappers', () => {
       ],
     }));
     expect(parsed.status).toBe('completed');
-    expect(parsed.budgetExceeded).toBe(true);
-    expect(parsed.aggregateIterationBudget).toBeGreaterThan(0);
+    for (const r of parsed.results as Array<{ status: string; budgetHit: string; iterations: number; budget: number }>) {
+      // 自己的绳子，不是共享断路器。
+      expect(r.status).toBe('budget_exhausted');
+      expect(r.budgetHit).toBe('own');
+      expect(r.iterations).toBe(r.budget);
+    }
+    // 断路器不再被当日程：结果里不再有共享池的读数。
+    expect(parsed.budgetExceeded).toBeUndefined();
+    expect(parsed.aggregateIterationBudget).toBeUndefined();
   });
 
   it('spawn_subagents rejects empty and oversized batches', async () => {

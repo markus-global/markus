@@ -10,6 +10,13 @@ export interface AgentMemoryContext {
   agentName: string;
   memory: IMemoryStore;
   semanticSearch?: SemanticMemorySearch;
+  /**
+   * Notebook (working-memory) accessors — optional so lightly-wired deployments
+   * degrade gracefully: `memory_curate` reports `notebook.*` targets as
+   * `unavailable` instead of crashing when they are not supplied.
+   */
+  updateWorkingMemory?: (key: string, content: string) => { status: string; key: string; evicted?: string; expired?: string[] };
+  clearWorkingMemory?: (key?: string) => { status: string; cleared: number };
 }
 
 function storeName(memory: IMemoryStore): string {
@@ -451,11 +458,13 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
     {
       name: 'memory_stats',
       description:
-        'Inspect your memory health: the CURATED (injected) knowledge budget vs its cap, plus the ' +
-        'separate `## _observations` buffer usage, observation count and curated section count. ' +
-        'Note the two budgets are independent — the observation buffer is NOT injected into the prompt. ' +
-        'Use periodically (or when memory feels bloated) to decide whether to run memory_organize. ' +
-        'Returns JSON with budget usage percent. No args.',
+        'Inspect your memory health. Two INDEPENDENT numbers: (1) `budget` = the injected payload — '
+        + 'the knowledge actually placed in THIS turn\'s prompt vs its injection ceiling — this is the '
+        + 'one the in-prompt banner reports; (2) `curatedRegion` = how much curated knowledge exists on '
+        + 'disk vs its soft budget (report-only: a region is routinely far bigger than one prompt). '
+        + 'Plus the separate `## _observations` buffer, which is NOT injected. '
+        + 'Use periodically (or when memory feels bloated) to decide whether to run memory_organize. '
+        + 'Returns JSON. No args.',
       inputSchema: { type: 'object', properties: {} },
       async execute(): Promise<string> {
         const store = storeName(ctx.memory);
@@ -472,11 +481,23 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         return JSON.stringify({
           status: 'ok',
           store,
-          // The injected budget — the one that actually costs prompt space.
+          // DR5 — two questions, two numbers, never one number asked twice.
+          // `budget` is the ONE memory-health metric: this turn's injected payload vs
+          // the injection ceiling. The curated region is a disk size and is reported
+          // as one — dividing it by a disk constant is what used to announce a
+          // 16 673-char region as "111% injected" on a turn carrying 6 691.
           budget: {
-            curatedChars: health.curatedChars,
-            limit: health.curatedCap,
-            usedPercent: health.percent,
+            injectedChars: health.injectedChars,
+            limit: health.injectionCapChars,
+            usedPercent: health.injectionUsedPercent,
+            measured: health.injectionMeasured,
+            omittedSections: health.omittedSectionCount,
+          },
+          // Region size on disk — report-only, NOT an injection budget.
+          curatedRegion: {
+            chars: health.curatedChars,
+            softLimit: health.curatedCap,
+            usedPercent: health.curatedPercent,
           },
           // A separate, non-injected budget (searched on demand).
           observationBuffer: {
@@ -488,8 +509,8 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           curatedSections: { count: sectionNames.length, names: sectionNames.slice(0, 20) },
           archivedChars: health.archiveChars,
           lastConsolidatedAt: health.lastConsolidatedAt,
-          hint: health.percent >= MEMORY_HEALTH_WARN_PERCENT
-            ? 'Injected knowledge is near its budget — run memory_organize to merge sections, or memory_update mode="forget" on superseded knowledge.'
+          hint: health.injectionUsedPercent >= MEMORY_HEALTH_WARN_PERCENT
+            ? 'This turn injects close to the knowledge injection ceiling — sections beyond it never reach the prompt (they are named in the index line). Run memory_organize to merge observations into a section, or memory_curate with op="forget"/"replace" for a batch tidy across knowledge + notebook in ONE call (no need for one call per section).'
             : undefined,
           observationHint: health.observationPercent >= MEMORY_HEALTH_WARN_PERCENT
             ? 'The observation buffer is near its own limit (it is NOT injected into the prompt). It is trimmed losslessly, oldest-first, when it overflows — memory_organize merges recurring patterns into curated sections before that happens.'
@@ -593,7 +614,11 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         }
 
         const archived = ctx.memory.removeEntries(selected.map((e) => e.id));
-        ctx.memory.markConsolidated?.();
+        // DR3 — a manual organize records the ORGANIZE event, never the dream's window.
+        // The single `markConsolidated()` slot it used to write was both events at once,
+        // which is how a 09:00 tidy cancelled the day's dream (the guard asked "did the
+        // dream run?" and this field answered "did anyone tidy?").
+        ctx.memory.recordOrganize?.();
         if (ctx.semanticSearch?.isEnabled()) {
           for (const e of selected) {
             ctx.semanticSearch.deleteMemory(e.id).catch((err) => {
@@ -613,6 +638,157 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           message: `Merged ${selected.length} observation(s) into "${target}" and archived them.`,
           store,
         });
+      },
+    },
+
+    {
+      name: 'memory_curate',
+      description:
+        'Batch memory curation across knowledge sections AND notebook entries in ONE call — the batch form of ' +
+        'memory_update(mode=forget/replace) + notebook_clear/notebook_upsert. ' +
+        'Use this for a systematic tidy pass (e.g. when memory_stats reports the injection budget near its ceiling) ' +
+        'instead of many single-target calls — and NEVER emit an ad-hoc JSON report of curation ops: an ad-hoc report has no consumer. ' +
+        'Args: { ops: [ { op: "forget"|"replace"|"keep", target: "knowledge.<section>"|"notebook.<key>", content?, reason? } ] }. ' +
+        'op="forget" removes the target; op="replace" overwrites/creates it with `content`; op="keep" is a no-op that is ' +
+        'RECORDED (an audit trail of what you reviewed and chose to keep — not busywork). ' +
+        'Returns { status:"curated", applied, kept, failed, results:[{target, op, outcome, reason}] }. A failing op does not abort the batch.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ops: {
+            type: 'array',
+            description: 'Curation ops, applied in order.',
+            items: {
+              type: 'object',
+              properties: {
+                op: {
+                  type: 'string',
+                  enum: ['forget', 'replace', 'keep'],
+                  description: 'forget = remove target; replace = overwrite with content; keep = record-only no-op.',
+                },
+                target: {
+                  type: 'string',
+                  description: 'Fully-qualified target: "knowledge.<section>" or "notebook.<key>".',
+                },
+                content: {
+                  type: 'string',
+                  description: 'Required for op="replace"; ignored otherwise.',
+                },
+                reason: {
+                  type: 'string',
+                  description: 'Why — recorded in the result and the audit log.',
+                },
+              },
+              required: ['op', 'target'],
+            },
+          },
+        },
+        required: ['ops'],
+        additionalProperties: false,
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const store = storeName(ctx.memory);
+        const rawOps = Array.isArray(args['ops']) ? args['ops'] : [];
+        if (!rawOps.length) {
+          return JSON.stringify({ status: 'error', error: 'Provide a non-empty ops array.', store });
+        }
+        type OpOutcome = 'forgotten' | 'replaced' | 'kept' | 'error' | 'unavailable';
+        type OpResult = { target: string; op: string; outcome: OpOutcome; reason?: string; error?: string };
+        const results: OpResult[] = [];
+        let applied = 0;
+        let kept = 0;
+        let failed = 0;
+
+        for (const raw of rawOps) {
+          const rec = (raw ?? {}) as Record<string, unknown>;
+          const op = String(rec['op'] ?? '').toLowerCase();
+          const target = String(rec['target'] ?? '').trim();
+          const reason = typeof rec['reason'] === 'string' ? rec['reason'] : undefined;
+          const content = typeof rec['content'] === 'string' ? rec['content'] : '';
+
+          const dot = target.indexOf('.');
+          const namespace = dot > 0 ? target.slice(0, dot) : '';
+          const name = dot > 0 ? target.slice(dot + 1) : '';
+          if (!['forget', 'replace', 'keep'].includes(op) || !namespace || !name) {
+            failed++;
+            results.push({
+              target, op, outcome: 'error', reason,
+              error: !namespace || !name
+                ? 'target must be "knowledge.<name>" or "notebook.<key>"'
+                : 'op must be one of forget|replace|keep',
+            });
+            continue;
+          }
+
+          if (op === 'keep') {
+            // A kept entry is a recorded decision, not a no-op the caller can ignore:
+            // it is the audit trail of "reviewed, chose to keep, here is why".
+            kept++;
+            results.push({ target, op, outcome: 'kept', reason });
+            continue;
+          }
+
+          if (namespace === 'knowledge') {
+            if (op === 'forget') {
+              const r = ctx.memory.removeLongTermSection(name);
+              if (r.ok) {
+                applied++;
+                results.push({ target, op, outcome: 'forgotten', reason });
+              } else {
+                failed++;
+                results.push({ target, op, outcome: 'error', reason, error: r.reason ?? 'forget refused' });
+              }
+            } else {
+              if (!content) {
+                failed++;
+                results.push({ target, op, outcome: 'error', reason, error: 'content is required for op="replace"' });
+                continue;
+              }
+              const w = ctx.memory.addLongTermMemory(name, content);
+              if (w.ok) {
+                applied++;
+                results.push({ target, op, outcome: 'replaced', reason });
+              } else {
+                failed++;
+                results.push({ target, op, outcome: 'error', reason, error: w.reason ?? 'replace refused' });
+              }
+            }
+          } else if (namespace === 'notebook') {
+            if (!ctx.updateWorkingMemory || !ctx.clearWorkingMemory) {
+              failed++;
+              results.push({ target, op, outcome: 'unavailable', reason, error: 'notebook store is not wired for this agent' });
+              continue;
+            }
+            if (op === 'forget') {
+              ctx.clearWorkingMemory(name);
+              applied++;
+              results.push({ target, op, outcome: 'forgotten', reason });
+            } else {
+              if (!content) {
+                failed++;
+                results.push({ target, op, outcome: 'error', reason, error: 'content is required for op="replace"' });
+                continue;
+              }
+              const r = ctx.updateWorkingMemory(name, content);
+              if (r.status === 'error' || (typeof r.status === 'string' && r.status.startsWith('error'))) {
+                failed++;
+                results.push({ target, op, outcome: 'error', reason, error: 'notebook write refused' });
+              } else {
+                applied++;
+                results.push({ target, op, outcome: 'replaced', reason });
+              }
+            }
+          } else {
+            failed++;
+            results.push({
+              target, op, outcome: 'error', reason,
+              error: `unknown namespace "${namespace}" (expected "knowledge" or "notebook")`,
+            });
+          }
+        }
+
+        log.info('Agent curated memory (batch)', { agentId: ctx.agentId, applied, kept, failed, total: rawOps.length });
+        return JSON.stringify({ status: 'curated', applied, kept, failed, results, store });
       },
     },
   ];

@@ -120,9 +120,9 @@ describe('P1.x (d) · 启动清理按类型分流', () => {
     seedExpiredLeaseClaim('s1');
     db.prepare('UPDATE mailbox_items SET queued_at = ? WHERE id = ?').run(PAST, 's1');
 
-    const dropped = repo.markStaleProcessingAsDropped('agt_1', NOW);
+    const dropped = repo.markStaleProcessingAsBounced('agt_1', NOW);
 
-    expect(dropped, 'strict-state 不计入 dropped').toBe(0);
+    expect(dropped, 'strict-state 不计入结案计数').toBe(0);
     const after = repo.getById('s1')!;
     expect(after.status).toBe('queued');
     expect(after.claimedBy).toBeNull();
@@ -135,7 +135,7 @@ describe('P1.x (d) · 启动清理按类型分流', () => {
     repo.save(row('o1', 'review_request', 'agt_1', 'review_request:o1:1'));
     db.prepare("UPDATE mailbox_items SET status = 'processing', started_at = ? WHERE id = ?").run(PAST, 'o1');
 
-    expect(repo.markStaleProcessingAsDropped('agt_1', NOW)).toBe(0);
+    expect(repo.markStaleProcessingAsBounced('agt_1', NOW)).toBe(0);
     const after = repo.getById('o1')!;
     expect(after.status).toBe('queued');
     expect(after.claimedBy).toBeNull();
@@ -143,37 +143,40 @@ describe('P1.x (d) · 启动清理按类型分流', () => {
     expect(after.queuedAt).toBe(NOW);
   });
 
-  it('非 strict-state（heartbeat / a2a_message）维持 drop —— 行为逐字不变', () => {
+  it('非 strict-state（heartbeat / a2a_message）→ bounced(lease_expired)（C3：不再是无原因的 dropped）', () => {
     // heartbeat 孤儿 + a2a_message 过期租约，均为「候选行」但类型不属 strict-state
     repo.save(row('n1', 'heartbeat', 'agt_1'));
     db.prepare("UPDATE mailbox_items SET status = 'processing' WHERE id = ?").run('n1');
     repo.save(row('n2', 'a2a_message', 'agt_1'));
     repo.claimItem('n2', 'agt_1#999#7', PAST, NOW);
 
-    expect(repo.markStaleProcessingAsDropped('agt_1', NOW)).toBe(2);
-    expect(repo.getById('n1')!.status).toBe('dropped');
-    expect(repo.getById('n2')!.status).toBe('dropped');
+    expect(repo.markStaleProcessingAsBounced('agt_1', NOW)).toBe(2);
+    expect(repo.getById('n1')!.status).toBe('bounced');
+    expect(repo.getById('n2')!.status).toBe('bounced');
+    expect(repo.getById('n1')!.dropReason).toBe('lease_expired');
+    expect(repo.getById('n1')!.bounceTarget, 'C3：退信必须归集到 catch-all 概览').toContain('catchall:');
   });
 
   it('租约未过期的 strict-state 行不得被清理（保持 processing）', () => {
     repo.save(row('v1', 'review_request', 'agt_1', 'review_request:v1:1'));
     repo.claimItem('v1', 'agt_1#10#1', FUTURE, NOW);
 
-    expect(repo.markStaleProcessingAsDropped('agt_1', NOW)).toBe(0);
+    expect(repo.markStaleProcessingAsBounced('agt_1', NOW)).toBe(0);
     const after = repo.getById('v1')!;
     expect(after.status).toBe('processing');
     expect(after.claimedBy).toBe('agt_1#10#1');
     expect(after.leaseUntil).toBe(FUTURE);
   });
 
-  it('混合批次：strict 回队、非 strict drop，计数只含 drop', () => {
+  it('混合批次：strict 回队、非 strict 结案，计数只含后者', () => {
     seedExpiredLeaseClaim('m1');          // strict → requeue
     repo.save(row('m2', 'heartbeat', 'agt_1'));
     db.prepare("UPDATE mailbox_items SET status = 'processing' WHERE id = ?").run('m2');
 
-    expect(repo.markStaleProcessingAsDropped('agt_1', NOW)).toBe(1);
+    expect(repo.markStaleProcessingAsBounced('agt_1', NOW)).toBe(1);
     expect(repo.getById('m1')!.status).toBe('queued');
-    expect(repo.getById('m2')!.status).toBe('dropped');
+    expect(repo.getById('m2')!.status).toBe('bounced');
+    expect(repo.getById('m2')!.dropReason).toBe('lease_expired');
   });
 });
 

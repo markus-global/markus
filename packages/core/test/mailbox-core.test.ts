@@ -200,7 +200,7 @@ describe('AgentMailbox async and persistence', () => {
     expect(item.payload.summary).toBe('pending');
   });
 
-  it('recoverStaleItems restores queued items and drops expired ones', () => {
+  it('recoverStaleItems restores queued items and bounces expired ones', () => {
     const oldQueuedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
     const freshQueuedAt = new Date().toISOString();
 
@@ -227,26 +227,28 @@ describe('AgentMailbox async and persistence', () => {
     const { mailbox } = makeMailbox({
       save: vi.fn(),
       updateStatus,
-      markStaleProcessingAsDropped: vi.fn(() => 2),
+      markStaleProcessingAsBounced: vi.fn(() => 2),
       loadQueued: vi.fn(() => [staleItem, freshItem]),
     });
 
     const result = mailbox.recoverStaleItems();
-    expect(result.dropped).toBe(2);
+    expect(result.bounced).toBe(2);
     expect(result.expired).toBe(1);
     expect(result.restored).toBe(1);
     expect(mailbox.depth).toBe(1);
-    expect(updateStatus).toHaveBeenCalledWith('mbx_stale', 'dropped');
+    // C3：过期不是“归档”——它先记 bounced(原因 stale_signal) 再归集到 catch_all。
+    expect(updateStatus).toHaveBeenCalledWith('mbx_stale', 'bounced', expect.objectContaining({ dropReason: 'stale_signal' }));
+    expect(updateStatus).toHaveBeenCalledWith('mbx_stale', 'catch_all', expect.objectContaining({ bounceTarget: expect.stringContaining('catchall:') }));
   });
 
-  it('cleanStaleProcessing delegates to persistence (dropped, not completed)', () => {
+  it('cleanStaleProcessing delegates to persistence (bounced, not completed)', () => {
     // 语义：卡住/被打断/超时的工作 ≠ 完成。cleanStaleProcessing 只应把 stuck
-    // 'processing' 标为 dropped（异常可见 + 允许补偿重投），绝不标 completed。
+    // 'processing' 结案为 bounced(lease_expired)（异常可见 + 允许补偿重投），绝不标 completed。
     const markDropped = vi.fn(() => 3);
     const { mailbox } = makeMailbox({
       save: vi.fn(),
       updateStatus: vi.fn(),
-      markStaleProcessingAsDropped: markDropped,
+      markStaleProcessingAsBounced: markDropped,
     });
 
     expect(mailbox.cleanStaleProcessing()).toBe(3);

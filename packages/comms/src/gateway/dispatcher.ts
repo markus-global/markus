@@ -18,9 +18,8 @@ import {
   approvalDirectionStyle,
   approvalCommentNote,
   notificationLabel,
-  priorityLabel,
-  statusLabel,
   readNotificationI18n,
+  resolveNotificationEnumParams,
 } from '@markus/shared';
 import {
   severityOfNotification,
@@ -440,7 +439,17 @@ export class OutboundDispatcher {
     // Several configured destinations and more than one of them could have carried
     // this: say which won, so "why did the notification show up in *that* chat?"
     // has an answer in the log instead of in the candidate ordering.
-    const otherInstanceScoped = (alternatives ?? []).filter((c) => c.scope === 'instance');
+    // Only an *eligible* destination counts as an alternative. The resolver
+    // returns every candidate after the winner **unjudged** — it is a pure walk,
+    // and "why may this message not go there" belongs here (see eligibilityFor).
+    // Filtering by scope alone therefore listed a bot whose notifications were
+    // switched off as `alsoAvailable`, inventing a routing choice that never
+    // existed. That reads as a mis-route and sends the operator to "fix" routing
+    // which is already correct — a warning must point at a real lever.
+    const isEligible = this.eligibilityFor(msg);
+    const otherInstanceScoped = (alternatives ?? []).filter(
+      (c) => c.scope === 'instance' && !isEligible(c.target),
+    );
     if (scope === 'instance' && otherInstanceScoped.length > 0) {
       log.warn('Several notification destinations available — the first eligible one was used', {
         title: msg.title,
@@ -484,30 +493,6 @@ export class OutboundDispatcher {
  * a secret the raw id is used (legacy behaviour, flagged as a configuration gap).
  */
 /**
- * Resolve the params that are themselves enum keys the reader needs translated
- * (`状态已变为 in_progress`, `（优先级：normal）`). The producer cannot do this — it
- * does not know the reader — and the renderer owns the language, so it happens
- * here. Content params (a task title, a preview, the review tail) pass through
- * untouched.
- */
-function resolveEnumParams(
-  params: Record<string, unknown> | undefined,
-  locale?: string,
-): Record<string, unknown> | undefined {
-  if (!params) return undefined;
-  const out: Record<string, unknown> = { ...params };
-  if (typeof out['priority'] === 'string') {
-    out['priority'] = priorityLabel(out['priority'] as string, locale) ?? out['priority'];
-  }
-  for (const key of ['status', 'statusKey'] as const) {
-    if (typeof out[key] === 'string') {
-      out[key] = statusLabel(out[key] as string, locale) ?? out[key];
-    }
-  }
-  return out;
-}
-
-/**
  * The sentence that replaces a choice needing typed input on a destination that
  * cannot collect it. Dispatcher owns the locale; renderer owns the capability.
  */
@@ -536,8 +521,8 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
   // "Task completed: …" in Feishu and "任务已完成：…" in the product, from one fact.
   // Unknown/legacy keys fall through to the raw text: never invent a sentence.
   const i18n = readNotificationI18n(metadata);
-  const title = notificationLabel(i18n?.titleKey, locale, resolveEnumParams(i18n?.titleParams, locale)) ?? n.title;
-  const body = notificationLabel(i18n?.bodyKey, locale, resolveEnumParams(i18n?.bodyParams, locale)) ?? n.body;
+  const title = notificationLabel(i18n?.titleKey, locale, resolveNotificationEnumParams(i18n?.titleParams, locale)) ?? n.title;
+  const body = notificationLabel(i18n?.bodyKey, locale, resolveNotificationEnumParams(i18n?.bodyParams, locale)) ?? n.body;
 
   const msg: OutboundMessage = {
     title,

@@ -1052,7 +1052,7 @@ describe('APIServer route handlers', () => {
       const res = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/a2a`, {
         fromAgentId: AGENT_B, message: 'hello',
       });
-      // A2A 永远异步（mailbox-system.md §11.2）：投递即返回 deliveryId，
+      // A2A 永远异步（a2a-communication.md §11.2）：投递即返回 deliveryId，
       // 不等对端回复。否则「对端不回」与「对端在思考」在调用方看来无法区分。
       expect(res.status).toBe(200);
       expect(res.json.state).toBe('queued');
@@ -1090,8 +1090,11 @@ describe('APIServer route handlers', () => {
     it('POST /api/agents/:id/mailbox/recover-stale (stale processing 手动恢复入口)', async () => {
       const res = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/mailbox/recover-stale`);
       expect(res.status).toBe(200);
-      expect(typeof (res.json.dropped as number)).toBe('number');
-      // 幂等：再调一次不炸（无陈旧行时 dropped=0）
+      // C3 起 recover-stale 的结局是 `bounced(lease_expired)`（进 catch-all 概览），
+      // 旧 `dropped` 终态已删除，响应字段随之改名 —— 与 web-ui api.ts 的
+      // `{ bounced: number }` 同名，两处描述同一事实。
+      expect(typeof (res.json.bounced as number)).toBe('number');
+      // 幂等：再调一次不炸（无陈旧行时 bounced=0）
       const again = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/mailbox/recover-stale`);
       expect(again.status).toBe(200);
     });
@@ -1109,6 +1112,60 @@ describe('APIServer route handlers', () => {
     it('PATCH /api/agents/:id/config', async () => {
       const res = await request(ctx.server, 'PATCH', `/api/agents/${AGENT_A}/config`, { name: 'Renamed' });
       expect(res.status).toBe(200);
+    });
+
+    /**
+     * The model binding must survive a restart, which means the ROW has to be
+     * right — not just the live process. Three ways that used to fail silently:
+     * clearing sent `undefined` (dropped by JSON, old model kept on the row),
+     * an unrelated PATCH rewrote the whole column from memory, and a failed
+     * write still answered 200 so the UI claimed success.
+     */
+    it('PATCH config: defaultModel=null removes the key from the persisted row', async () => {
+      const agent = ctx.agentManager.getAgent(AGENT_A)!;
+      (agent.config as Record<string, unknown>).llmConfig = {
+        modelMode: 'custom', primary: 'markus', defaultModel: 'qwen/qwen4-max',
+      };
+      const updateConfig = ctx.storage.agentRepo.updateConfig as ReturnType<typeof vi.fn>;
+      updateConfig.mockClear();
+
+      const res = await request(ctx.server, 'PATCH', `/api/agents/${AGENT_A}/config`, {
+        llmConfig: { modelMode: 'default', primary: '', defaultModel: null },
+      });
+
+      expect(res.status).toBe(200);
+      const persisted = updateConfig.mock.calls.at(-1)![1] as { llmConfig: Record<string, unknown> };
+      expect(persisted.llmConfig.modelMode).toBe('default');
+      // Absent, not null and not the old model: a leftover resurrects itself the
+      // next time the mode flips back to 'custom'.
+      expect(Object.prototype.hasOwnProperty.call(persisted.llmConfig, 'defaultModel')).toBe(false);
+    });
+
+    it('PATCH config: an unrelated field does not rewrite the model column', async () => {
+      const updateConfig = ctx.storage.agentRepo.updateConfig as ReturnType<typeof vi.fn>;
+      updateConfig.mockClear();
+
+      const res = await request(ctx.server, 'PATCH', `/api/agents/${AGENT_A}/config`, { name: 'Just A Rename' });
+
+      expect(res.status).toBe(200);
+      const persisted = updateConfig.mock.calls.at(-1)![1] as { llmConfig?: unknown };
+      expect(persisted.llmConfig).toBeUndefined();
+    });
+
+    it('PATCH config: a failed persist answers 5xx and rolls the live value back', async () => {
+      const agent = ctx.agentManager.getAgent(AGENT_A)!;
+      const before = { modelMode: 'custom', primary: 'markus', defaultModel: 'qwen/qwen4-max' };
+      (agent.config as Record<string, unknown>).llmConfig = { ...before };
+      const updateConfig = ctx.storage.agentRepo.updateConfig as ReturnType<typeof vi.fn>;
+      updateConfig.mockRejectedValueOnce(new Error('db is locked'));
+
+      const res = await request(ctx.server, 'PATCH', `/api/agents/${AGENT_A}/config`, {
+        llmConfig: { modelMode: 'custom', primary: 'openai', defaultModel: 'gpt-4' },
+      });
+
+      // Reporting 200 here is what made a lost binding look saved until restart.
+      expect(res.status).toBe(500);
+      expect((agent.config as Record<string, unknown>).llmConfig).toEqual(before);
     });
 
     it('GET /api/agents/:id/memory', async () => {

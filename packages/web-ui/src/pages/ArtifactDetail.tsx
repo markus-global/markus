@@ -400,6 +400,7 @@ function sortFiles(files: [string, string][]): [string, string][] {
 // TabbedFiles: show multiple files via tab switching
 // ---------------------------------------------------------------------------
 function TabbedFiles({ files: rawFiles, onSave, noHeader, readOnly }: { files: [string, string][]; onSave: (filename: string, content: string) => void; noHeader?: boolean; readOnly?: boolean }) {
+  const { t } = useTranslation(['builder', 'common']);
   const files = useMemo(() => sortFiles(rawFiles), [rawFiles]);
   const [activeTab, setActiveTab] = useState(0);
 
@@ -407,7 +408,7 @@ function TabbedFiles({ files: rawFiles, onSave, noHeader, readOnly }: { files: [
     if (noHeader) return <FileSection filename={files[0]![0]} content={files[0]![1]} onSave={c => onSave(files[0]![0], c)} readOnly={readOnly} />;
     return (
       <div className="mb-8">
-        <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">Files</h2>
+        <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">{t('detail.files')}</h2>
         <FileSection filename={files[0]![0]} content={files[0]![1]} onSave={c => onSave(files[0]![0], c)} readOnly={readOnly} />
       </div>
     );
@@ -431,7 +432,7 @@ function TabbedFiles({ files: rawFiles, onSave, noHeader, readOnly }: { files: [
   if (noHeader) return inner;
   return (
     <div className="mb-8">
-      <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">Files</h2>
+      <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">{t('detail.files')}</h2>
       {inner}
     </div>
   );
@@ -734,7 +735,7 @@ function TeamTabs({ members, teamTopFiles, files, artifactName, onFileSave, read
             )}
             {(() => {
               const mf = getMemberFiles(activeMember.name, activeMemberIdx);
-              if (mf.length === 0) return <p className="text-xs text-fg-muted italic">No files for this member yet.</p>;
+              if (mf.length === 0) return <p className="text-xs text-fg-muted italic">{t('artifact.noFilesForMember')}</p>;
               return (
                 <TabbedFiles
                   noHeader
@@ -1256,7 +1257,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
                 {t('common:cancel')}
               </button>
             </div>
-            {hubStatus.shared && <p className="text-[10px] text-fg-tertiary mt-2">After bumping the version, you can share the new version to Hub.</p>}
+            {hubStatus.shared && <p className="text-[10px] text-fg-tertiary mt-2">{t('detail.shareAfterVersionBump')}</p>}
           </div>
         )}
 
@@ -1381,7 +1382,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
             {type === 'agent' && agentFiles.length > 0 && (
               <div className="mb-8">
-                <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">About This Agent</h2>
+                <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">{t('artifact.aboutThisAgent')}</h2>
                 <TabbedFiles noHeader files={agentFiles} onSave={handleFileSave} readOnly={readOnly} />
               </div>
             )}
@@ -1406,7 +1407,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
                 {manifest.skill?.mcpServers && Object.keys(manifest.skill.mcpServers).length > 0 && (
                   <div className="mb-6">
-                    <h2 className="text-sm font-semibold text-fg-primary mb-3 uppercase tracking-wider">Integrations</h2>
+                    <h2 className="text-sm font-semibold text-fg-primary mb-3 uppercase tracking-wider">{t('artifact.integrations')}</h2>
                     <div className="grid gap-2">
                       {Object.entries(manifest.skill.mcpServers).map(([sname, config]) => (
                         <div key={sname} className="rounded-lg border border-border-default bg-surface-secondary/40 px-4 py-3 flex items-center gap-3">
@@ -1423,7 +1424,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
                 {skillFile && (
                   <div>
-                    <h2 className="text-sm font-semibold text-fg-primary mb-3 uppercase tracking-wider">Instructions</h2>
+                    <h2 className="text-sm font-semibold text-fg-primary mb-3 uppercase tracking-wider">{t('artifact.instructions')}</h2>
                     <div className="rounded-xl border border-border-default bg-surface-secondary/40 p-5">
                       <RenderedMarkdown content={skillFile} />
                     </div>
@@ -1642,7 +1643,7 @@ function VisibilityDialog({ onClose, onConfirm }: {
           <div className="mb-5">
             <label className="text-xs text-fg-secondary block mb-1.5">{t('visibility.orgSelect')}</label>
             {loadingOrgs ? (
-              <div className="text-xs text-fg-tertiary py-2">Loading...</div>
+              <div className="text-xs text-fg-tertiary py-2">{t('common:loading')}</div>
             ) : orgs.length === 0 ? (
               <div className="text-xs text-fg-tertiary py-2">{t('visibility.orgNone')}</div>
             ) : (

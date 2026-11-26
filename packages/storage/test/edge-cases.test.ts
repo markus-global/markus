@@ -7,7 +7,6 @@ import {
   SqliteOrgRepo,
   SqliteAgentRepo,
   SqliteTaskRepo,
-  SqliteMessageRepo,
 } from '../src/sqlite-storage.js';
 
 let tempDir: string;
@@ -94,32 +93,6 @@ describe('sqlite-storage edge cases', () => {
     const db = openSqlite(dbPath);
     const taskRepo = new SqliteTaskRepo(db);
     await expect(taskRepo.updateStatus('missing-task', 'completed')).resolves.toBeUndefined();
-  });
-
-  it('stores messages with unicode and special characters', () => {
-    const db = openSqlite(dbPath);
-    const orgRepo = new SqliteOrgRepo(db);
-    orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
-    const agentRepo = new SqliteAgentRepo(db);
-    agentRepo.create({ id: 'a1', name: 'Agent', orgId: 'org-1', roleId: 'r1', roleName: 'Dev' });
-
-    const msgRepo = new SqliteMessageRepo(db);
-    const text = '你好 🚀 emoji content';
-    msgRepo.create({
-      id: 'msg-1',
-      platform: 'webui',
-      direction: 'inbound',
-      channelId: 'ch-1',
-      senderId: 'user-1',
-      senderName: 'Alice',
-      agentId: 'a1',
-      content: { type: 'text', text },
-    });
-
-    const rows = msgRepo.findByChannel('ch-1', 1) as Array<{ content: string }>;
-    expect(rows).toHaveLength(1);
-    const parsed = JSON.parse(rows[0].content) as { text: string };
-    expect(parsed.text).toBe(text);
   });
 
   it('closeSqlite allows reopening a new database path', () => {

@@ -137,7 +137,7 @@
       "runtimeStatus": "运行状态",
       "usage": "用量",
       "storage": "存储",
-      "openFolder": "打开文件夹 →",
+      "openFolder": "打开文件夹",
       "detailsToggle": "用量与存储明细",
       "stopAgentConfirm": {
         "title": "停止这个智能体？",
@@ -145,8 +145,24 @@
         "confirm": "停止"
       },
       "lifetimeCaption": "自 Agent 创建以来累计",
+      "storageLabel": "磁盘占用",
+      "storageScanBtn": "查看磁盘占用",
+      "storageLoading": "读取中…",
+      "cleanupCta": "让 Agent 清理数据",
+      "cleanupHint": "会在聊天里预填指令，发送与否由你决定；Agent 拿不准时会先问你。",
+      "cleanupPrefill": "请检查你自己的数据（工作区、日志、会话历史、记忆归档），列出一份「可以安全清理」的清单与理由。\n不确定的项先问我，不要自行删除；我确认后你再动手。",
+      "storageTotalHint": "智能体数据目录合计",
+      "storageMore": "其他 {{count}} 项 · 合计 {{size}}",
       "storageDepthLimited": "目录层级较深，实际占用可能高于此值",
       "sections": {
+        "run": {
+          "title": "概览",
+          "hint": "在跑什么 · 待处理 · 休眠与唤醒 · 最近活动"
+        },
+        "capability": {
+          "title": "能力",
+          "hint": "技能与工具"
+        },
         "files": {
           "title": "文件",
           "hint": "ROLE.md / HEARTBEAT.md / knowledge.md 等"
@@ -165,13 +181,17 @@
           "hint": "已启用的技能与工具"
         },
         "memory": {
-          "title": "记忆与心跳",
-          "hint": "长期记忆 · 会话 · 心跳节奏与唤醒"
+          "title": "记忆",
+          "hint": "长期记忆 · 观察 · 会话"
         },
         "usage": {
           "title": "用量与存储",
           "hint": "累计 Token · 请求数 · 磁盘占用",
           "empty": "暂无用量数据"
+        },
+        "settings": {
+          "title": "设置",
+          "hint": "ROLE / POLICIES 配置 · 用量与存储"
         }
       },
       "storageBuckets": {
@@ -247,9 +267,26 @@
       "activeTasksCount_one": "{{count}} 个进行中任务",
       "activeTasksCount_other": "{{count}} 个进行中任务",
       "mailboxQueued": "mailbox 有 {{count}} 条消息排队中",
+      "runningTitle": "正在运行",
+      "runningNone": "当前没有进行中的工作单元",
+      "runningInternal": "内部会话",
+      "runningWorker": "工作进程 …{id}",
+      "runningBudgetHint": "本回合已用 / 工具调用额度上限",
+      "runningUnavailable": "暂时读不到运行状态",
       "startAgent": "▶ 启动",
       "stopAgent": "⏹ 停止",
-      "openClaw": "OpenClaw"
+      "openClaw": "OpenClaw",
+      "heartbeatRuns": "{{count}} 次心跳",
+      "a2aRuns": "{{count}} 次 A2A",
+      "capabilityCollapsed": "能力（工具与技能）— 点开查看",
+      "workUnit": {
+        "subDelegation": "子任务委派",
+        "delegation": "委派任务",
+        "task": "任务执行",
+        "requirement": "需求处理",
+        "channel": "群聊回复",
+        "unknown": "未知工作单元"
+      }
     },
     "syncContext": {
       "assignedTasks": "带需求与项目可追溯性的任务",
@@ -299,7 +336,9 @@
         "heartbeatMd": "心跳任务",
         "policiesMd": "策略与护栏",
         "contextMd": "上下文与说明"
-      }
+      },
+      "filesDiffer": "{{count}} 个文件与 {{templateId}} 不一致",
+      "emptyFile": "暂无内容"
     },
     "diff": {
       "title": "差异：当前 vs 模板（{{templateId}}）",
@@ -310,7 +349,8 @@
     },
     "toolsTab": {
       "registeredCount": "已注册 {{count}} 个工具",
-      "noToolsRegistered": "未注册任何工具"
+      "noToolsRegistered": "未注册任何工具",
+      "title": "工具"
     },
     "skillsTab": {
       "alwaysOn": "常驻",
@@ -321,13 +361,21 @@
       "loadingDetails": "正在加载技能详情…",
       "toolsHeading": "工具（{{count}}）",
       "detailsUnavailable": "无法获取技能详情（可能未在商店注册）",
-      "installedCount": "已安装 {{count}} 个技能 — 描述会自动注入智能体上下文",
+      "installedCount": "已安装 {{count}} 个技能包 — 描述已注入上下文；正文（SOP）按需加载（`discover_tools` 取）",
       "noSkills": "未安装技能",
       "byAuthor": "作者 {{author}}",
       "missingSkillsTitle": "{{count}} 个已分配技能未安装",
       "missingSkillsHint": "该技能未安装，相关工具不可用。请安装该技能，或将其从本智能体移除。"
     },
     "memoryTab": {
+      "organizeCta": "让 Agent 整理记忆",
+      "organizePrefill": "你的 knowledge.md 已超出预算（{{used}}/{{limit}} 字符，{{pct}}%）。请整理：合并同类段落、删掉已被新结论取代的条目，只留可复用的结论；过程与流水不要留在策展区。整理前先把打算删/合并的清单给我看。",
+      "organizePrefillHint": "会跳到聊天并预填指令，发送与否由你决定",
+      "detailsToggle": "明细（磁盘策展区 · 观察缓冲 · 归档）",
+      "injectionLine": "本轮注入（prompt 预算）",
+      "curatedLine": "磁盘策展区（超预算会无损归档）",
+      "observationLine": "观察缓冲（不注入）",
+      "injectionOmittedHint": "已有 {{count}} 段因超出注入上限而未内联（仍可按需检索）",
       "loading": "正在加载记忆…",
       "loadFailed": "加载记忆数据失败",
       "recent": "最近（{{count}}）",
@@ -349,7 +397,14 @@
         "system": "系统",
         "assistant": "助手"
       },
-      "userEditedSource": "用户编辑"
+      "userEditedSource": "用户编辑",
+      "healthTitle": "记忆健康（knowledge.md）",
+      "observationsCount": "观察",
+      "curatedCount": "知识段",
+      "archivedChars": "已归档",
+      "lastConsolidated": "上次整理",
+      "charsOfCap": "{{used}} / {{cap}} 字符",
+      "archivedCharsSearchable": "{{count}} 字符（可检索）"
     },
     "heartbeatTab": {
       "loading": "正在加载心跳数据…",
@@ -405,7 +460,13 @@
       "firstHeartbeatSoon": "首次心跳约在 {{when}} 后触发。",
       "schedulerStopped": "心跳调度已停止。",
       "runFirstNow": "立即运行首次心跳",
-      "soon": "很快"
+      "soon": "很快",
+      "wakeupsCount": "{{count}} 个唤醒",
+      "pendingOpsCount": "{{count}} 个待处理",
+      "runsThisSession": "本会话 {{count}} 次",
+      "actionsCount": "{{count}} 个动作",
+      "intervalHours": "每 {{count}} 小时",
+      "intervalMinutes": "每 {{count}} 分钟"
     },
     "relative": {
       "inSeconds": "{{count}} 秒后",
@@ -458,7 +519,7 @@
       "deferred": "已推迟：{{count}}",
       "dropped": "已丢弃：{{count}}",
       "inlineCompleted": "内联完成：{{count}}",
-      "mailboxHistory": "邮箱历史",
+      "mailboxHistory": "工作记录",
       "noHistory": "暂无邮箱历史",
       "loadEarlier": "加载更早…",
       "decisions": "决策",
@@ -470,12 +531,12 @@
       "from": "来自：",
       "tokensCount": "{{count}} Token",
       "toolsCount": "{{count}} 个工具",
-      "categoryFilters": {
+      "entityFilters": {
         "all": "全部",
-        "interaction": "交互",
         "task": "任务",
-        "notification": "通知",
-        "system": "系统"
+        "requirement": "需求",
+        "channel": "会话",
+        "none": "未归属"
       },
       "statusFilters": {
         "all": "全部",
@@ -484,7 +545,8 @@
         "completed": "已完成",
         "merged": "已合并",
         "deferred": "已推迟",
-        "dropped": "已丢弃"
+        "bounced": "投递失败",
+        "catch_all": "退信概览"
       },
       "activityFilters": {
         "all": "全部",
@@ -526,8 +588,25 @@
         "systemAnnouncement": "系统公告",
         "systemEvent": "系统事件",
         "statusArrow": "{{from}} → {{to}}"
-      }
-    }
+      },
+      "noMatch": "这个筛选下没有记录",
+      "unitOrphan": "历史记录",
+      "scrollForMore": "下滑加载更多",
+      "roundDecisions": "本轮决策",
+      "loopIdle": "这段时间没有需要它判断的信号 —— 它在睡或已完成处置",
+      "unitEmpty": "这个实体目前没有记录",
+      "loadingContent": "正在载入完整正文…",
+      "showMore": "显示更多",
+      "unitTask": "任务 {{id}}",
+      "unitRequirement": "需求 {{id}}",
+      "unitConversation": "会话 {{id}}",
+      "unitLoop": "决策循环（Loop）",
+      "itemCount": "{{count}} 条",
+      "showMoreCount": "显示更多（还有 {{count}} 条）"
+    },
+    "sessionMessagesSubject": "会话消息",
+    "noSessionMessages": "这个会话没有消息",
+    "noDeliverables": "这个 agent 没有任何交付物"
   },
   "deliverables": {
     "empty": "暂无交付物",
@@ -539,6 +618,13 @@
     "created": "创建于",
     "updated": "更新于",
     "accessed": "访问 {{count}} 次",
-    "openInPage": "在产出页面中打开"
+    "openInPage": "在产出页面中打开",
+    "diff": "差异",
+    "testsPassed": "{{n}} 通过",
+    "testsFailed": "{{n}} 失败",
+    "testsSkipped": "{{n}} 跳过",
+    "fileCount": "{{count}} 个文件",
+    "fileCount_one": "{{count}} 个文件",
+    "fileCount_other": "{{count}} 个文件"
   }
 }

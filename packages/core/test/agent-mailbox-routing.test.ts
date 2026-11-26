@@ -68,10 +68,12 @@ async function processViaMailbox(
   sourceType: Parameters<Agent['enqueueToMailbox']>[0],
   payload: Parameters<Agent['enqueueToMailbox']>[1],
   metadata?: Parameters<Agent['enqueueToMailbox']>[2] extends { metadata?: infer M } ? M : never,
+  options?: Parameters<Agent['enqueueToMailbox']>[2],
 ) {
   return new Promise<string>((resolve, reject) => {
     agent.enqueueToMailbox(sourceType, payload, {
       metadata: { ...metadata },
+      ...options,
       runtime: { responsePromise: { resolve, reject } },
     });
   });
@@ -139,8 +141,7 @@ describe('Agent mailbox item routing', () => {
       summary: 'Req approved',
       content: 'Requirement was approved — take action',
       requirementId: 'req_2',
-      extra: { actionRequired: true },
-    });
+    }, undefined, { intent: 'action_required' });
 
     expect(reply).toContain('Handled');
     await agent.stop();
@@ -169,8 +170,8 @@ describe('Agent mailbox item routing', () => {
     const reply = await processViaMailbox(agent, 'workflow_update', {
       summary: 'Workflow step',
       content: 'Complete the deployment step',
-      extra: { actionRequired: true, event: 'step_complete' },
-    });
+      extra: { event: 'step_complete' },
+    }, undefined, { intent: 'action_required' });
 
     expect(reply).toContain('Handled');
     await agent.stop();

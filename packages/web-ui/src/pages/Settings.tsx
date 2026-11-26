@@ -6,18 +6,26 @@ import { ListLoading } from '../components/AsyncState.tsx';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import AuditFactsPage from './AuditFacts.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import { proxyFailureMessage } from '../lib/proxyFailure.ts';
+import {
+  CARD, TYPE, FG, FIELD_INPUT, BTN_PRIMARY, BTN_SECONDARY,
+  Badge, SettingRow, Section, CollapsibleSection,
+} from '../lib/settings-primitives.tsx';
 import { isElectron } from '../hooks/useElectron.ts';
 import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
 import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
+import { OrgSummarySection } from '../components/OrgAccountSection.tsx';
 import { PerAgentModelSection } from '../components/PerAgentModelSection.tsx';
 import { useProviderCatalog } from '../constants/providers.ts';
 import { InstancesSection } from '../components/integrations/InstancesSection.tsx';
 import { RemoteAccessSection } from '../components/RemoteAccessSection.tsx';
+import { ExternalSourcesSection } from '../components/ExternalSourcesSection.tsx';
 import { FilterableSelect } from '../components/FilterableSelect.tsx';
 // import { CodingToolsSettings } from './CodingToolsSettings.tsx'; // TEMP-HIDDEN (2026-08)
 import { WebSearchSettings } from './WebSearchSettings.tsx';
@@ -55,31 +63,71 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'external-sources' | 'license';
 
-interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
+interface SettingsTabDef {
+  id: SettingsTab;
+  labelKey: string;
+  adminOnly?: boolean;
+  /**
+   * Only exposed by a development build (`import.meta.env.DEV`).
+   *
+   * C10-F（Owner 2026-11-26）：外部信号暂时不在正式发版里开放。这个字段是那道门的
+   * **唯一声明点** —— 侧边栏、L1 键盘顺序与深链归一化全读它，所以“隐藏”不会因为
+   * 某个调用点忘了判而漏掉一条路（深链就是第二条路）。
+   */
+  devOnly?: boolean;
+}
 
 /** Module-scoped — used by Settings page and CollapsibleAvailableModels. */
 export const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'appearance', labelKey: 'nav.appearance' },
-  { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
   { id: 'providers', labelKey: 'nav.providers', adminOnly: true },
   { id: 'execution', labelKey: 'nav.execution', adminOnly: true },
   { id: 'browser', labelKey: 'nav.browser', adminOnly: true },
   // { id: 'coding-tools', labelKey: 'nav.codingTools', adminOnly: true },
   { id: 'search', labelKey: 'nav.search', adminOnly: true },
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
+  // C10-F: whether the platform accepts input from outside at all, and what an
+  // accepted signal may do. Admin-only like the other connection surfaces — it
+  // is an access decision, not a preference.
+  //
+  // 暂不在正式发版开放（Owner 2026-11-26）：只在 dev 构建 / 8057 开发实例出现。
+  // 后端入口仍在，但组织级总闸默认 `off` —— 见 external-source-service 的
+  // `ingressPolicy ?? 'off'`（失败关闭），所以“没入口”不等于“无门禁”。
+  { id: 'external-sources', labelKey: 'nav.externalSignals', adminOnly: true, devOnly: true },
   { id: 'network', labelKey: 'nav.network', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
+  { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
+  { id: 'facts', labelKey: 'nav.facts', adminOnly: true },
 ];
 
 export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] }> = [
-  { labelKey: 'nav.group.general', tabs: ['appearance', 'storage'] },
+  { labelKey: 'nav.group.general', tabs: ['appearance'] },
+  // 「AI」组包含模型与执行策略：两者回答同一个问题——Agent 用什么脑子、按什么规矩动手。
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
-  { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
+  { labelKey: 'nav.group.connections', tabs: ['integrations', 'external-sources', 'network'] },
   { labelKey: 'nav.group.account', tabs: ['account'] },
+  // 数据与审计放最后：这两个页面回答"平台存了什么、凭什么这么判断"，
+  // 属于诊断/取证，不该夹在日常偏好设置中间（Owner 2026-11-15）。
+  { labelKey: 'nav.group.data', tabs: ['storage', 'facts'] },
 ];
+
+/** The build's own dev signal — the same single source `InstancesSection` reads. */
+export const DEV_BUILD: boolean = import.meta.env.DEV;
+
+/**
+ * Which tabs this build/role exposes. Pure, and the only place that decides.
+ *
+ * The rail, the keyboard order and the deep-link normaliser all read this one
+ * answer; asking the question twice is how "hidden" grows a second door.
+ */
+export function visibleSettingsTabs(opts: { dev: boolean; canManageOrg: boolean }): SettingsTabDef[] {
+  return SETTINGS_TABS.filter(
+    (tab) => (!tab.adminOnly || opts.canManageOrg) && (!tab.devOnly || opts.dev),
+  );
+}
 
 /** Data each settings tab needs the first time it is opened (pure, testable). */
 export type SettingsLoadKey = 'llm' | 'network' | 'oauth' | 'authProfiles' | 'agent' | 'browser' | 'storage';
@@ -100,6 +148,8 @@ export function settingsTabLoads(tab: SettingsTab): SettingsLoadKey[] {
     case 'execution': return ['agent'];
     case 'browser': return ['browser'];
     case 'storage': return ['storage'];
+    // 事实审计自带数据加载与骨架态（AuditFacts 内部管理），不占 Settings 的懒加载清单。
+    case 'facts': return [];
     default: return [];
   }
 }
@@ -129,15 +179,24 @@ const STORAGE_SAFETY_LEVEL: Record<string, 'safe' | 'caution' | 'keep'> = {
 };
 
 // Leading icons for the settings nav (stroke-based lucide paths, one or more subpaths).
-const SETTINGS_TAB_ICONS: Record<string, string> = {
+// Exported so the "every registered tab is fully described" guard can assert that
+// a tab has its own mark — a missing entry silently falls back to `_default` (a
+// dot), which is the visual equivalent of the raw-i18n-key bug: the item renders,
+// so nothing looks broken enough to report.
+export const SETTINGS_TAB_ICONS: Record<string, string> = {
   appearance: 'M21 4H14 M10 4H3 M21 12H12 M8 12H3 M21 20H16 M12 20H3 M14 2v4 M8 10v4 M16 18v4',
   storage: 'M12 8c4.418 0 8-1.343 8-3s-3.582-3-8-3-8 1.343-8 3 3.582 3 8 3Z M4 5v6c0 1.657 3.582 3 8 3s8-1.343 8-3V5 M4 11v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6',
+  // 事实审计：带核验勾的卷宗（不是放大镜——这是"已核验的记录"，不是"搜索"）
+  facts: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M8.5 14.5l2.5 2.5 4-4.5',
   providers: 'M9 2v3 M15 2v3 M9 19v3 M15 19v3 M2 9h3 M2 15h3 M19 9h3 M19 15h3 M6 6h12v12H6z M9 9h6v6H9z',
   execution: 'M12 8V4H8 M4 8h16a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2z M2 14h2 M20 14h2 M15 13v2 M9 13v2',
   browser: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z',
   'coding-tools': 'M16 18l6-6-6-6 M8 6l-6 6 6 6',
   search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3',
   integrations: 'M9 17H7A5 5 0 0 1 7 7h2 M15 7h2a5 5 0 1 1 0 10h-2 M8 12h8',
+  // 外部信号：朝向天空的接收碟 + 两道入站波弧。刻意不复用 wifi 弧线——那已经是「网络与
+  // 访问」与「远程访问」的记号；两只碟+两弧在 16px 下与它们可区分。
+  'external-sources': 'M4 10a7.31 7.31 0 0 0 10 10Z M9 15l3-3 M17 13a6 6 0 0 0-6-6 M21 13A10 10 0 0 0 11 3',
   remote: 'M2 8.5a15 15 0 0 1 20 0 M5 12a10 10 0 0 1 14 0 M8.5 15.5a5 5 0 0 1 7 0 M12 19h.01',
   network: 'M2 8.5a15 15 0 0 1 20 0 M5 12a10 10 0 0 1 14 0 M8.5 15.5a5 5 0 0 1 7 0 M12 19h.01',
   account: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2 M12 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z',
@@ -152,7 +211,7 @@ function SettingsTabIcon({ id, className }: { id: string; className?: string }) 
   );
 }
 
-const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account', remote: 'network' };
+const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account', orgIdentity: 'account', remote: 'network' };
 
 /**
  * Pure hash → tab resolver. `hash` may carry a leading `#` (as `window.location.hash`
@@ -170,8 +229,25 @@ export function resolveSettingsTab(hash: string): SettingsTab | null {
   return null;
 }
 
+/**
+ * A tab that this build does not expose must not be reachable by URL either.
+ *
+ * `resolveSettingsTab` answers "which tab does this URL name"; this answers "is
+ * that name open in this build". Keeping them separate means the hash parser
+ * stays a registry question and a dev-only surface cannot be entered by typing
+ * `#settings/external-sources` into a production build.
+ */
+export function normalizeSettingsTab(
+  tab: SettingsTab | null,
+  dev: boolean = DEV_BUILD,
+): SettingsTab | null {
+  if (!tab) return null;
+  const def = SETTINGS_TABS.find((t) => t.id === tab);
+  return def?.devOnly && !dev ? null : tab;
+}
+
 function getSettingsTab(): SettingsTab | null {
-  return resolveSettingsTab(window.location.hash);
+  return normalizeSettingsTab(resolveSettingsTab(window.location.hash));
 }
 
 export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdated }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser; onLogout?: () => void; onUserUpdated?: (u: AuthUser) => void } = {}) {
@@ -267,9 +343,95 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [bindHostValue, setBindHostValue] = useState('0.0.0.0');
   const [bindHostEffective, setBindHostEffective] = useState('0.0.0.0');
   const [bindHostFromEnv, setBindHostFromEnv] = useState(false);
-  const [bindHostNotice, setBindHostNotice] = useState('');
-  const [bindHostPendingRestart, setBindHostPendingRestart] = useState(false);
+  /**
+   * 绑定主机操作的提示。**语气随状态一起存**，不从文案反推。
+   *
+   * 旧写法是 `bindHostNotice.includes('重启')` 来决定颜色 —— 把本地化文案当结构用：
+   * 文案一旦走 i18n（en/es 下不含「重启」二字），判断就永久失效，提示会静默变成灰色。
+   * 现在 warn 由**设置提示的那一处**声明，文案只负责给人看。
+   */
+  const [bindHostNotice, setBindHostNotice] = useState<{ text: string; warn: boolean } | null>(null);
   const [bindHostApplying, setBindHostApplying] = useState(false);
+  /**
+   * 用户选的是「哪种访问方式」，不是某个 IP 字面量。
+   *
+   * 以前界面上只有「仅本机 / 局域网」两档，而「远程访问」是另一张永远显示的卡片
+   * —— 三者本来互斥、平级，却分住在两个地方，选「仅本机」的人照样被塞一整块
+   * 隧道向导。local/lan 驱动监听地址；remote 只切展示（隧道连的是 127.0.0.1，
+   * 不靠开放监听地址生效）。
+   */
+  const [accessMode, setAccessMode] = useState<'local' | 'lan' | 'remote'>(() => {
+    // 「访问方式」是用户的意图，无法从监听地址反推：远程访问的监听地址同样是
+    // 127.0.0.1，与「仅本机」完全一样。不持久化的话，用户点完「远程访问」一刷新
+    // 就掉回「仅本机」，会以为自己的选择根本没保存。
+    try {
+      const saved = localStorage.getItem('markus.settings.accessMode');
+      if (saved === 'local' || saved === 'lan' || saved === 'remote') return saved;
+    } catch { /* 隐私模式下 localStorage 会抛，忽略即可 */ }
+    return 'lan';
+  });
+  /** 记住用户显式选的访问方式（存意图，不存监听地址）。 */
+  const chooseAccessMode = (mode: 'local' | 'lan' | 'remote') => {
+    setAccessMode(mode);
+    try { localStorage.setItem('markus.settings.accessMode', mode); } catch { /* ignore */ }
+  };
+  /**
+   * 切换即生效：一次点击 = 写配置 + 重绑定 + 等它回来。
+   *
+   * 以前是两步（「保存」写配置、「立即生效」才重绑），而用户点完保存看到的仍是
+   * 旧监听地址 —— 两个按钮描述的其实是同一个意图，中间那一步只是实现细节泄露
+   * 到了界面上。
+   *
+   * 代价是真实的：重绑定要关闭监听 socket，当前连接会断几秒。所以不能等 HTTP
+   * 响应（很可能永远等不到），而是轮询 /api/health 直到服务回来。
+   */
+  const applyAccessMode = async (mode: 'local' | 'lan') => {
+    if (bindHostFromEnv || bindHostApplying || authUser?.role !== 'owner') return;
+    const host = mode === 'local' ? '127.0.0.1' : '0.0.0.0';
+    chooseAccessMode(mode);
+    setBindHostValue(host);
+    if (host === bindHostEffective) {
+      // 已经是这个地址：只切 UI，不必重绑（重绑会白断一次连接）。
+      setBindHostNotice(null);
+      return;
+    }
+    setBindHostApplying(true);
+    setBindHostNotice({ text: t('accessScope.applying'), warn: true });
+    try {
+      const res = await fetch('/api/settings/network', {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ host }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      setBindHostApplying(false);
+      setBindHostNotice({ text: t('accessScope.saveFailed'), warn: true });
+      return;
+    }
+    // 重绑定会杀掉当前连接：不等响应，靠健康检查判断它什么时候回来。
+    void fetch('/api/settings/network/apply', {
+      method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
+    }).catch(() => { /* 连接被断开是预期行为 */ });
+
+    let retries = 0;
+    const poll = setInterval(async () => {
+      retries++;
+      try {
+        const r = await fetch('/api/health', { signal: AbortSignal.timeout(1500) });
+        if (r.ok) {
+          clearInterval(poll);
+          setBindHostApplying(false);
+          setBindHostNotice({ text: t('accessScope.applied'), warn: false });
+          loadNetworkSettings();
+          return;
+        }
+      } catch { /* still down */ }
+      if (retries > 20) { // ~8s 超时（400ms * 20）
+        clearInterval(poll);
+        setBindHostApplying(false);
+        setBindHostNotice({ text: t('accessScope.applyFailed'), warn: true });
+      }
+    }, 400);
+  };
   const [proxyEffective, setProxyEffective] = useState<{ proxy: string | null; source: string } | null>(null);
   const [proxySaving, setProxySaving] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -362,10 +524,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setEgressSource(egress.source ?? 'none');
           setEgressError(egress.error ?? null);
         }
-        setBindHostValue(d.server?.host ?? '0.0.0.0');
+        const host = d.server?.host ?? '0.0.0.0';
+        setBindHostValue(host);
+        // 只在用户从未显式选过时才按实际监听地址归位；选过就以他的选择为准。
+        setAccessMode(prev => {
+          try { if (localStorage.getItem('markus.settings.accessMode')) return prev; } catch { /* ignore */ }
+          return host === '0.0.0.0' ? 'lan' : 'local';
+        });
         setBindHostEffective(d.server?.effectiveHost ?? '0.0.0.0');
         setBindHostFromEnv(d.server?.source === 'env');
-        setBindHostPendingRestart(!!d.server?.pendingRestart);
         return true;
       })
       .catch(() => false);
@@ -840,7 +1007,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         // 读目录的**唯一实现**（与 AddModelWithCatalog 同一处，R14/R15）。
         const r = await readProviderCatalog(providerName);
         setAddProviderCatalogModels(r.state === 'ok' ? [...r.items] : []);
-        if (r.state === 'error') setAddProviderCatalogError(r.error ?? '读取失败');
+        if (r.state === 'error') setAddProviderCatalogError(r.error ?? t('common:readFailed'));
       }
     } catch (err) {
       // 读失败 ≠ 没有模型（R14）
@@ -1061,7 +1228,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   const canManageOrgSettings = authUser?.role === 'owner' || authUser?.role === 'admin';
 
-  const visibleTabs = SETTINGS_TABS.filter(tab => !tab.adminOnly || canManageOrgSettings);
+  const visibleTabs = visibleSettingsTabs({ dev: DEV_BUILD, canManageOrg: canManageOrgSettings });
   /** Flat tab order matching the L1 sidebar visual order (grouped). */
   const navigableTabs = useMemo(() => {
     const out: SettingsTabDef[] = [];
@@ -1252,59 +1419,53 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           ) : <div className="text-sm text-fg-tertiary">{t('common:loading')}</div>}
         </Section>
 
-        <Section title={t('appearance.title')}>
-          <div className={`${CARD} p-5 divide-y divide-border-default/40`}>
-            <Field label={t('appearance.theme')} description={t('appearance.themeDesc')}>
-              <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
-                {THEME_OPTIONS.map(({ value }) => (
-                  <button
-                    key={value}
-                    onClick={() => onThemeChange?.(value)}
-                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                      theme === value ? 'bg-brand-600 text-on-brand shadow-sm' : 'text-fg-secondary hover:text-fg-primary'
-                    }`}
-                  >
-                    {t(`appearance.modes.${value}`)}
-                  </button>
-                ))}
-              </div>
-            </Field>
-            <div className="pt-4">
-            <Field label={t('appearance.language')} description={t('appearance.languageDesc')}>
-              <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
-                {SUPPORTED_LANGUAGES.map(({ code, label }) => (
-                  <button
-                    key={code}
-                    onClick={() => {
-                      void i18n.changeLanguage(code);
-                      // Persist so the agent picks the matching default Markus search provider.
-                      void api.settings.updateSearch({ language: code }).catch(() => {});
-                    }}
-                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                      i18n.language === code || (code === 'en' && !SUPPORTED_LANGUAGES.some(l => l.code === i18n.language))
-                        ? 'bg-brand-600 text-on-brand shadow-sm' : 'text-fg-secondary hover:text-fg-primary'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </Field>
+        <div className={`${CARD} divide-y divide-border-default/40`}>
+          <SettingRow label={t('appearance.theme')} hint={t('appearance.themeDesc')}>
+            <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
+              {THEME_OPTIONS.map(({ value }) => (
+                <button
+                  key={value}
+                  onClick={() => onThemeChange?.(value)}
+                  className={`px-3 py-1.5 text-[11px] rounded-md transition-colors ${
+                    theme === value ? 'bg-brand-600 text-on-brand shadow-sm' : 'text-fg-secondary hover:text-fg-primary'
+                  }`}
+                >
+                  {t(`appearance.modes.${value}`)}
+                </button>
+              ))}
             </div>
-            {isElectron() && (
-              <div className="pt-4">
-                <Field label={t('appearance.launchAtLogin')} description={t('appearance.launchAtLoginDesc')}>
-                  <Switch
-                    checked={launchAtLogin}
-                    onChange={() => void toggleLaunchAtLogin()}
-                    label={t('appearance.launchAtLogin')}
-                    disabled={launchAtLoginBusy}
-                  />
-                </Field>
-              </div>
-            )}
-          </div>
-        </Section>
+          </SettingRow>
+          <SettingRow label={t('appearance.language')} hint={t('appearance.languageDesc')}>
+            <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
+              {SUPPORTED_LANGUAGES.map(({ code, label }) => (
+                <button
+                  key={code}
+                  onClick={() => {
+                    void i18n.changeLanguage(code);
+                    // Persist so the agent picks the matching default Markus search provider.
+                    void api.settings.updateSearch({ language: code }).catch(() => {});
+                  }}
+                  className={`px-3 py-1.5 text-[11px] rounded-md transition-colors ${
+                    i18n.language === code || (code === 'en' && !SUPPORTED_LANGUAGES.some(l => l.code === i18n.language))
+                      ? 'bg-brand-600 text-on-brand shadow-sm' : 'text-fg-secondary hover:text-fg-primary'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </SettingRow>
+          {isElectron() && (
+            <SettingRow label={t('appearance.launchAtLogin')} hint={t('appearance.launchAtLoginDesc')}>
+              <Switch
+                checked={launchAtLogin}
+                onChange={() => void toggleLaunchAtLogin()}
+                label={t('appearance.launchAtLogin')}
+                disabled={launchAtLoginBusy}
+              />
+            </SettingRow>
+          )}
+        </div>
         </>}
 
         {canManageOrgSettings && (
@@ -1407,19 +1568,19 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     <span className={`w-2 h-2 shrink-0 rounded-full ${info.configured && info.enabled ? 'bg-green-400' : info.configured ? 'bg-amber-400' : 'bg-gray-600'}`} />
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium">{info.displayName ?? name}</span>
-                        {name === llm.defaultProvider && <span className="text-[10px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">{t('modelProviders.badgeDefault')}</span>}
-                        {info.configured && !info.enabled && <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded">{t('modelProviders.disabled')}</span>}
-                        {info.oauthConnected && <span className="text-[10px] bg-green-500/15 text-green-600 px-1.5 py-0.5 rounded">{t('modelProviders.badgeOAuth')}</span>}
-                        {testResults[name]?.ok === true && <span className="text-[10px] bg-green-500/15 text-green-600 px-1.5 py-0.5 rounded">{t('modelProviders.testOk', { ms: testResults[name].durationMs })}</span>}
+                        <span className="text-[13px] font-medium">{info.displayName ?? name}</span>
+                        {name === llm.defaultProvider && <Badge tone="brand">{t('modelProviders.badgeDefault')}</Badge>}
+                        {info.configured && !info.enabled && <Badge tone="warn">{t('modelProviders.disabled')}</Badge>}
+                        {info.oauthConnected && <Badge tone="ok">{t('modelProviders.badgeOAuth')}</Badge>}
+                        {testResults[name]?.ok === true && <Badge tone="ok">{t('modelProviders.testOk', { ms: testResults[name].durationMs })}</Badge>}
                         {testResults[name]?.ok === false && (
-                          <span className="text-[10px] bg-red-500/15 text-red-500 px-1.5 py-0.5 rounded" title={testResults[name].error}>
+                          <Badge tone="danger" title={testResults[name].error}>
                             {testResults[name].errorCode
                               ? t('modelProviders.testFailedCode', { code: testResults[name].errorCode })
                               : testResults[name].code === 'PROVIDER_DISABLED'
                                 ? t('modelProviders.testDisabled')
                                 : t('modelProviders.testFailed')}
-                          </span>
+                          </Badge>
                         )}
                       </div>
                       <div className="text-xs text-fg-tertiary mt-0.5">
@@ -1747,10 +1908,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                         {expandedProvider === name && addProviderCatalogError && (
                           <ReadErrorNotice
                             variant="inline"
-                            subject="模型目录"
+                            subject={t('settings:modelCatalog.subject')}
                             error={addProviderCatalogError}
-                            notEquals="该 provider 没有模型"
-                            hint="稍后重新选择 provider 重试"
+                            notEquals={t('settings:modelCatalog.noModels')}
+                            hint={t('settings:modelCatalog.retryHint')}
                           />
                         )}
                         {expandedProvider === name && addProviderCatalogModels.length > 0 && (
@@ -2141,153 +2302,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'network' && <>
         {/* ───── Access scope (bind host) ───── */}
-        <CollapsibleSection title={t('accessScope.title')} defaultOpen={true}>
-          <div className={`${CARD} p-5 space-y-4`}>
-            <p className="text-[13px] text-fg-secondary leading-relaxed">{t('accessScope.description')}</p>
 
-            {/* Segmented control: two presets only */}
-            <div className="flex rounded-lg bg-surface-secondary/80 p-1 gap-1">
-              <button
-                disabled={bindHostFromEnv}
-                onClick={() => setBindHostValue('127.0.0.1')}
-                className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all text-center ${
-                  bindHostValue === '127.0.0.1' && !bindHostFromEnv
-                    ? 'bg-brand-600 text-on-brand shadow-sm'
-                    : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
-                } ${bindHostFromEnv ? 'opacity-40 cursor-not-allowed' : ''}`}
-              >{t('accessScope.localOnly')}</button>
-              <button
-                disabled={bindHostFromEnv}
-                onClick={() => setBindHostValue('0.0.0.0')}
-                className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all text-center ${
-                  bindHostValue === '0.0.0.0' && !bindHostFromEnv
-                    ? 'bg-brand-600 text-on-brand shadow-sm'
-                    : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
-                } ${bindHostFromEnv ? 'opacity-40 cursor-not-allowed' : ''}`}
-              >{t('accessScope.lan')}</button>
-            </div>
 
-            {/* Status + hint in one clean line */}
-            <div className="flex items-center gap-2 text-[13px] text-fg-secondary">
-              <span className={`w-2 h-2 rounded-full shrink-0 ${bindHostEffective === '0.0.0.0' ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
-              <span>{t('accessScope.current', { host: bindHostEffective })}</span>
-              <span className={bindHostEffective === '0.0.0.0' ? 'text-emerald-600 dark:text-emerald-400' : 'text-fg-muted'}>
-                {bindHostEffective === '0.0.0.0' ? t('accessScope.lanHint') : t('accessScope.localOnlyHint')}
-              </span>
-            </div>
 
-            {bindHostFromEnv && (
-              <p className="text-[13px] text-amber-500 flex items-center gap-1.5">
-                ⚠ {t('accessScope.envControlled')}
-              </p>
-            )}
-
-            {/* Single morphing button: 保存 → 立即生效 → 保存 */}
-            <div className="flex items-center gap-3 pt-0.5">
-              <button
-                disabled={authUser?.role !== 'owner' || bindHostFromEnv || bindHostApplying}
-                onClick={async () => {
-                  /* ── Phase A: user sees "立即生效" → fire-and-forget + poll for recovery ── */
-                  if (bindHostPendingRestart) {
-                    // Optimistic UI: show applying immediately, don't wait for response
-                    // (backend returns 202 then rebinds, which drops our connection)
-                    setBindHostApplying(true);
-                    setBindHostNotice(t('accessScope.applying'));
-                    try {
-                      const res = await fetch('/api/settings/network/apply', {
-                        method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
-                      });
-                      // If we get here, server managed to respond — could be 200 or 202
-                      if (res.status === 202 || res.ok) {
-                        setBindHostNotice('⏳ Markus 正在重启，页面将自动刷新…');
-                      } else {
-                        throw new Error(`HTTP ${res.status}`);
-                      }
-                    } catch {
-                      // Expected: connection dropped during server rebind
-                      setBindHostNotice('⏳ Markus 正在重启，页面将自动刷新…');
-                    }
-                    // Poll for the server to come back after the rebind. It now
-                    // resolves in well under a second (see applyBindHost), so poll
-                    // briskly and give up quickly instead of waiting 30s.
-                    let retries = 0;
-                    const poll = setInterval(async () => {
-                      retries++;
-                      try {
-                        const r = await fetch('/api/health', { signal: AbortSignal.timeout(1500) });
-                        if (r.ok) {
-                          clearInterval(poll);
-                          setBindHostApplying(false);
-                          setBindHostPendingRestart(false);
-                          setBindHostNotice(t('accessScope.applied'));
-                          loadNetworkSettings();
-                          return;
-                        }
-                      } catch { /* still down */ }
-                      if (retries > 20) { // ~8s timeout (400ms * 20)
-                        clearInterval(poll);
-                        setBindHostApplying(false);
-                        setBindHostNotice(t('accessScope.applyFailed'));
-                      }
-                    }, 400);
-                    return;
-                  }
-
-                  /* ── Phase B: user sees "保存" → clicking saves & may morph button ── */
-                  const prevEffective = bindHostEffective;
-                  try {
-                    const res = await fetch('/api/settings/network', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ host: bindHostValue }),
-                    });
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    const d = await res.json() as { restartRequired?: boolean };
-                    const serverSaysNeedsRestart = !!d.restartRequired;
-                    const valueDidChange = bindHostValue !== prevEffective;
-                    const shouldShowApply = serverSaysNeedsRestart || valueDidChange;
-
-                    setBindHostPendingRestart(shouldShowApply);
-                    setBindHostNotice(shouldShowApply ? t('accessScope.restartRequired') : t('accessScope.saved'));
-
-                    // ⚠ Do NOT call loadNetworkSettings() here — it clobbers bindHostPendingRestart
-                    // because server.pendingRestart is often false even when a restart IS needed.
-                    // We'll refresh after the user clicks "立即生效".
-                  } catch {
-                    setBindHostNotice(t('accessScope.saveFailed'));
-                  }
-                }}
-                className={`inline-flex items-center justify-center gap-1.5 px-5 py-2 text-sm font-semibold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed min-w-[100px] ${
-                  bindHostPendingRestart
-                    ? 'bg-amber-500 text-on-brand hover:bg-amber-400 active:bg-amber-600'
-                    : 'bg-brand-600 text-on-brand hover:bg-brand-500 active:bg-brand-700'
-                }`}
-              >
-                {bindHostApplying ? (
-                  <><svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>{t('accessScope.applying')}</>
-                ) : bindHostPendingRestart ? (
-                  t('accessScope.applyNow')
-                ) : (
-                  t('accessScope.save')
-                )}
-              </button>
-              {bindHostNotice && (
-                <span className={`text-[13px] ${bindHostNotice.includes('重启') || bindHostNotice.includes('切换') || bindHostNotice.includes('已生效') ? 'text-amber-500' : 'text-fg-muted'}`}>
-                  {bindHostNotice}
-                </span>
-              )}
-            </div>
-
-            <p className="text-[12px] text-fg-muted leading-relaxed">{t('accessScope.remoteNote')}</p>
-          </div>
-        </CollapsibleSection>
-
-        {/* ───── Network / Proxy — redesigned ───── */}
-        <CollapsibleSection title={t('networkProxy.title')} defaultOpen={true}>
-          <div className={`${CARD} p-5 space-y-4`}>
+        {/* ───── Network / Proxy ───── */}
+        <Section title={t('networkProxy.title')} description={t('networkProxy.description')}>
+          <div className={`${CARD} divide-y divide-border-default/40`}>
 
             {/* ① Row: description + toggle */}
-            <div className="flex items-start justify-between gap-4">
-              <p className="text-[13px] text-fg-secondary leading-relaxed">{t('networkProxy.description')}</p>
+            <SettingRow label={t('networkProxy.enabledLabel')}>
               <button
                 onClick={async () => {
                   const newVal = !proxyEnabled;
@@ -2300,200 +2323,291 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     loadNetworkSettings();
                   } catch { setProxyEnabled(!newVal); }
                 }}
-                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors mt-0.5 ${proxyEnabled ? 'bg-green-500' : 'bg-fg-muted/30'}`}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${proxyEnabled ? 'bg-green-500' : 'bg-fg-muted/30'}`}
               >
                 <span className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${proxyEnabled ? 'translate-x-[22px]' : 'translate-x-1'}`} />
               </button>
-            </div>
+            </SettingRow>
 
-            {/* ② Current status — compact single line */}
-            {proxyEffective && (
-              <div className={`flex items-center gap-2.5 rounded-lg px-3.5 py-2.5 transition-opacity ${!proxyEnabled ? 'opacity-40' : ''} ${
-                proxyEffective.proxy ? 'bg-emerald-500/5 border border-emerald-500/12' : 'bg-surface-secondary/60 border border-border-default/50'
-              }`}>
-                <span className={`w-2 h-2 rounded-full shrink-0 ${
-                  proxyEffective.proxy ? 'bg-emerald-500' : 'bg-fg-muted'
-                }`} />
-                <span className="text-[13px]">
-                  {!proxyEnabled ? t('networkProxy.disabled') :
-                   proxyEffective.proxy ? (
-                    <>{t('networkProxy.active')}{' '}<code className="font-mono text-brand-600 dark:text-brand-400 font-medium">{proxyEffective.proxy}</code></>
-                  ) : t('networkProxy.noProxy')}
-                </span>
-                {proxyEnabled && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
-                  <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${
-                    proxyEffective.source === 'config' ? 'bg-brand-500/10 text-brand-600 dark:text-brand-400' :
-                    proxyEffective.source === 'env' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' :
-                    proxyEffective.source === 'system' ? 'bg-blue-500/10 text-blue-500' :
-                    'bg-fg-muted/10 text-fg-muted'
-                  }`}>
-                    {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
-                     proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
-                     proxyEffective.source === 'system' ? t('networkProxy.sourceSystem') : ''}
+            {/* ② 代理地址 — one fact, one row.
+                This was two rows: 「当前生效」 (the resolved value) and 「代理地址」 (the
+                input that produces it). The same fact stated twice, with the input one
+                row away from the status it creates — answering "is it on, and is it the
+                URL I typed?" meant crossing the card twice. State is now a footnote
+                under the input, and the test action sits beside the address it actually
+                tests instead of inside the unrelated bypass list. */}
+            <SettingRow
+              label={t('networkProxy.addressLabel')}
+              hint={
+                <div className="space-y-1">
+                  <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${proxyEnabled && proxyEffective?.proxy ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
+                    <span>
+                      {!proxyEnabled ? t('networkProxy.disabled')
+                        : proxyEffective?.proxy ? t('networkProxy.active')
+                        : t('networkProxy.noProxy')}
+                    </span>
+                    {proxyEnabled && proxyEffective && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
+                      <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                        proxyEffective.source === 'env'
+                          ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                          : 'bg-brand-500/10 text-brand-600 dark:text-brand-400'
+                      }`}>
+                        {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig')
+                          : proxyEffective.source === 'env' ? t('networkProxy.sourceEnv')
+                          : t('networkProxy.sourceSystem')}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => loadNetworkSettings()}
+                      className="inline-flex items-center gap-1 text-[11px] text-fg-tertiary transition-colors hover:text-fg-secondary"
+                      title={t('networkProxy.refresh')}
+                    >
+                      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      {t('networkProxy.refresh')}
+                    </button>
                   </span>
-                )}
+                  {egressTest && (
+                    <div className={egressTest.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}>
+                      {egressTest.text}
+                    </div>
+                  )}
+                  {proxyMsg && (
+                    <div className={proxyMsg.type === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}>
+                      {proxyMsg.text}
+                    </div>
+                  )}
+                </div>
+              }
+            >
+              <div className={`flex w-full flex-wrap items-center gap-2 transition-opacity sm:w-auto ${!proxyEnabled ? 'pointer-events-none opacity-40' : ''}`}>
+                <input
+                  type="text"
+                  value={proxyUrl}
+                  onChange={e => setProxyUrl(e.target.value)}
+                  placeholder={t('networkProxy.placeholder')}
+                  className="w-full min-w-0 px-3 py-1.5 text-[13px] bg-surface-secondary/70 border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 focus:bg-transparent outline-none transition-colors sm:w-[250px]"
+                />
                 <button
-                  onClick={() => loadNetworkSettings()}
-                  className="ml-auto text-[11px] text-fg-muted hover:text-fg-secondary transition-colors flex items-center gap-1"
-                  title={t('networkProxy.refresh')}
+                  onClick={async () => {
+                    setProxySaving(true); setProxyMsg(null);
+                    try {
+                      const res = await fetch('/api/settings/network', {
+                        method: 'POST', headers: authHeaders(),
+                        body: JSON.stringify({ proxy: proxyUrl.trim() }),
+                      });
+                      if (res.ok) {
+                        setProxyMsg({ type: 'ok', text: t('networkProxy.saved') });
+                        loadNetworkSettings();
+                      } else {
+                        const d = await res.json() as { error?: string };
+                        setProxyMsg({ type: 'err', text: d.error ?? t('networkProxy.saveFailed') });
+                      }
+                    } catch { setProxyMsg({ type: 'err', text: t('networkProxy.networkError') }); }
+                    finally { setProxySaving(false); }
+                  }}
+                  disabled={proxySaving}
+                  className={`${BTN_PRIMARY} min-w-[72px] shrink-0`}
                 >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  {t('networkProxy.refresh')}
+                  {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
+                </button>
+                <button
+                  onClick={() => {
+                    setEgressTesting(true); setEgressTest(null);
+                    fetch('/api/settings/network/test', { method: 'POST', headers: authHeaders(), body: JSON.stringify({}) })
+                      .then(async res => {
+                        const d = await res.json() as {
+                          ok?: boolean; exitIp?: string | null; latencyMs?: number; proxied?: boolean;
+                          failure?: { code?: string | null; detail?: string | null } | null;
+                        };
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        if (d.ok) {
+                          setEgressTest({
+                            ok: true,
+                            text: t('networkProxy.testResult', { ip: d.exitIp ?? '—', ms: d.latencyMs ?? 0, route: d.proxied ? t('networkProxy.viaProxy') : t('networkProxy.direct') }),
+                          });
+                        } else {
+                          // The server already classified the failure into a code; render
+                          // the remedy it names. Never echo the raw exception here —
+                          // `TypeError: fetch failed` told the user nothing.
+                          const m = proxyFailureMessage(d.failure);
+                          setEgressTest({ ok: false, text: t(m.key, m.params) });
+                        }
+                      })
+                      // Reaching this catch means the settings API itself was unreachable
+                      // — a different failure from "the proxy is down", so it says so.
+                      .catch(err => setEgressTest({ ok: false, text: t('networkProxy.failClient', { detail: err instanceof Error ? err.message : String(err) }) }))
+                      .finally(() => setEgressTesting(false));
+                  }}
+                  disabled={egressTesting}
+                  className={`${BTN_SECONDARY} shrink-0`}
+                  title={t('networkProxy.testHint')}
+                >
+                  {egressTesting ? (
+                    <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                  )}
+                  {egressTesting ? t('networkProxy.testing') : t('networkProxy.test')}
                 </button>
               </div>
-            )}
+            </SettingRow>
 
-            {/* ③ Primary action: Proxy URL input + Save — PROMINENT */}
-            <div className={`flex gap-2.5 items-center transition-opacity ${!proxyEnabled ? 'opacity-40 pointer-events-none' : ''}`}>
-              <input
-                type="text"
-                value={proxyUrl}
-                onChange={e => setProxyUrl(e.target.value)}
-                placeholder={t('networkProxy.placeholder')}
-                className="flex-1 min-w-0 px-3.5 py-2.5 text-sm bg-surface-secondary/70 border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 focus:bg-transparent outline-none transition-colors"
-              />
-              <button
-                onClick={async () => {
-                  setProxySaving(true); setProxyMsg(null);
-                  try {
-                    const res = await fetch('/api/settings/network', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ proxy: proxyUrl.trim() }),
-                    });
-                    if (res.ok) {
-                      setProxyMsg({ type: 'ok', text: t('networkProxy.saved') });
-                      loadNetworkSettings();
-                    } else {
-                      const d = await res.json() as { error?: string };
-                      setProxyMsg({ type: 'err', text: d.error ?? t('networkProxy.saveFailed') });
-                    }
-                  } catch { setProxyMsg({ type: 'err', text: t('networkProxy.networkError') }); }
-                  finally { setProxySaving(false); }
-                }}
-                disabled={proxySaving}
-                className={`${BTN_PRIMARY} shrink-0`}
-              >
-                {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
-              </button>
-            </div>
-            {proxyMsg && <Msg type={proxyMsg.type} text={proxyMsg.text} />}
-
-            {/* ④ Bypass list — COLLAPSIBLE (default closed to reduce noise) */}
+            {/* ③ 不走代理的地址 — a pure list now. The test action moved up to the
+                address row: it verifies that address, so it belongs beside it, and the
+                bypass list has nothing to do with whether the chain works. */}
+            <div className="px-5 py-3.5">
             <ProxyBypassSection
               noProxyList={noProxyList}
               setNoProxyList={setNoProxyList}
               noProxyEntry={noProxyEntry}
               setNoProxyEntry={setNoProxyEntry}
-              egressTesting={egressTesting}
-              egressTest={egressTest}
-              egressError={egressError}
-              onTest={() => {
-                setEgressTesting(true); setEgressTest(null);
-                fetch('/api/settings/network/test', { method: 'POST', headers: authHeaders(), body: JSON.stringify({}) })
-                  .then(async res => {
-                    const d = await res.json() as { ok?: boolean; exitIp?: string | null; latencyMs?: number; proxied?: boolean; error?: string | null };
-                    if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
-                    setEgressTest({
-                      ok: !!d.ok,
-                      text: d.ok ? t('networkProxy.testResult', { ip: d.exitIp ?? '—', ms: d.latencyMs ?? 0, route: d.proxied ? t('networkProxy.viaProxy') : t('networkProxy.direct') })
-                        : t('networkProxy.testFailed', { error: d.error ?? 'unknown' }),
-                    });
-                  })
-                  .catch(err => setEgressTest({ ok: false, text: t('networkProxy.testFailed', { error: String(err) }) }))
-                  .finally(() => setEgressTesting(false));
-              }}
               authHeaders={authHeaders}
               loadNetworkSettings={loadNetworkSettings}
               t={t}
             />
-
-            {/* ⑤ Coverage note — minimal footer */}
-            <div className="rounded-lg bg-surface-secondary/40 border border-border-default/30 px-4 py-2.5 space-y-1">
-              <p className="text-[11px] font-medium text-fg-secondary/80">{t('networkProxy.coverageTitle')}</p>
-              <p className="text-[11px] text-fg-muted/70 leading-relaxed">{t('networkProxy.coverageCovered')}</p>
-              <p className="text-[11px] text-amber-500/60 leading-relaxed">{t('networkProxy.coverageNotCovered')}</p>
             </div>
 
           </div>
-        </CollapsibleSection>
-        <RemoteAccessSection />
+        </Section>
+        {/* 远程访问的详细设置只在选中它时出现：以前它是一张常驻卡片，
+            选「仅本机」的人也照样被塞一整块隐道向导。 */}
+        {/* ───── Access scope ─────
+            一道单选题：先选「谁能访问」，再显示该方式需要的设置。
+            以前「仅本机/局域网」是一张卡、「远程访问」是另一张常驻卡 ——
+            三者互斥、平级，却分住两地，选「仅本机」的人也照样被塞一整块隐道向导。
+            排在网络代理之后：先确保自己能出去，再决定别人怎么进来。 */}
+        <Section title={t('accessScope.title')} description={t('accessScope.description')}>
+          <div className={`${CARD} divide-y divide-border-default/40`}>
+            <SettingRow
+              label={t('accessScope.scopeLabel')}
+              hint={
+                <>
+                  <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${accessMode !== 'local' ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
+                  {t('accessScope.current', { host: bindHostEffective })}
+                  {' · '}
+                  <span className={accessMode === 'lan' ? 'text-emerald-600 dark:text-emerald-400' : undefined}>
+                    {accessMode === 'local' ? t('accessScope.localOnlyHint')
+                      : accessMode === 'lan' ? t('accessScope.lanHint')
+                      : t('accessScope.remoteHint')}
+                  </span>
+                  {bindHostFromEnv && <span className="text-amber-500"> · ⚠ {t('accessScope.envControlled')}</span>}
+                </>
+              }
+            >
+              <div className="inline-flex flex-wrap gap-1 rounded-lg bg-surface-secondary/80 p-1">
+                <button
+                  disabled={bindHostFromEnv || bindHostApplying || authUser?.role !== 'owner'}
+                  onClick={() => void applyAccessMode('local')}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+                    accessMode === 'local' && !bindHostFromEnv
+                      ? 'bg-brand-600 text-on-brand shadow-sm'
+                      : 'text-fg-secondary hover:text-fg-primary'
+                  } ${bindHostFromEnv || bindHostApplying || authUser?.role !== 'owner' ? 'cursor-not-allowed opacity-40' : ''}`}
+                >{t('accessScope.localOnly')}</button>
+                <button
+                  disabled={bindHostFromEnv || bindHostApplying || authUser?.role !== 'owner'}
+                  onClick={() => void applyAccessMode('lan')}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+                    accessMode === 'lan' && !bindHostFromEnv
+                      ? 'bg-brand-600 text-on-brand shadow-sm'
+                      : 'text-fg-secondary hover:text-fg-primary'
+                  } ${bindHostFromEnv || bindHostApplying || authUser?.role !== 'owner' ? 'cursor-not-allowed opacity-40' : ''}`}
+                >{t('accessScope.lan')}</button>
+                {/* 远程访问不受 MARKUS_HOST 控制（隧道连的是 127.0.0.1），
+                    所以它的按钮不跟 local/lan 一起置灰。 */}
+                <button
+                  onClick={() => chooseAccessMode('remote')}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+                    accessMode === 'remote'
+                      ? 'bg-brand-600 text-on-brand shadow-sm'
+                      : 'text-fg-secondary hover:text-fg-primary'
+                  }`}
+                >{t('accessScope.remote')}</button>
+              </div>
+            </SettingRow>
+
+            {/* 切换即生效：不再有「保存」+「立即生效」两步。结果就在这里反馈。 */}
+            {bindHostNotice && (
+              <div className={`px-5 py-3 text-[11px] ${bindHostNotice.warn ? 'text-amber-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                {bindHostNotice.text}
+              </div>
+            )}
+          </div>
+        </Section>
+
+        {accessMode === 'remote' && <RemoteAccessSection />}
 
         </>}
 
         {resolvedTab === 'execution' && <>
         <Section title={t('agentExecution.title')}>
-          <div className={`${CARD} p-5 space-y-4`}>
-            <Field label={t('agentExecution.maxToolIterations')} description={t('agentExecution.maxToolIterationsDesc')}>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min={0}
-                  value={agentMaxIter}
-                  onChange={e => { setAgentMaxIter(Number(e.target.value)); setAgentMsg(null); }}
-                  className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
-                />
-                <button
-                  disabled={agentSaving}
-                  onClick={async () => {
-                    setAgentSaving(true); setAgentMsg(null);
-                    try {
-                      const d = await api.settings.updateAgent({ maxToolIterations: agentMaxIter });
-                      setAgentMaxIter(d.maxToolIterations);
-                      setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
-                    } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
-                    setAgentSaving(false);
-                  }}
-                  className={BTN_PRIMARY}
-                >
-                  {agentSaving ? t('common:saving') : t('common:save')}
-                </button>
-              </div>
-            </Field>
-            <div className="border-t border-border-default/40" />
-            <Field label={t('agentExecution.maxPendingTasksPerAgent')} description={t('agentExecution.maxPendingTasksPerAgentDesc')}>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min={1}
-                  value={agentMaxPending}
-                  onChange={e => { setAgentMaxPending(Number(e.target.value)); setAgentMsg(null); }}
-                  className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
-                />
-                <button
-                  disabled={agentSaving}
-                  onClick={async () => {
-                    setAgentSaving(true); setAgentMsg(null);
-                    try {
-                      const d = await api.settings.updateAgent({ maxPendingTasksPerAgent: agentMaxPending });
-                      setAgentMaxPending(d.maxPendingTasksPerAgent);
-                      setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
-                    } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
-                    setAgentSaving(false);
-                  }}
-                  className={BTN_PRIMARY}
-                >
-                  {agentSaving ? t('common:saving') : t('common:save')}
-                </button>
-              </div>
-            </Field>
-            {agentMsg && <Msg type={agentMsg.type} text={agentMsg.text} />}
+          <div className={`${CARD} divide-y divide-border-default/40`}>
+            <SettingRow label={t('agentExecution.maxToolIterations')} hint={t('agentExecution.maxToolIterationsDesc')}>
+              <input
+                type="number"
+                min={0}
+                value={agentMaxIter}
+                onChange={e => { setAgentMaxIter(Number(e.target.value)); setAgentMsg(null); }}
+                className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
+              />
+            </SettingRow>
+            <SettingRow label={t('agentExecution.maxPendingTasksPerAgent')} hint={t('agentExecution.maxPendingTasksPerAgentDesc')}>
+              <input
+                type="number"
+                min={1}
+                value={agentMaxPending}
+                onChange={e => { setAgentMaxPending(Number(e.target.value)); setAgentMsg(null); }}
+                className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
+              />
+            </SettingRow>
+            {/* One save for the whole group. The backend applies each field
+                independently (`if (typeof body.x === 'number')`), so a single call
+                persists both. Per-input buttons invited a real failure: save one,
+                navigate away, and the other silently stayed at its old value. */}
+            <div className="flex items-center justify-end px-5 py-3.5">
+              <button
+                disabled={agentSaving}
+                onClick={async () => {
+                  setAgentSaving(true); setAgentMsg(null);
+                  try {
+                    const d = await api.settings.updateAgent({
+                      maxToolIterations: agentMaxIter,
+                      maxPendingTasksPerAgent: agentMaxPending,
+                    });
+                    setAgentMaxIter(d.maxToolIterations);
+                    setAgentMaxPending(d.maxPendingTasksPerAgent);
+                    setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
+                  } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
+                  setAgentSaving(false);
+                }}
+                className={BTN_PRIMARY}
+              >
+                {agentSaving ? t('common:saving') : t('common:save')}
+              </button>
+            </div>
+            {agentMsg && <div className="px-5 pb-3.5"><Msg type={agentMsg.type} text={agentMsg.text} /></div>}
           </div>
         </Section>
 
         {/* ── Concurrent Processing（并发处理） ── */}
         <Section title={t('concurrent.title')} description={t('concurrent.description')}>
-          <div className={`${CARD} p-5 space-y-4`}>
-            <Field label={t('concurrent.enabled')} description={t('concurrent.enabledDesc')}>
+          <div className={`${CARD} divide-y divide-border-default/40`}>
+            <SettingRow label={t('concurrent.enabled')} hint={t('concurrent.enabledDesc')}>
               <Switch
                 checked={concEnabled}
                 onChange={(v) => { setConcEnabled(v); setConcMsg(null); }}
                 label={t('concurrent.enabled')}
               />
-            </Field>
-
-            <Field label={t('concurrent.maxWorkers')} description={t('concurrent.maxWorkersDesc')}>
+            </SettingRow>
+            <SettingRow label={t('concurrent.maxWorkers')} hint={t('concurrent.maxWorkersDesc')}>
               <input
                 type="number"
                 min={1}
@@ -2503,9 +2617,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 onChange={e => { setConcMaxWorkers(Number(e.target.value)); setConcMsg(null); }}
                 className={`${FIELD_INPUT} w-24 text-right tabular-nums disabled:opacity-40`}
               />
-            </Field>
-
-            <Field label={t('concurrent.conflictPolicy')} description={t('concurrent.conflictPolicyDesc')}>
+            </SettingRow>
+            <SettingRow label={t('concurrent.conflictPolicy')} hint={t('concurrent.conflictPolicyDesc')}>
               <select
                 value={concConflictPolicy}
                 disabled={!concEnabled}
@@ -2515,9 +2628,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 <option value="auto">{t('concurrent.policyAuto')}</option>
                 <option value="report">{t('concurrent.policyReport')}</option>
               </select>
-            </Field>
-
-            <div className="flex items-center justify-end">
+            </SettingRow>
+            <div className="flex items-center justify-end px-5 py-3.5">
               <button
                 disabled={concSaving}
                 onClick={async () => {
@@ -2538,13 +2650,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 {concSaving ? t('common:saving') : t('common:save')}
               </button>
             </div>
-            {concMsg && <Msg type={concMsg.type} text={concMsg.text} />}
+            {concMsg && <div className="px-5 pb-3.5"><Msg type={concMsg.type} text={concMsg.text} /></div>}
           </div>
         </Section>
         </>}
 
         {resolvedTab === 'browser' && <>
-        <Section title={t('browserAutomation.title')}>
+        <div className="space-y-3.5">
           {/* ── Backend selector: built-in browser vs system Chrome ── */}
           <div className={`${CARD} p-5 mb-4`}>
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.backendTitle')}</div>
@@ -2939,7 +3051,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           )}
 
           {browserMsg && <div className="mt-4"><Msg type={browserMsg.type} text={browserMsg.text} /></div>}
-        </Section>
+        </div>
 
         {/* DEV-only: Browser Integration Test Suite */}
         {import.meta.env.DEV && <BrowserTestPanel extensionConnected={browserExtensionConnected} />}
@@ -2948,9 +3060,61 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {resolvedTab === 'search' && <WebSearchSettings />}
 
         {resolvedTab === 'storage' && <>
-        <Section title={t('dataStorage.title')}>
+        <div className="space-y-3.5">
           <div className={`${CARD} p-5 space-y-5`}>
-            {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">{t('dataStorage.scanning')}</div>}
+            {storageLoading && !storageInfo && (
+              <div className="space-y-5" data-testid="data-storage-skeleton" role="status" aria-busy="true">
+                {/* Mirrors the loaded layout row for row: headline + path + two buttons,
+                    stacked bar, clearable hint, then the item list. Every placeholder
+                    height matches its real counterpart on purpose — a skeleton that is
+                    shaped differently from the content it replaces only trades one jerk
+                    (empty panel) for another (everything jumps when the scan lands). */}
+                <div className="space-y-3">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0 space-y-2">
+                      <div className="h-8 w-32 animate-pulse rounded bg-surface-secondary" />
+                      <div className="h-3 w-64 animate-pulse rounded bg-surface-secondary" />
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <div className="h-8 w-20 animate-pulse rounded-lg bg-surface-secondary" />
+                      <div className="h-8 w-24 animate-pulse rounded-lg bg-surface-secondary" />
+                    </div>
+                  </div>
+                  <div className="h-2 w-full animate-pulse rounded-full bg-surface-secondary" />
+                  <div className="h-3 w-72 animate-pulse rounded bg-surface-secondary" />
+                </div>
+
+                <div className="border-t border-border-default pt-4">
+                  <div className="mb-3 flex items-baseline justify-between gap-3">
+                    <div className="h-3 w-20 animate-pulse rounded bg-surface-secondary" />
+                    <div className="h-3 w-16 animate-pulse rounded bg-surface-secondary" />
+                  </div>
+                  <div className="divide-y divide-border-default/70 overflow-hidden rounded-xl border border-border-default/70">
+                    {[0, 1, 2, 3, 4].map(i => (
+                      <div key={i} className="flex items-center gap-3 px-3.5 py-3">
+                        <div className="min-w-0 flex-1 space-y-1.5">
+                          <div className="h-4 animate-pulse rounded bg-surface-secondary" style={{ width: `${30 + ((i * 13) % 30)}%` }} />
+                          <div className="h-3 animate-pulse rounded bg-surface-secondary" style={{ width: `${55 + ((i * 9) % 25)}%` }} />
+                        </div>
+                        <div className="shrink-0 space-y-1.5 text-right">
+                          <div className="ml-auto h-4 w-14 animate-pulse rounded bg-surface-secondary" />
+                          <div className="ml-auto h-3 w-8 animate-pulse rounded bg-surface-secondary" />
+                        </div>
+                        <div className="h-7 w-[4.5rem] shrink-0 animate-pulse rounded-lg bg-surface-secondary" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Says what is happening and roughly how long it takes. "Scanning…"
+                    alone leaves the user unable to tell a 3-second wait from a hung
+                    page — which is exactly how this panel was reported. */}
+                <div className="flex items-start gap-2 text-xs leading-relaxed text-fg-tertiary">
+                  <span className="mt-0.5 inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-border-default border-t-fg-tertiary" aria-hidden />
+                  <span>{t('dataStorage.scanningHint')}</span>
+                </div>
+              </div>
+            )}
             {storageInfo && (() => {
               const rows = [...storageInfo.breakdown]
                 .filter(b => b.size > 0)
@@ -3059,13 +3223,17 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               );
             })()}
           </div>
-        </Section>
+        </div>
 
         </>}
 
-        {(resolvedTab === 'account' || resolvedTab === 'users' || resolvedTab === 'organization' || resolvedTab === 'license') && <AccountSection authUser={authUser} />}
+        {resolvedTab === 'facts' && <AuditFactsPage role={authUser?.role} authUser={authUser} />}
+
+        {resolvedTab === 'account' && <AccountSection authUser={authUser} />}
 
         {resolvedTab === 'integrations' && <InstancesSection />}
+
+        {resolvedTab === 'external-sources' && <ExternalSourcesSection />}
 
         {/* TEMPORARILY HIDDEN — coding tools integration disabled (2026-08). Re-enable to show config page.
         {resolvedTab === 'coding-tools' && <CodingToolsSettings />}
@@ -3215,12 +3383,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
   };
 
   return (
-    <Section title={t('settings:userManagement.title')}>
-      <div className="mb-3">
-        <p className="text-xs text-fg-tertiary leading-relaxed">{t('settings:userManagement.sharedInstanceDesc')}</p>
-        <p className="text-xs text-fg-tertiary mt-1">{t('settings:userManagement.orgHint')}</p>
-      </div>
-
+    <div className="space-y-3">
       {!showAddUser ? (
         <button onClick={() => setShowAddUser(true)}
           className="mb-3 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs font-medium rounded-lg transition-colors">
@@ -3386,7 +3549,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
         </table>
         </div>
       </div>
-    </Section>
+    </div>
   );
 }
 
@@ -3614,7 +3777,7 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
     // 与新增 provider 表单共用同一取数实现（R14/R15 合为一处）。
     const r = await readProviderCatalog(providerName);
     setCatalogModels(r.state === 'ok' ? [...r.items] : []);
-    if (r.state === 'error') setCatalogError(r.error ?? '读取失败');
+    if (r.state === 'error') setCatalogError(r.error ?? t('common:readFailed'));
     setShowCatalog(r.state === 'ok');
     setCatalogLoading(false);
   };
@@ -3635,9 +3798,9 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
       {catalogError && (
         <ReadErrorNotice
           variant="inline"
-          subject="模型目录"
+          subject={t('settings:modelCatalog.subject')}
           error={catalogError}
-          notEquals="该 provider 没有模型"
+          notEquals={t('settings:modelCatalog.noModels')}
           onRetry={() => void loadCatalog()}
         />
       )}
@@ -3804,17 +3967,22 @@ function ProviderSection({ title, defaultCollapsed, configuredProviders, t, chil
  * (Rule: if you find yourself hand-writing `bg-surface-elevated rounded-xl`
  *  or a primary button, use one of these instead.) */
 
-/** Base card surface — pair with a padding utility (usually `p-5`). */
-const CARD = 'bg-surface-elevated rounded-xl border border-border-default/40';
+/* 纯样式与排版原语（CARD / TYPE / FG / FIELD_INPUT / BTN_* / Badge /
+ * SettingRow / Section / CollapsibleSection）已抽到
+ * `../lib/settings-primitives.tsx`，其余 tab 可直接 import。
+ * PageHeader 依赖本页的 tab 目录，因此留在下方。 */
 
-/** Standard text input / number input. Add width utils at the call site. */
-const FIELD_INPUT = 'px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary/50 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15 outline-none transition-colors';
-
-/** Primary (commit) action. */
-const BTN_PRIMARY = 'inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-brand-600 hover:bg-brand-500 text-on-brand disabled:opacity-40 rounded-lg transition-colors';
-
-/** Secondary / neutral action. */
-const BTN_SECONDARY = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium border border-border-default text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary disabled:opacity-40 rounded-lg transition-colors';
+/* ── 排版与颜色 token ──────────────────────────────────────────────────
+ * 设置界面只允许这六档字号、四种文字颜色。页面里**不写魔法值**。
+ *
+ * 为什么要有这层：这页曾经同时存在 21 种「字号/字重/颜色」组合，原因不是
+ * 谁写错了，而是每个块都自己写一句 `text-[13px] text-fg-muted` —— 没人看得见
+ * 漂移，也没人拦得住下一个人写出第 22 种。token 把可选值收窄到枚举，
+ * 要让字号多一档，必须先改这里，这就是拦截点。
+ *
+ * 层级只三级（页面 → 组 → 项）：pageTitle / groupTitle+groupDesc / label+hint。
+ */
+/* token / 按钮 / 输入框样式定义见 `../lib/settings-primitives.tsx` */
 
 /** Per-tab page header — the anchor every Settings panel was missing. */
 function PageHeader({ tab }: { tab: SettingsTab }) {
@@ -3828,69 +3996,10 @@ function PageHeader({ tab }: { tab: SettingsTab }) {
         <SettingsTabIcon id={tab} className="w-[18px] h-[18px]" />
       </span>
       <div className="min-w-0">
-        <h1 className="text-lg font-semibold text-fg-primary tracking-tight leading-tight">{title}</h1>
-        {desc && <p className="text-[13px] text-fg-tertiary mt-0.5 leading-snug">{desc}</p>}
+        <h1 className={`${TYPE.pageTitle} ${FG.strong} tracking-tight leading-tight`}>{title}</h1>
+        {desc && <p className={`mt-0.5 ${TYPE.groupDesc} ${FG.desc} leading-snug`}>{desc}</p>}
       </div>
     </header>
-  );
-}
-
-/** A labelled setting row: label + hint on the left, control on the right. */
-function Field({ label, description, children }: {
-  label: React.ReactNode; description?: React.ReactNode; children: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-2.5 md:flex-row md:items-center md:justify-between">
-      <div className="min-w-0">
-        <div className="text-sm font-medium text-fg-primary">{label}</div>
-        {description && <div className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{description}</div>}
-      </div>
-      <div className="shrink-0">{children}</div>
-    </div>
-  );
-}
-
-function Section({ title, description, action, children }: {
-  title: React.ReactNode; description?: React.ReactNode; action?: React.ReactNode; children: React.ReactNode;
-}) {
-  return (
-    <section className="space-y-3.5">
-      <div className="flex items-end justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="text-[13px] font-semibold text-fg-primary">{title}</h3>
-          {description && <p className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{description}</p>}
-        </div>
-        {action}
-      </div>
-      <div className="space-y-3">{children}</div>
-    </section>
-  );
-}
-
-function CollapsibleSection({ title, description, children, defaultOpen = true }: {
-  title: React.ReactNode;
-  description?: React.ReactNode;
-  children: React.ReactNode;
-  defaultOpen?: boolean;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <section className="space-y-3.5">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-start justify-between w-full group text-left"
-      >
-        <div className="min-w-0">
-          <h3 className="text-[13px] font-semibold text-fg-primary">{title}</h3>
-          {description && <p className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{description}</p>}
-        </div>
-        <span className={`text-fg-tertiary mt-0.5 transition-transform group-hover:text-fg-secondary ${open ? '' : '-rotate-90'}`}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
-        </span>
-      </button>
-      {open && <div className="space-y-3">{children}</div>}
-    </section>
   );
 }
 
@@ -3900,15 +4009,6 @@ function InfoCard({ label, value, color }: { label: string; value: string; color
     <div className={`rounded-xl border border-border-default/40 px-5 py-4 ${bg}`}>
       <div className="text-2xl font-bold tabular-nums">{value}</div>
       <div className="text-xs mt-1 opacity-70">{label}</div>
-    </div>
-  );
-}
-
-function MiniStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-[10px] text-fg-tertiary uppercase">{label}</div>
-      <div className="text-xs text-fg-secondary mt-0.5 truncate">{value}</div>
     </div>
   );
 }
@@ -4010,292 +4110,25 @@ function OrphanSection({ orphanInfo, dataDir, onPurged, formatBytes: formatBytes
  * `components/RemoteAccessSection.tsx` (T9). Logic + state machine:
  * `lib/remoteAccess.ts`. */
 
-/* ─── Account (Organization & License + Local Markus) ─── */
-
-const FEATURE_ICONS: Record<string, string> = {
-  multi_user: '👥', sso: '🔐', audit_enhanced: '📋', multi_instance: '🌐', offline_license: '📡',
-};
+/* ─── Account ───
+ * 一页回答「我是谁、我有什么」：本地账户（本机 user 表）+ Markus 订阅账户（Hub 侧套餐/成员）。
+ * 两块数据源不同、写者不同，所以分板块呈现，但用户不必在两个页面之间跳。 */
 
 function AccountSection({ authUser }: { authUser?: AuthUser }) {
-  const { t } = useTranslation(['settings', 'common']);
-
-  return (
-    <div className="space-y-8">
-      <AccountOverviewSection />
-      <UserManagementSection authUser={authUser} />
-    </div>
-  );
-}
-
-/* ─── Account Overview (Cloud AI + Org + Enterprise License) ─── */
-
-function AccountOverviewSection() {
-  const { t } = useTranslation(['settings', 'common']);
-
-  // ── Cloud AI plan state ──
-  const [planInfo, setPlanInfo] = useState<{ orgId?: string | null; planType: string; planStatus: string; monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null; bonusCu: number; purchasedCu?: number; windowQuotaCu: number; totalConsumedThisPeriod?: number; creditsBudgetCu?: number; memberCuLimit?: number | null; memberCuUsed?: number } | null>(null);
-  const [planLoading, setPlanLoading] = useState(true);
-
-  // ── Org state (read-only) ──
-  const [orgs, setOrgs] = useState<Array<{ id: string; name: string; slug: string; role: string; memberCount: number; license: any }>>([]);
-  const [invitations, setInvitations] = useState<Array<{ orgId: string; orgName: string; invitedBy: string }>>([]);
-  const [orgMsg, setOrgMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
-  const [orgLoading, setOrgLoading] = useState(true);
-  const [hubConnecting, setHubConnecting] = useState(false);
-
-  // ── License state ──
-  const [licenseInfo, setLicenseInfo] = useState<{
-    plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean;
-    features: string[]; limits: Record<string, unknown>;
-    instanceId: string; hubUserId?: string; username?: string;
-    orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number;
-  } | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-
-  // ── Data loading ──
-  const loadOrgs = useCallback((showError = false) => {
-    setOrgLoading(true);
-    api.hubOrgs.mine().catch((e) => { if (showError) setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : t('org.loadFailed') }); return { orgs: [] as typeof orgs }; })
-      .then(o => {
-        setOrgs(o.orgs);
-        api.hubOrgs.invitations().then(inv => setInvitations(inv.invitations)).catch(() => {});
-      }).finally(() => setOrgLoading(false));
-  }, [t]);
-
-  useEffect(() => {
-    if (!getHubUser() && !getHubToken()) { setOrgLoading(false); setPlanLoading(false); return; }
-    loadOrgs();
-    hubApi.user.plan().then(p => setPlanInfo(p)).catch(() => {}).finally(() => setPlanLoading(false));
-  }, [loadOrgs]);
-
-  const refreshLicense = useCallback((revalidate = false) => {
-    setRefreshing(true);
-    const req = revalidate ? api.license.refresh() : api.license.get();
-    req.then(data => setLicenseInfo(data))
-      .catch(() => {})
-      .finally(() => setTimeout(() => setRefreshing(false), 400));
-  }, []);
-
-  useEffect(() => { refreshLicense(true); }, [refreshLicense]);
-
-  const isEnterprise = licenseInfo?.plan === 'enterprise';
-
-  const handleAcceptInvite = async (orgId: string) => {
-    try { await api.hubOrgs.acceptInvitation(orgId); setInvitations(prev => prev.filter(i => i.orgId !== orgId)); loadOrgs(); }
-    catch (e) { setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' }); }
-  };
-
-  const daysRemaining = licenseInfo?.validUntil
-    ? Math.max(0, Math.ceil((new Date(licenseInfo.validUntil).getTime() - Date.now()) / 86400000))
-    : null;
-
-  const featureKeys = ['multi_user', 'multi_instance'] as const;
-  const featureI18n: Record<string, string> = {
-    multi_user: t('license.featureMultiUser'), multi_instance: t('license.featureMultiInstance'),
-  };
-
-  const primaryOrg = orgs.find(o => o.id === planInfo?.orgId) ?? orgs[0];
-  const totalCredits = planInfo
-    ? (planInfo.creditsBudgetCu
-      ?? (planInfo.monthlyQuotaCu ?? 0) + (planInfo.bonusCu ?? 0) + (planInfo.purchasedCu ?? 0))
-    : 0;
-  // Personal A only for admin-capped non-owner members. Owners/solo use period budget
-  // (creditsBudgetCu) — memberCuLimit may still be the old face-collapsed A.
-  const showPersonalLimit = !!(
-    planInfo?.memberCuLimit != null
-    && planInfo.memberCuLimit > 0
-    && primaryOrg
-    && primaryOrg.role !== 'owner'
-    && primaryOrg.role !== 'admin'
-    && primaryOrg.memberCount > 1
-  );
-  const creditsUsed = showPersonalLimit
-    ? Math.round(planInfo?.memberCuUsed ?? 0)
-    : Math.round(planInfo?.totalConsumedThisPeriod ?? planInfo?.cuUsed ?? 0);
-  const creditsTotal = showPersonalLimit
-    ? (planInfo?.memberCuLimit ?? 0)
-    : totalCredits;
-
-  if (orgLoading || planLoading) return <div className="text-center py-8 text-fg-tertiary text-sm">{t('common:loading')}</div>;
-
+  const { t } = useTranslation('settings');
+  // `Section` renders an h3 at 13px. These two blocks used to be h2 at text-lg,
+  // which is the same size as the page h1 — so "账户" and "本地账户" looked like
+  // peers and the page read as three unrelated top-level screens. Grouping titles
+  // now match every other settings tab instead of each inventing its own size.
   return (
     <div className="space-y-6">
-      {orgMsg && (
-        <div className={`flex items-center gap-2 text-sm px-4 py-3 rounded-lg ${
-          orgMsg.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'
-        }`}>
-          <span>{orgMsg.type === 'ok' ? '✓' : '✕'}</span><span>{orgMsg.text}</span>
-        </div>
-      )}
+      <Section title={t('account.localTitle')} description={t('account.localDesc')}>
+        <UserManagementSection authUser={authUser} />
+      </Section>
 
-      {/* ═══ CLOUD AI ═══ */}
-      <div>
-        <h3 className="text-[13px] font-semibold text-fg-primary mb-3">{t('account.cloudAiTitle')}</h3>
-        <div className="rounded-lg border border-border-default bg-gradient-to-r from-brand-600/5 to-transparent px-5 py-4 space-y-3">
-          {planInfo ? (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-fg-tertiary">{t('account.currentPlan')}</span>
-                <span className="px-2 py-0.5 rounded text-xs font-semibold capitalize bg-brand-600/10 text-brand-500 border border-brand-500/15">{planInfo.planType}</span>
-              </div>
-              {creditsTotal > 0 && (
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-fg-tertiary">{showPersonalLimit ? t('account.personalLimit') : t('account.credits')}</span>
-                  <span className="font-medium text-fg-primary tabular-nums">
-                    {creditsUsed.toLocaleString()} / {creditsTotal.toLocaleString()}
-                  </span>
-                </div>
-              )}
-            </div>
-          ) : (
-            <p className="text-xs text-fg-secondary">{t('license.cloudAiDesc')}</p>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <a href={`${hubApi.getUrl()}/settings?tab=billing`} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs font-medium rounded-lg transition-colors no-underline">
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-              {t('account.manageBilling')}
-            </a>
-          </div>
-        </div>
-      </div>
-
-      {/* ═══ ORGANIZATION ═══ */}
-      <div>
-        <h3 className="text-[13px] font-semibold text-fg-primary mb-3">{t('account.orgSection')}</h3>
-        {invitations.length > 0 && (
-          <div className="space-y-2 mb-3">
-            {invitations.map(inv => (
-              <div key={inv.orgId} className="flex items-center justify-between px-4 py-3 rounded-lg border border-amber-500/20 bg-amber-500/5">
-                <div className="text-sm">
-                  <span className="font-medium text-fg-primary">{inv.orgName}</span>
-                  <span className="text-fg-tertiary ml-1">— {t('org.invitedBy')} {inv.invitedBy}</span>
-                </div>
-                <button onClick={() => void handleAcceptInvite(inv.orgId)} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs font-medium rounded-lg transition-colors">
-                  {t('org.accept')}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {primaryOrg ? (
-          <div className="rounded-lg border border-border-default px-5 py-4 space-y-3">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-fg-tertiary">{t('org.nameLabel')}</span>
-              <span className="font-medium text-fg-primary">{primaryOrg.name}</span>
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-fg-tertiary">{t('account.memberCount')}</span>
-              <span className="font-medium text-fg-primary">{primaryOrg.memberCount}</span>
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-fg-tertiary">{t('org.orgId')}</span>
-              <code className="px-1.5 py-0.5 rounded bg-surface-elevated text-fg-secondary text-[11px]">{primaryOrg.id}</code>
-            </div>
-            <a href={`${hubApi.getUrl()}/settings?tab=organization`} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-4 py-2 border border-border-default text-fg-secondary hover:bg-surface-elevated text-xs font-medium rounded-lg transition-colors no-underline">
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-              {t('account.manageOrg')}
-            </a>
-          </div>
-        ) : (
-          <div className="rounded-lg border border-border-default px-5 py-6 text-center space-y-3">
-            <div className="text-sm text-fg-tertiary">{t('org.noOrg')}</div>
-            {!!getHubToken() && (
-              <div className="text-xs text-amber-500/90">{t('org.staleSessionHint')}</div>
-            )}
-            <button disabled={hubConnecting} onClick={() => {
-              setOrgMsg(null);
-              setHubConnecting(true);
-              // Always force a fresh Hub sign-in: a stale local token makes
-              // ensureHubAuth() resolve immediately with no UI, which looked like
-              // a dead button when org load failed.
-              ensureHubAuth({ force: true }).then(() => loadOrgs(true)).catch(e => {
-                const raw = e instanceof Error ? e.message : String(e);
-                const text = raw.includes('Popup blocked') ? t('org.popupBlocked') : raw.includes('cancelled') ? t('org.loginCancelled') : raw;
-                setOrgMsg({ type: 'err', text });
-              }).finally(() => setHubConnecting(false));
-            }}
-              className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-on-brand text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2">
-              {hubConnecting && <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="30 70" strokeLinecap="round"/></svg>}
-              {hubConnecting ? t('org.connecting') : (getHubToken() ? t('org.reconnectHub') : t('org.connectHub'))}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* ═══ ENTERPRISE LICENSE (conditional) ═══ */}
-      {isEnterprise && (
-        <div>
-          <div className="flex items-center mb-3">
-            <h3 className="text-[13px] font-semibold text-fg-primary">{t('license.title')}</h3>
-            <button onClick={() => refreshLicense(true)} disabled={refreshing}
-              className="ml-auto flex items-center gap-1.5 text-xs text-fg-tertiary hover:text-fg-secondary disabled:opacity-50 transition-colors">
-              <svg className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5M4.05 11A8 8 0 0119.95 9M19.95 13A8 8 0 014.05 15" />
-              </svg>
-              {t('license.refresh')}
-            </button>
-          </div>
-          <LicensePlanCard isEnterprise licenseInfo={licenseInfo}
-            daysRemaining={daysRemaining} effectiveValidUntil={licenseInfo?.validUntil}
-            effectiveMaxSeats={licenseInfo?.maxSeats} effectiveUsedSeats={primaryOrg?.memberCount ?? licenseInfo?.usedSeats ?? 0}
-            effectiveOrgName={primaryOrg?.name ?? licenseInfo?.orgName}
-            featureKeys={featureKeys} featureI18n={featureI18n} t={t} />
-        </div>
-      )}
-
-      {/* ═══ FOOTER ═══ */}
-      <div className="flex items-center gap-4 text-[11px] text-fg-tertiary pt-1">
-        <a href="https://markus.global" target="_blank" rel="noopener noreferrer" className="hover:text-fg-secondary transition-colors">{t('license.website')}</a>
-        <a href={`mailto:${t('license.salesEmail')}`} className="hover:text-fg-secondary transition-colors">{t('license.salesEmail')}</a>
-      </div>
-    </div>
-  );
-}
-
-/* ─── License Plan Card (enterprise only) ─── */
-
-function LicensePlanCard({ isEnterprise, licenseInfo, daysRemaining, effectiveValidUntil, effectiveMaxSeats, effectiveUsedSeats, effectiveOrgName, featureKeys, featureI18n, t }: {
-  isEnterprise: boolean | undefined; licenseInfo: any;
-  daysRemaining: number | null; effectiveValidUntil?: string; effectiveMaxSeats?: number; effectiveUsedSeats: number; effectiveOrgName?: string;
-  featureKeys: readonly string[]; featureI18n: Record<string, string>; t: (key: string, opts?: any) => string;
-}) {
-  if (!isEnterprise) return null;
-  return (
-    <div className="rounded-lg border border-brand-500/20 overflow-hidden">
-      <div className="px-5 py-4 bg-gradient-to-r from-brand-600/5 to-transparent">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <span className="text-base font-semibold text-fg-primary">{t('license.planEnterprise')}</span>
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-500/12 text-green-600 border border-green-500/15">{t('license.statusActive')}</span>
-            {licenseInfo?.isTrial && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/12 text-amber-600 border border-amber-500/15">{t('license.trial')}</span>)}
-          </div>
-          {daysRemaining !== null && (
-            <div className="text-right">
-              <div className={`text-sm font-semibold tabular-nums ${daysRemaining === 0 ? 'text-red-500' : daysRemaining <= 7 ? 'text-amber-500' : daysRemaining <= 60 ? 'text-amber-600' : 'text-fg-primary'}`}>
-                {daysRemaining > 0 ? t('license.daysRemaining', { count: daysRemaining }) : t('license.expired')}
-              </div>
-              <div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.expiresOn', { date: new Date(effectiveValidUntil!).toLocaleDateString() })}</div>
-            </div>
-          )}
-        </div>
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {featureKeys.map(f => (<span key={f} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-brand-500 bg-brand-600/6 border border-brand-500/10">{FEATURE_ICONS[f]} {featureI18n[f]}</span>))}
-        </div>
-        {effectiveOrgName && (
-          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-            <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-primary/40 border border-border-default/30">
-              <span className="text-fg-tertiary">{t('license.organization')}</span><span className="font-medium text-fg-primary">{effectiveOrgName}</span>
-            </div>
-            {effectiveMaxSeats != null && (
-              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-primary/40 border border-border-default/30">
-                <span className="text-fg-tertiary">{t('license.seats')}</span><span className="font-medium text-fg-primary">{effectiveUsedSeats} / {effectiveMaxSeats}</span>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+      <Section title={t('account.subscriptionTitle')} description={t('account.subscriptionDesc')}>
+        <OrgSummarySection authUser={authUser} />
+      </Section>
     </div>
   );
 }
@@ -4322,13 +4155,10 @@ function InlineTierBadge({ modelId, tier: serverTier }: { modelId: string; tier?
 /* ── Proxy Bypass Section (collapsible, reduces visual noise) ─── */
 function ProxyBypassSection({
   noProxyList, setNoProxyList, noProxyEntry, setNoProxyEntry,
-  egressTesting, egressTest, egressError,
-  onTest, authHeaders, loadNetworkSettings, t,
+  authHeaders, loadNetworkSettings, t,
 }: {
   noProxyList: string[]; setNoProxyList: (v: string[]) => void;
   noProxyEntry: string; setNoProxyEntry: (v: string) => void;
-  egressTesting: boolean; egressTest: { ok: boolean; text: string } | null; egressError: string | null;
-  onTest: () => void;
   authHeaders: () => Record<string, string>;
   loadNetworkSettings: () => void;
   t: (key: string) => string;
@@ -4337,40 +4167,19 @@ function ProxyBypassSection({
 
   return (
     <div className="space-y-2">
-      {/* Header row: title + count + test button + expand toggle */}
-      <div className="flex items-center justify-between">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-2 text-[13px] font-medium text-fg-primary hover:text-fg-secondary transition-colors"
-        >
-          <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
-          {t('networkProxy.noProxyTitle')}
-          <span className="text-[11px] tabular-nums text-fg-muted bg-surface-secondary px-1.5 py-0.5 rounded">{noProxyList.length}</span>
-        </button>
-
-        {/* Test button — always visible */}
-        <button
-          onClick={onTest}
-          disabled={egressTesting}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border-default/60 text-fg-secondary hover:text-fg-primary hover:border-fg-muted transition-colors disabled:opacity-40"
-        >
-          {egressTesting && (
-            <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-          )}
-          {egressTesting ? t('networkProxy.testing') : t('networkProxy.test')}
-        </button>
-      </div>
-
-      {/* Test result — show below header */}
-      {egressTest && (
-        <span className={`text-[12px] ${egressTest.ok ? 'text-emerald-600' : 'text-red-400'}`}>{egressTest.text}</span>
-      )}
-      {egressError && (
-        <span className="text-[12px] text-amber-500">{egressError}</span>
-      )}
+      {/* Header row: title + count + expand toggle.
+          The test button used to live here. It verifies the proxy ADDRESS, so hanging
+          it off a list of hosts that bypass the proxy made two unrelated settings look
+          like one control — and the result appeared under the bypass header. Both moved
+          to the address row, which is what the test actually measures. */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 text-[13px] font-medium text-fg-primary hover:text-fg-secondary transition-colors"
+      >
+        <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+        {t('networkProxy.noProxyTitle')}
+        <span className="text-[11px] tabular-nums text-fg-tertiary bg-surface-secondary px-1.5 py-0.5 rounded">{noProxyList.length}</span>
+      </button>
 
       {/* Collapsible content */}
       {expanded && (
@@ -4397,7 +4206,7 @@ function ProxyBypassSection({
           )}
 
           {noProxyList.length === 0 && (
-            <p className="text-[11px] text-fg-muted italic">{t('networkProxy.noProxyEmpty')}</p>
+            <p className="text-[11px] text-fg-tertiary italic">{t('networkProxy.noProxyEmpty')}</p>
           )}
 
           {/* Add entry input */}
@@ -4416,7 +4225,7 @@ function ProxyBypassSection({
             className="w-full px-3 py-1.5 text-[13px] font-mono bg-surface-secondary/50 border border-border-default/50 rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 outline-none transition-colors"
           />
 
-          <p className="text-[11px] text-fg-muted leading-relaxed">{t('networkProxy.noProxyHint')}</p>
+          <p className="text-[11px] text-fg-tertiary leading-relaxed">{t('networkProxy.noProxyHint')}</p>
         </div>
       )}
     </div>

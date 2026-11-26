@@ -16,6 +16,8 @@ import {
   type HumanUser,
   type HumanRole,
   isSecretaryLikeAgent, pickOrgSecretary, secretaryDisplayName, resolveHostLocale,
+  type CrossOrgPolicy,
+  type ExternalIngressPolicy,
 } from '@markus/shared';
 import { RoleLoader, type AgentManager, type CreateAgentRequest, type SkillRegistry, discoverSkillsInDir, WELL_KNOWN_SKILL_DIRS, getAgentSkillWarnings } from '@markus/core';
 import type { StorageBridge } from './storage-bridge.js';
@@ -796,6 +798,89 @@ export class OrganizationService {
 
   getStorage(): StorageBridge | undefined {
     return this.storage;
+  }
+
+  /**
+   * C10-C: the ONLY path that changes organizations.cross_org_policy.
+   * Human approval is structural, not conventional: the actor must resolve to a
+   * row in the users table (agents have no users row, so an agent id or a ghost
+   * id is refused), and every successful change writes exactly one audit row.
+   * The repo writer (setCrossOrgPolicy) is this method's instrument — no other
+   * caller may elevate trust. Downgrades are audited too: policy history must
+   * be reconstructable from audit_logs alone.
+   */
+  async setCrossOrgPolicy(
+    orgId: string,
+    policy: CrossOrgPolicy,
+    actorUserId?: string,
+  ): Promise<{ from: CrossOrgPolicy; to: CrossOrgPolicy }> {
+    const storage = this.storage;
+    if (!storage) throw new Error('cross_org_policy change requires storage');
+    if (!actorUserId) throw new Error('cross_org_policy change requires a human approval (no actor)');
+    const human = storage.userRepo.findById(actorUserId);
+    if (!human) {
+      throw new Error('cross_org_policy change requires a human approval (actor is not a human user)');
+    }
+    const org = storage.orgRepo.findOrgById(orgId);
+    if (!org) throw new Error(`organization not found: ${orgId}`);
+    if (!storage.auditRepo) throw new Error('cross_org_policy change requires an audit writer');
+    const from = ((org as { crossOrgPolicy?: string }).crossOrgPolicy ?? 'observe') as CrossOrgPolicy;
+    storage.orgRepo.setCrossOrgPolicy(orgId, policy);
+    await storage.auditRepo.insert({
+      id: generateId('audit'),
+      orgId,
+      userId: actorUserId,
+      type: 'cross_org_policy_changed',
+      action: `cross_org_policy ${from} -> ${policy}`,
+      metadata: { orgId, from, to: policy },
+      success: true,
+      createdAt: new Date(),
+    });
+    return { from, to: policy };
+  }
+
+  /**
+   * C10-F: the ONLY path that changes organizations.external_ingress.
+   *
+   * Same structural shape as setCrossOrgPolicy and for the same reason: whether
+   * an organization accepts input from outside its own agents is a human
+   * decision, so the actor must resolve to a users row (agents have none) and
+   * every successful change leaves exactly one audit row — including
+   * downgrades, because "when did we close this" must be answerable from
+   * audit_logs alone.
+   *
+   * This is deliberately NOT reachable from the agent tool surface: an agent
+   * may register a source for itself (Owner ruling A, 2026-11-26), but it may
+   * not grant its organization permission to receive external input.
+   */
+  async setExternalIngress(
+    orgId: string,
+    policy: ExternalIngressPolicy,
+    actorUserId?: string,
+  ): Promise<{ from: ExternalIngressPolicy; to: ExternalIngressPolicy }> {
+    const storage = this.storage;
+    if (!storage) throw new Error('external_ingress change requires storage');
+    if (!actorUserId) throw new Error('external_ingress change requires a human approval (no actor)');
+    const human = storage.userRepo.findById(actorUserId);
+    if (!human) {
+      throw new Error('external_ingress change requires a human approval (actor is not a human user)');
+    }
+    const org = storage.orgRepo.findOrgById(orgId);
+    if (!org) throw new Error(`organization not found: ${orgId}`);
+    if (!storage.auditRepo) throw new Error('external_ingress change requires an audit writer');
+    const from = ((org as { externalIngress?: string }).externalIngress ?? 'off') as ExternalIngressPolicy;
+    storage.orgRepo.setExternalIngress(orgId, policy);
+    await storage.auditRepo.insert({
+      id: generateId('audit'),
+      orgId,
+      userId: actorUserId,
+      type: 'external_ingress_changed',
+      action: `external_ingress ${from} -> ${policy}`,
+      metadata: { orgId, from, to: policy },
+      success: true,
+      createdAt: new Date(),
+    });
+    return { from, to: policy };
   }
 
   /**

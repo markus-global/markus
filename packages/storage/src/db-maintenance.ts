@@ -197,19 +197,31 @@ export interface PruneResult {
   deleted: number;
   bytes: number;
   vacuumed: boolean;
+  /** 未回收空间时的原因（避免把 false 误读成“已回收”）。 */
+  vacuumNote?: string;
   error?: string;
 }
 
 /**
  * 清理终态邮件项（M5）。
  *
- * 为什么安全：`completed` / `dropped` / `merged` / `failed` / `cancelled` 都是终态，
+ * 为什么安全：`completed` / `merged` / `failed` / `cancelled` / `catch_all` 都是终态，
  * 没有消费者会再读它们；实测这台机器上 >30 天的终态项有 2.3 GB。
+ *
+ * 第六刀 C3（`dropped` 终态删除）**必须同步到这里**：状态改名若不跟上下游消费者，
+ * `catch_all`（退信归集后的真终态）就永远不被清理，2.3 GB 的问题原样回来。
+ *  - `catch_all` —— 当前退信终态。它已在本 agent 概览里露过面，认领窗口（默认 30 天）
+ *    过后就是归档；运维先跑 dry-run 看候选数，再决定是否真删。
+ *  - `dropped`   —— **历史行**（C3 之前写入）。仍留在默认集合里，让旧库照旧可清理；
+ *    读路径已把它归一为 `bounced`，不回填、也不再新增。
+ *  - `bounced`   —— **刻意不清理**。它是 `bounced → catch_all` 的第一步，正常情况下在
+ *    同一次调用里走完；一行长期停在 `bounced` 说明归集没完成（bug 信号），
+ *    按龄删掉它等于把信号静默抹掉。
  */
 export function pruneTerminalMailboxItems(db: DatabaseSync, opts: PruneOptions = {}): PruneResult {
   const days = opts.olderThanDays ?? 30;
   const dryRun = opts.dryRun ?? true;
-  const statuses = opts.statuses ?? ['completed', 'dropped', 'merged', 'failed', 'cancelled'];
+  const statuses = opts.statuses ?? ['completed', 'merged', 'failed', 'cancelled', 'catch_all', 'dropped'];
   const batchSize = Math.max(1, opts.batchSize ?? 2000);
   const cutoff = `-${days} days`;
 
@@ -238,9 +250,31 @@ export function pruneTerminalMailboxItems(db: DatabaseSync, opts: PruneOptions =
   }
 
   let vacuumed = false;
+  /** 为什么没有回收空间（真空时回传，避免调用方把 false 误读成“已回收”）。 */
+  let vacuumNote: string | undefined;
   if (opts.vacuum !== false) {
-    try { db.exec('PRAGMA incremental_vacuum'); vacuumed = true; } catch { /* auto_vacuum=0 → no-op */ }
+    // 删行只是把页交给 freelist，**文件大小不变**。真正还盘只有三条路：
+    //   ① auto_vacuum=2（INCREMENTAL）→ PRAGMA incremental_vacuum 有效；
+    //   ② auto_vacuum=1（FULL）→ 提交时自动回收，无需额外动作；
+    //   ③ auto_vacuum=0（默认）→ 只能整库 VACUUM（需等量临时磁盘 + 长锁）。
+    // 旧代码无条件 exec('PRAGMA incremental_vacuum') 并回 vacuumed:true —— 在
+    // auto_vacuum=0 的真库上那是**空操作**（实测这台机器 auto_vacuum=0、
+    // freelist_count=0）：删了 24 万行，文件一个字节不缩。宁可回报 false + 原因，
+    // 也不要一个“看起来做了”的字段。
+    let mode = 0;
+    try {
+      mode = Number((db.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum?: number })?.auto_vacuum ?? 0);
+    } catch { /* pragma 不可用 → 当 0 处理（保守） */ }
+
+    if (mode === 2) {
+      try { db.exec('PRAGMA incremental_vacuum'); vacuumed = true; }
+      catch (err) { vacuumNote = `incremental_vacuum failed: ${String(err).slice(0, 120)}`; }
+    } else if (mode === 1) {
+      vacuumed = true; // FULL：页在提交时已经回收
+    } else {
+      vacuumNote = 'auto_vacuum=0: deleted rows stay as free pages; an explicit VACUUM is required to shrink the file';
+    }
   }
 
-  return { dryRun: false, candidates: agg.n, deleted, bytes: agg.bytes, vacuumed };
+  return { dryRun: false, candidates: agg.n, deleted, bytes: agg.bytes, vacuumed, ...(vacuumNote ? { vacuumNote } : {}) };
 }

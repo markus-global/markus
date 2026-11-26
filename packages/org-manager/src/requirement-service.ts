@@ -1,5 +1,6 @@
 import {
   createLogger,
+  WORK_UNIT_REF,
   requirementId as genRequirementId,
   isValidRequirementTransition,
   type Requirement,
@@ -119,6 +120,10 @@ export class RequirementService implements ApprovalTargetPort {
     return actorId;
   }
 
+  // `reason` is free-text only (e.g. a human's rejection note). Never pass a canned
+  // system annotation ('Approved'/'Cancelled'/...): the fromStatus→toStatus transition
+  // plus actor already convey the action, and a hardcoded English string leaks into the
+  // localized status history (Owner 2026-11-19). System actions leave reason null.
   private recordTransition(
     reqId: string, from: string, to: string,
     changedById?: string | null, changedByType: 'human' | 'agent' | 'system' = 'system',
@@ -457,7 +462,7 @@ export class RequirementService implements ApprovalTargetPort {
         );
     }
 
-    this.recordTransition(id, oldStatus, 'in_progress', userId, 'human', 'Approved');
+    this.recordTransition(id, oldStatus, 'in_progress', userId, 'human');
     this.broadcast('requirement:approved', req);
     log.info('Requirement approved', { id, approvedBy: userId });
 
@@ -595,7 +600,7 @@ export class RequirementService implements ApprovalTargetPort {
     req.approvedAt = undefined;
     req.updatedAt = now;
 
-    this.recordTransition(id, oldStatus, 'pending', req.createdBy, 'agent', 'Resubmitted');
+    this.recordTransition(id, oldStatus, 'pending', req.createdBy, 'agent');
 
     if (this.requirementRepo) {
       const persistErr = (e: unknown) =>
@@ -701,6 +706,11 @@ export class RequirementService implements ApprovalTargetPort {
             requirementId: id,
           }, {
             metadata: { senderName: 'System', senderRole: 'manager' },
+            // C10-0A：身份永不为 NULL —— 有回合挂回合（矛盾事实当轮生效，C8-B），
+            // 没回合挂**需求实体**（人 UI 审批/驳回时 agent 无回合；旧 ?? null 在此
+            // 落 NULL → 守卫拒掉合法操作，Owner 2026-11-19 前端报错）。实体 ref 由
+            // 唯一构造器建造，存在性由 mailbox 装配点 ensure 保证。
+            workUnitRef: agent.turnWorkUnitRef?.() ?? WORK_UNIT_REF.requirement(id),
           });
         }
       } catch { /* agent not found — skip */ }
@@ -799,9 +809,12 @@ export class RequirementService implements ApprovalTargetPort {
               `2. If more work is needed, create additional tasks with task_create(requirement_id="${requirementId}", ...)`,
             ].join('\n'),
             requirementId,
-            extra: { actionRequired: true },
           }, {
             priority: 2,
+            // C10-0A：有回合挂回合，没回合挂需求实体（永不为 NULL；见状态变更处同注）。
+            workUnitRef: agent.turnWorkUnitRef?.() ?? WORK_UNIT_REF.requirement(requirementId),
+            // 第六刀 C2：意图是结构字段（不再写 payload.extra.actionRequired）。
+            intent: 'action_required',
             metadata: { senderName: 'System', senderRole: 'manager' },
           });
         }
@@ -834,7 +847,7 @@ export class RequirementService implements ApprovalTargetPort {
       );
     }
 
-    this.recordTransition(id, oldStatus, 'cancelled', cancelledBy, cancelledByType ?? 'system', 'Cancelled');
+    this.recordTransition(id, oldStatus, 'cancelled', cancelledBy, cancelledByType ?? 'system');
     this.broadcast('requirement:cancelled', req);
     log.info('Requirement cancelled', { id });
 
@@ -1003,9 +1016,15 @@ export class RequirementService implements ApprovalTargetPort {
         summary: `Requirement "${req.title}" ${decision === 'changes_requested' ? 'needs changes' : decision}`,
         content: parts.join('\n'),
         requirementId: req.id,
-        extra: { actionRequired: true },
       }, {
         priority: 1,
+        // 第六刀 C2：意图是结构字段（不再写 payload.extra.actionRequired）。
+        intent: 'action_required',
+        // 身份 + 「前提失效」：「要求返工」推翻了执行方正在做的那件事的前提，
+        // 必须能在**当前回合**内生效，而不是等回合结束。
+        // C10-0A：回合外不再落 NULL —— 挂需求实体，入队照常（见状态变更处同注）。
+        workUnitRef: agent.turnWorkUnitRef?.() ?? WORK_UNIT_REF.requirement(req.id),
+        ...(decision === 'changes_requested' ? { invalidatesPremise: true } : {}),
         metadata: { senderName: 'System', senderRole: 'manager' },
       });
 

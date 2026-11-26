@@ -22,8 +22,12 @@ const REVIEW = (taskId: string, round: number) => ({
   summary: `Review ${taskId} r${round}`,
   content: 'please review',
   taskId,
-  extra: { round },
 });
+/** 生产侧评审投递（第六刀 C2）：轮次是**结构字段**，不再写 `payload.extra.round`。 */
+const enqueueReview = (
+  mb: AgentMailbox, taskId: string, round: number,
+  options?: Parameters<AgentMailbox['enqueue']>[2],
+) => mb.enqueue('review_request', REVIEW(taskId, round), { ...options, round });
 
 function makeMailbox(agentId = 'agt_p1'): AgentMailbox {
   return new AgentMailbox(agentId, new EventBus());
@@ -109,7 +113,7 @@ describe('P1 · 根因 #4：review_request 纳入受保护集合（禁止 consol
   it('同 taskId 的其它事件被合并时，review_request 不被吞掉', () => {
     const mb = makeMailbox();
     mb.enqueue('task_status_update', { summary: 's', content: 'status', taskId: 'tsk_A' } as never);
-    mb.enqueue('review_request', REVIEW('tsk_A', 1) as never);
+    enqueueReview(mb, 'tsk_A', 1);
     mb.enqueue('a2a_message', { summary: 'm', content: 'ping', taskId: 'tsk_A' } as never);
 
     const merged = mb.consolidateByEntity();
@@ -125,8 +129,8 @@ describe('P1 · 根因 #4：review_request 纳入受保护集合（禁止 consol
   it('同 task 的多轮 review_request 互不合并（每轮独立）', () => {
     const mb = makeMailbox();
     mb.enqueue('task_status_update', { summary: 's', content: 'status', taskId: 'tsk_B' } as never);
-    mb.enqueue('review_request', REVIEW('tsk_B', 1) as never);
-    mb.enqueue('review_request', REVIEW('tsk_B', 2) as never);
+    enqueueReview(mb, 'tsk_B', 1);
+    enqueueReview(mb, 'tsk_B', 2);
 
     expect(mb.consolidateByEntity()).toBe(0);
     expect(mb.getQueuedItems().filter(i => i.sourceType === 'review_request')).toHaveLength(2);
@@ -147,7 +151,7 @@ describe('P1 · 根因 #3：review_request 单播唤醒（只唤醒一个 waiter
     let resolved = 0;
     for (const w of waiters) void w.then(() => { resolved++; });
 
-    mb.enqueue('review_request', REVIEW('tsk_U', 1) as never);
+    enqueueReview(mb, 'tsk_U', 1);
     await flush(10);
 
     expect(resolved).toBe(1);                     // 恰好一个 waiter 拿到 item
@@ -181,7 +185,7 @@ describe('P1 · 根因 #3：review_request 单播唤醒（只唤醒一个 waiter
     void mb.dequeueAsync();
     await flush();
 
-    mb.enqueue('review_request', REVIEW('tsk_W', 1) as never);
+    enqueueReview(mb, 'tsk_W', 1);
     await flush(10);
 
     const logs = eventOf(infoSpy, MAILBOX_OBSERVABILITY_EVENTS.unicastWake);
@@ -194,7 +198,7 @@ describe('P1 · 根因 #3：review_request 单播唤醒（只唤醒一个 waiter
     const p = mb.dequeueAsync();
     await flush();
 
-    mb.enqueue('review_request', REVIEW('tsk_X', 1) as never);
+    enqueueReview(mb, 'tsk_X', 1);
 
     await expect(p).resolves.toMatchObject({ sourceType: 'review_request' });
   });
@@ -222,11 +226,12 @@ describe('P2 · 被丢弃的重复投递（items 唯一键 / 入队幂等键拦�
     const warnSpy = vi.spyOn(Logger.prototype, 'warn');
     const { mb } = mailboxWithUniqueKey();
 
-    const first = mb.enqueue('review_request', REVIEW('tsk_D', 1) as never);
-    const dup = mb.enqueue('review_request', REVIEW('tsk_D', 1) as never);
+    const first = enqueueReview(mb, 'tsk_D', 1);
+    const dup = enqueueReview(mb, 'tsk_D', 1);
 
     expect(first.status).toBe('queued');
-    expect(dup.status).toBe('dropped');
+    expect(dup.status).toBe('bounced');
+    expect(dup.dropReason).toBe('duplicate_message_id');
     expect(mb.getQueuedItems()).toHaveLength(1); // 不产生第二次入队
 
     const logs = eventOf(warnSpy, MAILBOX_OBSERVABILITY_EVENTS.duplicateDeliveryDropped);
@@ -238,23 +243,25 @@ describe('P2 · 被丢弃的重复投递（items 唯一键 / 入队幂等键拦�
 
   it('不同 round 不被误去重（新一轮评审正常入队）', () => {
     const { mb } = mailboxWithUniqueKey();
-    mb.enqueue('review_request', REVIEW('tsk_D2', 1) as never);
-    const r2 = mb.enqueue('review_request', REVIEW('tsk_D2', 2) as never);
+    enqueueReview(mb, 'tsk_D2', 1);
+    const r2 = enqueueReview(mb, 'tsk_D2', 2);
     expect(r2.status).toBe('queued');
     expect(mb.getQueuedItems()).toHaveLength(2);
   });
 
   it('重复投递会了结投递方 responsePromise（防 notifyReviewer 永久挂起 / activeReviews 残留）', () => {
     const { mb } = mailboxWithUniqueKey();
-    mb.enqueue('review_request', REVIEW('tsk_E', 1) as never);
+    enqueueReview(mb, 'tsk_E', 1);
 
     const resolve = vi.fn();
     const reject = vi.fn();
     const dup = mb.enqueue('review_request', REVIEW('tsk_E', 1) as never, {
+      round: 1,
       runtime: { responsePromise: { resolve, reject } } as never,
     });
 
-    expect(dup.status).toBe('dropped');
+    expect(dup.status).toBe('bounced');
+    expect(dup.dropReason).toBe('duplicate_message_id');
     expect(resolve).toHaveBeenCalledWith('[duplicate-delivery-suppressed]');
     expect(reject).not.toHaveBeenCalled();
   });
@@ -269,7 +276,7 @@ describe('P2 · 认领竞争与租约过期重放（结构化日志可度量）'
     const a = makeMailboxWith(table, 'agt_c');
     const b = makeMailboxWith(table, 'agt_c');
 
-    const item = a.enqueue('review_request', REVIEW('tsk_F', 1) as never);
+    const item = enqueueReview(a, 'tsk_F', 1);
     // 模拟另一实例把同一行载入自己的内存队列（共享同一持久层）
     (b as unknown as { queue: MailboxItem[] }).queue.push({ ...item });
 

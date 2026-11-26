@@ -3,15 +3,11 @@ import {
   generateId,
   type MailboxItem,
   type MailboxItemType,
-  type MailboxPriority,
   type AttentionState,
   type AttentionDecision,
   type DecisionType,
-  type DecisionContext,
+  type DecisionSource,
   type AgentMindState,
-  type TriageContext,
-  type TriageResult,
-  type DeliberationResult,
   MailboxPriorityLevel,
   routeMailboxItem,
   MAILBOX_ITEM_MAX_RETRIES,
@@ -23,12 +19,15 @@ import {
   APPROVAL_WAIT_TIMEOUT_MS,
   WATCHDOG_INTERVAL_MS,
   WATCHDOG_DRIFT_THRESHOLD_MS,
-  TRIAGE_BACKLOG_THRESHOLD,
   isStrictStateItem,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
-import { MAILBOX_LEASE_RENEW_INTERVAL_MS, type AgentMailbox } from './mailbox.js';
-import { displayLabelOf } from './mailbox-summary.js';
+import {
+  MAILBOX_LEASE_RENEW_INTERVAL_MS,
+  PLATFORM_INTERNAL_SOURCES,
+  type AgentMailbox,
+} from './mailbox.js';
+import { displayLabelOf, bounceReasonOfFailure } from './mailbox-summary.js';
 import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } from './session-workspace.js';
 
 // ─── Abnormal Completion Detection ──────────────────────────────────────────
@@ -98,13 +97,6 @@ export interface AttentionDelegate {
     currentItem: MailboxItem,
     newItem: MailboxItem,
   ): Promise<DecisionType>;
-  getTriageContext?(): Promise<TriageContext>;
-  onTriageCompleted?(result: TriageResult | null): void;
-  /** Full-session deliberation: the agent reasons over all queued items as itself. */
-  performDeliberation?(headItem: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult | null>;
-  onDeliberationCompleted?(result: DeliberationResult | null): void;
-  /** Apply memory updates from deliberation (working + longterm). */
-  applyMemoryUpdates?(updates: Array<{ type: 'working' | 'longterm'; key: string; content: string }>): void;
   /**
    * Provide a per-worker SessionWorkspace in concurrent mode (workerId >= 1).
    * Implementations should return a fresh, cached workspace per worker so each
@@ -151,12 +143,6 @@ export interface DecisionPersistence {
   save(decision: AttentionDecision): void;
 }
 
-/**
- * Lightweight LLM judge for ambiguous attention decisions.
- * Receives a structured prompt and returns a DecisionType string.
- */
-export type LLMDecisionJudge = (prompt: string) => Promise<DecisionType>;
-
 
 /**
  * Event-driven attention controller for a single agent.
@@ -177,8 +163,36 @@ interface AttentionWorkerState {
   state: AttentionState;
   focus?: MailboxItem;
   processingStartedAt?: number;
+  /**
+   * 该 worker 此刻**实际持有**的锁键（认领成功那一刻求值一次，释放时清空）。
+   *
+   * 为什么存下来而不是查询时再求值：锁键来自 `lockKeysFor(item)`，其中
+   * `sessionLockKey` 依赖会话上下文；在别处重新求值就是第二把量不同资源的尺子。
+   * 这里存的就是**真正上锁用的那组键**（同一事实、同一执行点）。
+   */
+  entityKeys?: string[];
   /** worker 定向的用户取消请求（并发模式承载；串行走实例字段）。 */
   userCancelCurrent?: boolean;
+}
+
+/**
+ * 「此刻谁在干什么」的**权威快照**（唯一在途信号来源）。
+ *
+ * 只从**实时状态**回答：worker 的 focus + 它真正持有的锁键。**绝不从交接历史反推** ——
+ * 历史里的 `declared` 说的是「过去某一刻我开始做过」，把它读成「现在仍被占用」会让别的
+ * 分身对着一个早已结束的任务停手（2026-11-17 真机事故：同一会话在同一段并发上下文里
+ * 既出现在「正在进行中」又出现在「已完成」，agent 因此宣布「由另一个 worker 处理」并
+ * 拒绝接手；Owner 看到的就是「同一个前端里 agent 说被别的 worker 占着」）。
+ */
+export interface ActiveClaim {
+  workerId: number;
+  /** 该 worker 真正持有的锁键（至少一个；`system:` 兜底也算）。 */
+  entityKeys: string[];
+  /** 条目类型（`human_chat` / `task_execution` …）。**不带正文** —— 占用是结构事实，
+   * 正文只会把别人的会话内容泄进本会话的 prompt。 */
+  itemType: string;
+  /** 本回合开始处理的时间戳（epoch ms）。 */
+  startedAt: number;
 }
 
 export class AttentionController {
@@ -222,12 +236,6 @@ export class AttentionController {
   private readonly eventBus: EventBus;
   private delegate?: AttentionDelegate;
   private decisionPersistence?: DecisionPersistence;
-  private llmJudge?: LLMDecisionJudge;
-  private lastTriageResult?: TriageResult & { timestamp: string };
-  /** True while a full-session deliberation is in progress (suppresses yield points). */
-  private isDeliberating = false;
-  /** Set to true when a human_chat arrives during deliberation, causing early abort. */
-  private deliberationAbortSignal = false;
   /** Tracks whether the last yield-point decision was 'cancel' vs 'preempt'. */
   private lastYieldDecision?: DecisionType;
   private unsubscribeNewItem?: () => void;
@@ -351,6 +359,21 @@ export class AttentionController {
     this.decisionPersistence = p;
   }
 
+  /**
+   * C8-B：轮内 delta 注入的决策落账入口。
+   *
+   * **只做一件事**：把「这条事实推翻了当前回合的前提」写进既有台账
+   * （`agent_decisions`，`decision_type='cancel'`）。之所以放在这里而不是
+   * 在新模块里直连 repo：`agent_decisions` 的写者**只有一个**
+   * （`recordDecision` → `decisionPersistence`），第二个写者会让台账出现两套
+   * 语义（谁在什么时机写的）。
+   *
+   * 返回 `void`：调用方只需要「已落账」这个事实，不需要决策对象。
+   */
+  recordTurnDeltaDecision(item: MailboxItem, reasoning: string, outcome: string): void {
+    this.recordDecision('cancel', item, reasoning, outcome);
+  }
+
   setWaitingForApproval(waiting: boolean): void {
     this.waitingForHumanApproval = waiting;
   }
@@ -459,6 +482,12 @@ export class AttentionController {
     this.mailbox.cancelWait();
     this.workerPromises = [];
     this.activeWorkerIds.clear();
+    // 粘性路由（§3.4）：新纪元清除旧所有权声明 + 安装存活探针。探针读唯一权威
+    // （activeWorkerIds + worker 状态），mailbox 不猜 worker 状态。
+    this.mailbox.resetEntityOwnership();
+    this.mailbox.setWorkerProbe(id => !this.activeWorkerIds.has(id)
+      ? 'gone'
+      : (this.workerState(id).state === 'idle' ? 'idle' : 'busy'));
     for (let w = 1; w <= this.workerCount; w++) {
       this.workerState(w); // 预创建 worker 状态
       const p = this.concurrentWorkerLoop(w, gen).catch(err => {
@@ -618,11 +647,12 @@ export class AttentionController {
                 // （重试 < 租约 TTL 延 15min，> TTL 被清成 dropped = 评审永久丢失）。
                 // 传 `reuseItemId` 后走 `resolveReinjectDecision` 的「复用原行回队」分支：
                 // 不新增行、无条件释放认领、刷新 `queued_at`，返回 `status='queued'`。
-                this.mailbox.enqueue(item.sourceType, item.payload, {
-                  priority: item.priority,
-                  metadata: item.metadata,
-                  reuseItemId: item.id,
-                });
+                //
+                // C9 相邻路径：回队只有**一个**实现（`reEnqueueOnShutdown`），身份表态也在
+                // 那里 —— 这里内联一份 `enqueue(...)` 就等于同一件事有两个写者：内联版会漏掉
+                // 「复用行继承 work_unit_ref」的声明，被入队守卫直接拒绝（默认行为）
+                // （真机探针见 docs/records/cut9-adjacent-identity-paths-2026-11-15.md）。
+                this.mailbox.reEnqueueOnShutdown(item);
               } catch (err) {
                 log.warn('Failed to re-enqueue item on shutdown', { itemId: item.id, error: String(err) });
               }
@@ -676,66 +706,13 @@ export class AttentionController {
               }
             }
 
-            // Triage: LLM deliberation is only needed when:
-            // 1. Multiple distinct items remain after consolidation
-            // 2. Priority alone can't decide — the head item shares its priority
-            //    with at least one other queued item (ambiguous ordering)
-            // 3. delegate.performDeliberation is configured
-            // When priorities clearly separate items, the priority queue already
-            // produces the right order — no LLM call needed.
-            let triaged = false;
-            let deliberationAttempted = false;
-            if (this.mailbox.depth > 0 && !isUserMessage && this.needsLLMTriage(item) && this.delegate?.performDeliberation) {
-              deliberationAttempted = true;
-              // 深度分拣只处理「消息/评论/提醒」这类松散事件，绝不处理「严格状态管理事件」
-              // （正式任务执行 triggerExecution、评审请求 review_request、需求/工作流收尾动作）。
-              // 严格状态事件自带完整执行/评审工具链与 task 状态机绑定：若让它们在分拣中被 LLM
-              // 看到，agent 会试图在缺失 task_update/task_submit_review 的白名单里完成状态变更，
-              // 或把它们 defer/drop/合并 → 闭包丢失或上下文错乱 → 「做了却无法提交评审」、
-              // 甚至 task 永远卡在 in_progress。因此它们被排除在分拣视界外——按队列优先级
-              // 独立排队，由后续正常出队路径 executeTask()/review/requirement_action 单独执行。
-              const allItems = [item, ...this.mailbox.getQueuedItems()].filter(
-                i => !isStrictStateItem(i),
-              );
-              if (allItems.length === 0) {
-                // 队列里只剩严格状态事件（或全被排除）：没有可分拣的消息，跳过 deliberation 直接出队执行。
-                deliberationAttempted = false;
-              }
-              this.isDeliberating = true;
-              this.deliberationAbortSignal = false;
-              try {
-                const deliberationResult = await this.delegate.performDeliberation(item, allItems);
-                if (this.deliberationAbortSignal) {
-                  log.info('Deliberation aborted: human_chat arrived', { agentId: this.agentId });
-                  this.mailbox.putBack(item);
-                  const userItem = this.mailbox.dequeue();
-                  if (userItem) {
-                    item = userItem;
-                  }
-                } else if (deliberationResult) {
-                  triaged = true;
-                  item = this.applyDeliberationResult(item, deliberationResult);
-                }
-              } finally {
-                this.isDeliberating = false;
-                this.deliberationAbortSignal = false;
-              }
-            }
-
-            if (!triaged) {
-              if (deliberationAttempted) {
-                log.warn('Deliberation failed — falling back to head-item processing', {
-                  agentId: this.agentId,
-                  itemId: item.id,
-                  type: item.sourceType,
-                  queueDepth: this.mailbox.depth,
-                });
-              }
-              const resumeLabel = item.metadata?.isResume ? 'Continuing' : 'Idle, processing';
-              const decision = this.recordDecision('pick', item, `${resumeLabel} ${item.sourceType}`);
-              this.delegate?.onDecisionMade(decision);
-            }
-
+            // 出队顺序由优先级队列唯一决定 —— 这里**不再有 LLM 分拣，也没有分拣回合**。
+            // 「先处理哪一条」是队列的不变量（优先级 + 入队序），不是值得花一次带工具的
+            // 模型回合去猜的问题。旧实现（2026-11 之前）在 backlog≥2 或同优先级歧义时起
+            // 一次带工具的分拣/审议回合，让模型决定 reorder/defer/drop；它既贵（整轮工具
+            // 调用）又不可观测（决定只落在日志里），而它想解决的问题（同一实体多条消息）
+            // 已经由三层吸收机制在结构上解决了。
+            // 记账不在这里做 —— 唯一执行点是 processFocusedItem（两条 loop 的共同下游）。
             await this.processFocusedItem(item);
           } catch (err) {
             const isUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(item.sourceType);
@@ -745,7 +722,6 @@ export class AttentionController {
               type: item.sourceType,
               error: String(err),
             });
-            this.isDeliberating = false;
             this.currentFocus = undefined;
             this.interruptSignal = false;
             this.pendingInterruptItem = undefined;
@@ -768,7 +744,6 @@ export class AttentionController {
             error: String(outerErr),
             stack: (outerErr as Error)?.stack,
           });
-          this.isDeliberating = false;
           this.currentFocus = undefined;
           this.interruptSignal = false;
           this.pendingInterruptItem = undefined;
@@ -795,7 +770,9 @@ export class AttentionController {
    * 并发 worker 循环（workerCount > 1 时每个 worker 一个协程）。
    *
    * 按方案 A 设计——「并发不打断」：
-   * - 每个 worker 是纯消费者：dequeueAsync → 实体锁 → processMailboxItem → 解锁 → 循环；
+   * - 每个 worker 是纯消费者：dequeueAsync(workerId) → 实体锁 → processMailboxItem → 解锁 → 循环；
+   * - 粘性路由（concurrent-processing.md §3.4）：dequeue 只取「无主或本 worker  owned」
+   *   的 item，同一实体跨回合固定同一分身；owner 忙/gone 时按宽限规则转移；
    * - 不做 triage/deliberation/中断抢占（这些保留给串行模式的 runLoop）；
    * - 实体亲和锁保证同一任务/需求/会话/用户永不并发处理；
    * - 每个 worker 用独立 SessionWorkspace 挂载处理链路（async_hooks 隔离）。
@@ -825,7 +802,7 @@ export class AttentionController {
 
         let item: MailboxItem;
         try {
-          item = await this.mailbox.dequeueAsync();
+          item = await this.mailbox.dequeueAsync(workerId);
         } catch {
           // MailboxCancelledError（或任何错误）且非 running → 正常退出
           if (!this.running || gen !== this.loopGeneration) break;
@@ -881,6 +858,9 @@ export class AttentionController {
           continue;
         }
 
+        // 认领成功 = 这组键此刻由本 worker 持有。在途快照（getActiveClaims）读它，
+        // 而不是回头从交接历史里推断「谁在干活」。
+        wsState.entityKeys = entityKeys;
         this.delegate?.onConcurrentHandoff?.('declared', workerId, item, this.describeItem(item));
         let handoffWritten = false;
         try {
@@ -909,6 +889,7 @@ export class AttentionController {
         } finally {
           this.mailbox.unlockEntities(entityKeys, holder);
           wsState.focus = undefined;
+          wsState.entityKeys = undefined;
           wsState.processingStartedAt = undefined;
           wsState.state = 'idle';
           this.delegate?.onFocusChanged(undefined);
@@ -921,6 +902,7 @@ export class AttentionController {
       this.activeWorkerIds.delete(workerId);
       wsState.state = 'idle';
       wsState.focus = undefined;
+      wsState.entityKeys = undefined;
     }
   }
 
@@ -944,16 +926,25 @@ export class AttentionController {
     this.processingStartedAt = Date.now();
     this.delegate?.onFocusChanged(item);
 
-    // Capture and reset batch state set by applyDeliberationResult
-    const batchItems = this.pendingBatchItems.length > 0 ? [...this.pendingBatchItems] : undefined;
-    const batchContext = this.pendingBatchContext;
-    this.pendingBatchItems = [];
-    this.pendingBatchContext = undefined;
+    // 记账的唯一执行点。串行 runLoop 与并发 concurrentWorkerLoop 都经过这里，
+    // 所以「选中并开始处理」只有一个写者。放在任何一条 loop 里，另一条就会静默漏账：
+    // 2026-11-18 实测，并发模式下当日 116 条输入只留下 3 条 drop 决策，台账成了拒绝簿。
+    const resumeLabel = item.metadata?.isResume ? 'Continuing' : 'Processing';
+    // C10-0B §3.3：内部来源（平台唤醒）不落账 —— 此时 `pickDecision` 为 null，
+    // 不通知 delegate「有决策」，但本轮处理照常继续。
+    const pickDecision = this.recordDecision('pick', item, `${resumeLabel} ${item.sourceType}`);
+    if (pickDecision) this.delegate?.onDecisionMade(pickDecision);
 
     let reply: string | void = undefined;
     let timedOut = false;
     /** backstop 超时后，上一次尝试在宽限期内仍未结束 → 禁止重排（防重复副作用）。 */
     let orphanAbandoned = false;
+    /**
+     * 处理中途抛出的异常（第六刀 C5）。必须保留它：终态原因要按**真实原因**投影。
+     * 只丢掉 reply 而不记住「为什么没有 reply」，就只能靠猜，猜出来的就是那个
+     * 会说谎的 `stale_signal` —— 缺字段的报文与过期信号在台账上变成同一件事。
+     */
+    let processingError: unknown = undefined;
     /** Inactivity backstop 定时器（处理结束 / 超时后清理）。 */
     let backstopTimer: ReturnType<typeof setInterval> | undefined;
     // P0 租约续租：处理期间周期续租。不续租 → 租约到期后该项会被其它 worker
@@ -975,7 +966,7 @@ export class AttentionController {
       // each of which has its own transport-level timeout. This outer timeout
       // is a generous backstop — by the time it fires, all underlying I/O has
       // surely completed or failed, so requeuing is safe.
-      const processing = this.delegate?.processMailboxItem(item, batchItems, batchContext);
+      const processing = this.delegate?.processMailboxItem(item);
       if (processing) this.inFlightProcessing.set(workerId, processing);
       const backstopMs = this.waitingForHumanApproval
         ? APPROVAL_WAIT_TIMEOUT_MS
@@ -1054,6 +1045,7 @@ export class AttentionController {
         }
       }
     } catch (err) {
+      processingError = err;
       log.warn('Error processing mailbox item', {
         agentId: this.agentId,
         itemId: item.id,
@@ -1072,6 +1064,11 @@ export class AttentionController {
 
     this.processingStartedAt = undefined;
 
+    // 终态原因投影（第六刀 C5）：入参校验失败（报文缺必填字段 / 类型不对）不是「陈旧信号」。
+    // 只覆盖**失败**族；决策型终态（用户取消 / 主动丢弃）仍走 `drop()` 的默认
+    // `stale_signal`，两个方向都不允许「就近使用」。
+    const failureReason = bounceReasonOfFailure(processingError, item);
+
     let statusResolved = false;
     if (timedOut) {
       if (orphanAbandoned) {
@@ -1083,7 +1080,7 @@ export class AttentionController {
           item,
           'backstop timeout — in-flight turn did not settle within grace; not requeued to avoid duplicate side effects',
         );
-        this.mailbox.drop(item.id);
+        this.mailbox.drop(item.id, undefined, failureReason);
       } else {
         this.mailbox.requeue(item);
       }
@@ -1139,7 +1136,7 @@ export class AttentionController {
             reason: abnormalReason,
           });
           this.emitIncomplete(item, abnormalReason);
-          this.mailbox.drop(item.id);
+          this.mailbox.drop(item.id, undefined, failureReason);
         } else {
           // Empty reply for background type — transient errors may self-correct.
           log.warn('Abnormal completion detected, requeueing for retry', {
@@ -1162,7 +1159,7 @@ export class AttentionController {
           reason: abnormalReason,
         });
         this.emitIncomplete(item, abnormalReason);
-        this.mailbox.drop(item.id);
+        this.mailbox.drop(item.id, undefined, failureReason);
       } else {
         // 正常完成（reply 有效、无异常、agent 明确结束）→ completed 是唯一合法终态。
         this.mailbox.complete(item.id);
@@ -1181,20 +1178,6 @@ export class AttentionController {
         reply: typeof reply === 'string' ? reply.slice(0, 100) : String(reply),
       });
       this.mailbox.complete(item.id);
-    }
-
-    // Complete batch items that were processed together with the primary item.
-    // If the primary was preempted/cancelled/timed-out, batch items are requeued.
-    if (batchItems && batchItems.length > 0) {
-      const wasSuccessful = !timedOut && reply !== '[cancelled]' && reply !== '[preempted]'
-        && this.lastYieldDecision !== 'cancel' && this.lastYieldDecision !== 'preempt';
-      for (const bi of batchItems) {
-        if (wasSuccessful) {
-          this.mailbox.complete(bi.id);
-        } else {
-          this.mailbox.requeue(bi);
-        }
-      }
     }
 
     this.currentFocus = undefined;
@@ -1226,11 +1209,6 @@ export class AttentionController {
       const peeked = this.mailbox.peek();
       if (peeked) {
         this.pendingInterruptItem = peeked;
-
-        // If a human_chat arrives during deliberation, signal early abort
-        if (this.isDeliberating && AttentionController.USER_INTERACTION_TYPES.has(peeked.sourceType)) {
-          this.deliberationAbortSignal = true;
-        }
 
         const wouldPreempt = this.currentFocus
           ? this.heuristicDecision(this.currentFocus, peeked) === 'preempt'
@@ -1332,6 +1310,39 @@ export class AttentionController {
   }
 
   /**
+   * **此刻正在处理中的** claim 快照 —— 并发上下文的权威在途信号（唯一来源）。
+   *
+   * 语义边界：只包含「已拿到实体锁、正在跑回合」的 worker。排队中的 item、空闲
+   * worker、以及**交接历史**都不在其中。历史只能回答「过去发生过什么」，把它当
+   * 在途信号就会产出「同一实体既在进行中又已完成」的自相矛盾提示。
+   */
+  getActiveClaims(): ActiveClaim[] {
+    if (this.workerCount <= 1) {
+      const focus = this.focusStorage;
+      if (!focus || this.stateStorage !== 'focused') return [];
+      return [{
+        workerId: 1,
+        entityKeys: [...this.mailbox.entityKeysOf(focus)],
+        itemType: focus.sourceType,
+        startedAt: this.processingStartedAtStorage ?? 0,
+      }];
+    }
+    const out: ActiveClaim[] = [];
+    for (const [wid, ws] of this.workerStates) {
+      if (ws.state !== 'focused' || !ws.focus) continue;
+      out.push({
+        workerId: wid,
+        // 兜底：极端情况下（旧 worker 状态对象）没有存锁键，用同一纯函数重算一次，
+        // 仍然不是「另一把尺子」——两者同源。
+        entityKeys: [...(ws.entityKeys ?? this.mailbox.entityKeysOf(ws.focus))],
+        itemType: ws.focus.sourceType,
+        startedAt: ws.processingStartedAt ?? 0,
+      });
+    }
+    return out.sort((a, b) => a.workerId - b.workerId);
+  }
+
+  /**
    * 诊断/测试：某 worker 的定向用户取消标志（并发模式不看 ALS 上下文）。
    * 定向取消的断言就靠它 —— 「只置位目标 worker」必须可观测。
    */
@@ -1380,11 +1391,6 @@ export class AttentionController {
   /** Clear a pending user-cancel flag (e.g. after the focused item finishes). */
   clearUserCancelCurrent(): void {
     this.userCancelCurrent = false;
-  }
-
-  /** True if a human_chat arrived during deliberation, signalling early abort. */
-  get shouldAbortDeliberation(): boolean {
-    return this.deliberationAbortSignal;
   }
 
   /**
@@ -1471,17 +1477,6 @@ export class AttentionController {
       };
     }
 
-    // Deliberation is mostly atomic, but critical user messages (human_chat)
-    // must still be able to preempt — users should never wait for deliberation.
-    if (this.isDeliberating) {
-      if (!this.interruptSignal) return { decision: 'continue' };
-      const peeked = this.pendingInterruptItem ?? this.mailbox.peek();
-      if (!peeked || !AttentionController.USER_INTERACTION_TYPES.has(peeked.sourceType)) {
-        return { decision: 'continue' };
-      }
-      // Fall through to evaluate the user interrupt normally
-    }
-
     if (!this.interruptSignal || !this.currentFocus) {
       return { decision: 'continue' };
     }
@@ -1497,6 +1492,9 @@ export class AttentionController {
     this.setState('deciding');
 
     let decisionType: DecisionType;
+    // 谁拍板的，必须和判断本身一起落账。降级到启发式时如实标 heuristic ——
+    // 让平台的规则判断在台账上冒充模型判断，是「行为不可解释」的直接来源。
+    let source: DecisionSource = this.delegate ? 'model' : 'heuristic';
     try {
       decisionType = this.delegate
         ? await this.delegate.evaluateInterrupt(this.currentFocus, newItem)
@@ -1504,13 +1502,32 @@ export class AttentionController {
     } catch (err) {
       log.debug('Delegate evaluateInterrupt failed, falling back to heuristic', { error: String(err) });
       decisionType = this.heuristicDecision(this.currentFocus, newItem);
+      source = 'heuristic';
     }
 
     this.setState('focused');
 
+    // 严格状态管理事件（正式任务执行/评审/收尾动作）绝不能 defer：持久化会丢失 onLog
+    // 等闭包，resurface 后无法真正执行 → 任务卡死在 in_progress。
+    //
+    // 否决在**记账之前**算完，台账只留一条最终判断。旧实现先记一条 defer、再记一条
+    // 启发式改判：同一件事两个写者，读台账的人分不清哪条作数。折叠后分支块也不再重复。
+    let overrode: DecisionType | undefined;
+    if (decisionType === 'defer' && isStrictStateItem(newItem)) {
+      log.info('Refusing to defer strict state item — falling back to heuristic', {
+        agentId: this.agentId,
+        itemId: newItem.id,
+        type: newItem.sourceType,
+        taskId: newItem.payload.taskId,
+      });
+      overrode = decisionType;
+      decisionType = this.heuristicDecision(this.currentFocus, newItem);
+      source = 'heuristic';
+    }
+
     const reasoning = this.formatDecisionReasoning(decisionType, this.currentFocus, newItem);
-    const decision = this.recordDecision(decisionType, newItem, reasoning);
-    this.delegate?.onDecisionMade(decision);
+    const decision = this.recordDecision(decisionType, newItem, reasoning, undefined, source, overrode);
+    if (decision) this.delegate?.onDecisionMade(decision);
 
     if (decisionType === 'merge') {
       const merged = this.mailbox.merge(newItem.id, this.currentFocus.id);
@@ -1518,35 +1535,6 @@ export class AttentionController {
     }
 
     if (decisionType === 'defer') {
-      // 严格状态管理事件（正式任务执行/评审/收尾动作）绝不能 defer：
-      // 持久化会丢失 onLog 等闭包，resurface 后无法真正执行 → 任务卡死在 in_progress。
-      // 对这类新事件回退到启发式（高优先级任务执行通常 preempt 当前工作 → 立即单独执行）。
-      if (isStrictStateItem(newItem)) {
-        log.info('Refusing to defer strict state item — falling back to heuristic', {
-          agentId: this.agentId,
-          itemId: newItem.id,
-          type: newItem.sourceType,
-          taskId: newItem.payload.taskId,
-        });
-        decisionType = this.heuristicDecision(this.currentFocus!, newItem);
-        this.setState('focused');
-        const reasoning2 = this.formatDecisionReasoning(decisionType, this.currentFocus!, newItem);
-        const decision2 = this.recordDecision(decisionType, newItem, reasoning2);
-        this.delegate?.onDecisionMade(decision2);
-        if (decisionType === 'preempt') {
-          this.lastYieldDecision = 'preempt';
-          return { decision: 'preempt', item: newItem, reasoning: reasoning2 };
-        }
-        if (decisionType === 'cancel') {
-          this.lastYieldDecision = 'cancel';
-          return { decision: 'cancel', item: newItem, reasoning: reasoning2 };
-        }
-        if (decisionType === 'merge') {
-          const merged = this.mailbox.merge(newItem.id, this.currentFocus!.id);
-          return { decision: 'merge', item: merged ?? newItem, reasoning: reasoning2 };
-        }
-        return { decision: 'continue', reasoning: reasoning2 };
-      }
       this.mailbox.defer(newItem.id);
       return { decision: 'defer', item: newItem, reasoning };
     }
@@ -1564,22 +1552,6 @@ export class AttentionController {
     return { decision: 'continue', reasoning };
   }
 
-  /**
-   * Set a lightweight LLM judge for ambiguous decisions where heuristics
-   * fall back to 'continue'.  The judge receives a structured prompt and
-   * returns a decision type.  This is intentionally optional — the system
-   * works fully on heuristics alone.
-   */
-  setLLMJudge(judge: LLMDecisionJudge | undefined): void {
-    this.llmJudge = judge;
-  }
-
-
-  /**
-   * Fast heuristic decision when no LLM judgment is available.
-   * Rules are evaluated top-to-bottom; first match wins.
-   */
-  /** Types that are unconditionally from a human user — always highest priority. */
   private static readonly USER_INTERACTION_TYPES: Set<MailboxItemType> = new Set([
     'human_chat',
   ]);
@@ -1710,238 +1682,6 @@ export class AttentionController {
     return 'continue';
   }
 
-  /**
-   * Enhanced decision with optional LLM fallback for ambiguous cases.
-   * Used by the delegate's evaluateInterrupt when wired.
-   */
-  async evaluateWithLLMFallback(
-    currentItem: MailboxItem,
-    newItem: MailboxItem,
-  ): Promise<DecisionType> {
-    const heuristic = this.heuristicDecision(currentItem, newItem);
-
-    // If heuristics produce a clear non-continue answer, use it
-    if (heuristic !== 'continue') return heuristic;
-
-    // If no LLM judge is configured, stick with heuristic
-    if (!this.llmJudge) return heuristic;
-
-    // For same-priority items where heuristic says 'continue',
-    // consult LLM for nuanced judgment
-    try {
-      const prompt = this.buildJudgePrompt(currentItem, newItem);
-      const llmDecision = await this.llmJudge(prompt);
-      const validDecisions: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
-      if (validDecisions.includes(llmDecision)) return llmDecision;
-    } catch (err) {
-      log.debug('LLM judge failed, falling back to heuristic', {
-        agentId: this.agentId,
-        error: String(err),
-      });
-    }
-
-    return heuristic;
-  }
-
-  private buildJudgePrompt(
-    currentItem: MailboxItem,
-    newItem: MailboxItem,
-  ): string {
-    const recentDecs = this.decisions.slice(-5).map(d =>
-      `- ${d.decisionType}: ${d.reasoning}`
-    ).join('\n');
-
-    const queuedItems = this.mailbox.getQueuedItems();
-    const queueSection = queuedItems.length > 0
-      ? queuedItems.map(i => `  - [${i.sourceType}] p${i.priority}: "${displayLabelOf(i)}"`).join('\n')
-      : '  (empty)';
-
-    const currentContent = currentItem.payload.content?.slice(0, 500) ?? '';
-    const newContent = newItem.payload.content?.slice(0, 800) ?? '';
-
-    return [
-      'You are deciding whether to INTERRUPT your current work to handle a new incoming message.',
-      '',
-      'RULES (in priority order):',
-      '1. Human messages (human_chat) ALWAYS preempt non-human work — users are top priority.',
-      '2. If the new message explicitly CANCELS or REVOKES the current work (e.g. "cancel that task",',
-      '   "don\'t publish this anymore", "delete the draft"), choose cancel — current work is permanently abandoned.',
-      '3. If the new message asks to PAUSE or DELAY current work (e.g. "hold off for now",',
-      '   "wait before deploying", "pause that"), choose preempt — current work is saved and can be resumed later.',
-      '4. If the new message is about the SAME task/topic as current work and adds info, consider merge.',
-      '5. If the new message is lower priority and unrelated, continue current work.',
-      '',
-      `CURRENT FOCUS: [${currentItem.sourceType}] priority=${currentItem.priority}`,
-      `  Summary: "${displayLabelOf(currentItem)}"`,
-      `  Task: ${currentItem.payload.taskId ?? 'none'}`,
-      currentContent ? `  Content preview: ${currentContent}` : '',
-      '',
-      `NEW ITEM: [${newItem.sourceType}] priority=${newItem.priority}`,
-      `  Summary: "${displayLabelOf(newItem)}"`,
-      `  Task: ${newItem.payload.taskId ?? 'none'}`,
-      newContent ? `  Content: ${newContent}` : '',
-      '',
-      `FULL QUEUE (${this.mailbox.depth} items):`,
-      queueSection,
-      '',
-      'RECENT DECISIONS:',
-      recentDecs || '(none)',
-      '',
-      'DECISIONS:',
-      '- preempt: PAUSE current work (session saved for later resumption) and handle the new item',
-      '- cancel: PERMANENTLY STOP current work (session dropped, will NOT be resumed) and handle the new item',
-      '- merge: Inject new item into current session as additional context (no interruption)',
-      '- defer: Put the new item aside for later (no interruption)',
-      '- continue: Ignore the new item for now, keep working',
-      '',
-      'Choose exactly one: continue | preempt | cancel | merge | defer',
-      'Reply with ONLY the decision word, nothing else.',
-    ].join('\n');
-  }
-
-  // ─── Triage ─────────────────────────────────────────────────────────────────
-
-  /**
-   * Determine whether LLM triage is actually needed.
-   *
-   * Triggers deliberation in two scenarios (first match wins):
-   * 1. Backlog: queue depth >= TRIAGE_BACKLOG_THRESHOLD (currently 2) — agent
-   *    uses mailbox tools to defer/drop/prioritize before committing to work.
-   * 2. Priority ambiguity: queued items at the same or higher priority as
-   *    head — priority queue alone can't decide the right order.
-   * (Never for human_chat — always processed immediately in FIFO order.)
-   */
-  private needsLLMTriage(headItem: MailboxItem): boolean {
-    if (headItem.sourceType === 'human_chat') return false;
-
-    // 严格状态管理事件（triggerExecution / review_request / requirement_update(actionRequired)
-    // / workflow_update(actionRequired)）绝不参与深度分拣：
-    // 它们需要在带完整工具（含 task_update / task_submit_review / file 等）的正常出队路径
-    // executeTask()/review/requirement_action 单独执行，且分拣白名单没有这些工具。
-    // 头部是严格事件时按优先级队列正常出队执行即可。
-    if (isStrictStateItem(headItem)) return false;
-    const queued = this.mailbox.getQueuedItems();
-    // 严格事件本来就被排除在 deliberation 的视界之外（见循环内的 allItems 过滤），
-    // 因此它们**不得否决**其余消息的批量分拣。旧实现「队列里只要有一条 strict 就
-    // return false」会让**整个队列**退化成逐条唤醒（回复风暴）；判据只看会被分拣看见的那部分。
-    const scorable = queued.filter(i => !isStrictStateItem(i));
-    if (scorable.length === 0) return false;
-
-    if (scorable.length >= TRIAGE_BACKLOG_THRESHOLD) return true;
-
-    const samePriorityCount = scorable.filter(i => i.priority <= headItem.priority).length;
-    return samePriorityCount > 0;
-  }
-
-
-  /**
-   * Apply a DeliberationResult to the mailbox: handle inline completions, reorder, defer, drop.
-   * Returns the item to process next.
-   */
-  /** Batch items dequeued for the current processing cycle (set by applyDeliberationResult). */
-  private pendingBatchItems: MailboxItem[] = [];
-  private pendingBatchContext?: string;
-
-  private applyDeliberationResult(currentItem: MailboxItem, result: DeliberationResult): MailboxItem {
-    let item = currentItem;
-
-    const queueSnapshot = this.mailbox.getQueuedItems();
-    const isProtected = (id: string) => {
-      const it = queueSnapshot.find(i => i.id === id);
-      if (!it) return false;
-      if (it.sourceType === 'human_chat') return true;
-      // 严格状态管理事件（正式任务执行/评审/收尾动作）在分拣结果中必须是受保护的：
-      // 不允许 inline 完成、defer、drop、或作为 batch item —— 它们只能留在队列中
-      // 由正常出队路径单独执行，否则状态机/闭包会丢失。
-      if (isStrictStateItem(it)) return true;
-      if (it.payload.extra?.directMention) return true;
-      return false;
-    };
-
-    // Resolve effective process IDs (batch takes precedence over single)
-    const effectiveProcessIds = (result.processItemIds && result.processItemIds.length > 0)
-      ? result.processItemIds
-      : [result.processItemId];
-
-    // Mark inline-completed items (these were handled during deliberation, NOT discarded).
-    for (const completedId of result.inlineCompletedIds) {
-      if (isProtected(completedId)) continue;
-      if (completedId === currentItem.id) continue;
-      if (effectiveProcessIds.includes(completedId)) continue;
-      const completedItem = queueSnapshot.find(i => i.id === completedId);
-      this.mailbox.complete(completedId);
-      if (completedItem) {
-        this.recordDecision('complete', completedItem, 'Handled inline during deliberation');
-      }
-    }
-
-    // Select the primary item to process
-    const primaryId = effectiveProcessIds[0];
-    if (primaryId !== item.id) {
-      this.mailbox.putBack(item);
-      const chosen = this.mailbox.dequeueById(primaryId);
-      if (chosen) {
-        item = chosen;
-      } else {
-        log.warn('Deliberation chose item that is no longer in queue, falling back to head', {
-          agentId: this.agentId,
-          chosenId: primaryId,
-          fallbackId: currentItem.id,
-        });
-        const redequeued = this.mailbox.dequeueById(currentItem.id);
-        if (redequeued) item = redequeued;
-      }
-    }
-
-    // Dequeue additional batch items (if batch processing)
-    this.pendingBatchItems = [];
-    this.pendingBatchContext = result.batchContext;
-    if (effectiveProcessIds.length > 1) {
-      for (let i = 1; i < effectiveProcessIds.length; i++) {
-        const batchId = effectiveProcessIds[i];
-        if (isProtected(batchId)) continue;
-        const batchItem = this.mailbox.dequeueById(batchId);
-        if (batchItem) {
-          this.pendingBatchItems.push(batchItem);
-        }
-      }
-    }
-
-    // Defer and drop
-    for (const deferId of result.deferItemIds) {
-      if (isProtected(deferId)) continue;
-      this.mailbox.defer(deferId);
-    }
-    for (const dropId of result.dropItemIds) {
-      if (isProtected(dropId)) continue;
-      this.mailbox.drop(dropId, `deliberation: ${result.reasoning ?? ''}`.trim());
-    }
-
-    // Apply memory updates from deliberation
-    if (result.memoryUpdates && result.memoryUpdates.length > 0) {
-      this.delegate?.applyMemoryUpdates?.(result.memoryUpdates);
-    }
-
-    // Emit events and update cognition
-    const triageEquivalent: TriageResult = {
-      processItemId: primaryId,
-      deferItemIds: result.deferItemIds,
-      dropItemIds: result.dropItemIds,
-      inlineCompletedIds: result.inlineCompletedIds,
-      reasoning: result.reasoning,
-    };
-    this.lastTriageResult = { ...triageEquivalent, timestamp: new Date().toISOString() };
-    this.delegate?.onDeliberationCompleted?.(result);
-    this.eventBus.emit('attention:triage', {
-      agentId: this.agentId,
-      triage: this.lastTriageResult,
-    });
-    const triageDecision = this.recordDecision('triage', item, `[deliberation] ${result.reasoning}`);
-    this.delegate?.onDecisionMade(triageDecision);
-    return item;
-  }
-
-
   // ─── State & Queries ──────────────────────────────────────────────────────
 
   getState(): AttentionState {
@@ -1966,7 +1706,6 @@ export class AttentionController {
     const state = this.workerCount > 1 ? this.aggregateState() : this.state;
     return {
       attentionState: state,
-      isDeliberating: this.isDeliberating || undefined,
       currentFocus: this.currentFocus
         ? {
             mailboxItemId: this.currentFocus.id,
@@ -1987,14 +1726,6 @@ export class AttentionController {
       })),
       deferredItems: [],
       recentDecisions: this.decisions.slice(-10),
-      lastTriage: this.lastTriageResult ? {
-        reasoning: this.lastTriageResult.reasoning,
-        processedItemId: this.lastTriageResult.processItemId,
-        deferredItemIds: this.lastTriageResult.deferItemIds,
-        droppedItemIds: this.lastTriageResult.dropItemIds,
-        inlineCompletedIds: this.lastTriageResult.inlineCompletedIds ?? [],
-        timestamp: this.lastTriageResult.timestamp,
-      } : undefined,
     };
   }
 
@@ -2004,7 +1735,7 @@ export class AttentionController {
     if (item.sourceType === 'human_chat') return false;
     this.mailbox.defer(itemId, deferUntilMs ? new Date(Date.now() + deferUntilMs).toISOString() : undefined);
     const decision = this.recordDecision('defer', item, reason);
-    this.delegate?.onDecisionMade(decision);
+    if (decision) this.delegate?.onDecisionMade(decision);
     return true;
   }
 
@@ -2015,23 +1746,24 @@ export class AttentionController {
       if (item.sourceType === 'human_chat') return false;
       this.mailbox.drop(itemId);
       const decision = this.recordDecision('drop', item, reason);
-      this.delegate?.onDecisionMade(decision);
+      if (decision) this.delegate?.onDecisionMade(decision);
       return true;
     }
     // Ghost / already-handled: not in the live queue. Force-drop in persistence
     // so the agent stops looping on "Item not found" for stale IDs.
+    // C3：`dropped` 已不是取值域 —— 合成占位项用 `bounced`（它确实是一个退信）。
     this.mailbox.drop(itemId);
     const decision = this.recordDecision('drop', {
       id: itemId,
       agentId: this.agentId,
       sourceType: 'system_event',
       priority: 4,
-      status: 'dropped',
+      status: 'bounced',
       payload: { summary: `Ghost/orphan drop: ${reason}`, content: reason },
       metadata: {},
       queuedAt: new Date().toISOString(),
     }, reason);
-    this.delegate?.onDecisionMade(decision);
+    if (decision) this.delegate?.onDecisionMade(decision);
     return true;
   }
 
@@ -2075,7 +1807,24 @@ export class AttentionController {
     type: DecisionType,
     item: MailboxItem,
     reasoning: string,
-  ): AttentionDecision {
+    outcome?: string,
+    source: DecisionSource = 'rule',
+    overrode?: DecisionType,
+  ): AttentionDecision | null {
+    // ── C10-0B §3.3：平台内部唤醒不产生决策行 ───────────────────────────────
+    //
+    // `PLATFORM_INTERNAL_SOURCES`（heartbeat / system_event / …）本质**没有实体**：
+    // 它们是平台唤醒信号，不是「关于某项工作的决策」，也没有回合身份可以挂在行上。
+    // 给它们写一条 `work_unit_ref IS NULL` 的决策行，等于把台账变成一本
+    // 「谁都没身份」的拒绕簿 —— 真机 1093/1106 的 leak 就是这些行。
+    //
+    // 在**唯一写者**处拒绝，而不是在每个 pick 调用点各判一次：不得合成的判定
+    // 只能有一个执行点，否则下一条 loop 会又多一份。
+    //
+    // 注意：不落账 ≠ 不处理。item 照常被 pick、照常进 `processMailboxItem`；
+    // 只是没有“决策”这个副作用。（决策 ≠ 动作）
+    if (PLATFORM_INTERNAL_SOURCES.has(item.sourceType)) return null;
+
     const decision: AttentionDecision = {
       id: generateId('dec'),
       agentId: this.agentId,
@@ -2091,7 +1840,17 @@ export class AttentionController {
           .map(i => i.sourceType),
       },
       reasoning,
+      // ①-2：把邮箱行的身份带进决策台账。
+      // 不带的话，「谁在哪个回合撤销了什么」只能靠 mailbox_item_id 反推 ——
+      // 而邮箱行会被 TTL 清理/实体合并，反查链会断在中间。
+      workUnitRef: item.workUnitRef ?? null,
+      // 谁拍板的。缺了它，规则做的不可逆动作和模型深思后的判断在台账上长得一样。
+      source,
+      ...(overrode ? { overrode } : {}),
       createdAt: new Date().toISOString(),
+      // C8-B：副作用已在回合内发生时，outcome 必须在**落库之前**就带上——
+      // 先 save 再补字段等于写两次（第二次没人读，读到的永远是 null）。
+      ...(outcome ? { outcome } : {}),
     };
 
     this.decisions.push(decision);

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ShellSessionManager } from '../src/tools/shell-session.js';
-import { SHELL_SESSION_IDLE_TIMEOUT_MS } from '@markus/shared';
+import { ShellSessionManager, shellSessionIdFor } from '../src/tools/shell-session.js';
+import { SHELL_SESSION_IDLE_TIMEOUT_MS, SHELL_MAX_SESSIONS_PER_AGENT } from '@markus/shared';
 
 describe('ShellSessionManager', () => {
   let manager: ShellSessionManager;
@@ -51,11 +51,12 @@ describe('ShellSessionManager', () => {
   });
 
   it('returns null when max sessions per agent exceeded', async () => {
-    manager.create('agent-4', 's1');
-    manager.create('agent-4', 's2');
-    manager.create('agent-4', 's3');
-    const fourth = manager.create('agent-4', 's4');
-    expect(fourth).toBeNull();
+    // 上限以常量为准（并发会话隔离后默认 shell 按会话细分，帽从 3 提到 16）。
+    for (let i = 0; i < SHELL_MAX_SESSIONS_PER_AGENT; i++) {
+      expect(manager.create('agent-4', `s${i}`)).not.toBeNull();
+    }
+    const overflow = manager.create('agent-4', 'one-too-many');
+    expect(overflow).toBeNull();
   });
 
   it('returns error for unknown session id', async () => {
@@ -123,7 +124,7 @@ describe('ShellSessionManager', () => {
   it('cleans up dead sessions on get()', async () => {
     const session = manager.getOrCreateDefault('agent-13');
     session.kill();
-    const retrieved = manager.get('agent-13:default');
+    const retrieved = manager.get(shellSessionIdFor('agent-13'));
     expect(retrieved).toBeUndefined();
   });
 

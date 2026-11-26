@@ -1,5 +1,104 @@
 export type AgentStatus = 'idle' | 'working' | 'offline' | 'error';
 
+/**
+ * C10-C — the autonomy axis (REBUILD of the #462 axis that #464 physically
+ * deleted; plan §0.1 fact 2). Binary by Owner ruling: 'observe' = the agent may
+ * read and propose but never self-initiate action; 'act' = full self-initiation.
+ * The agents table defaults to 'act', so every historical row keeps its
+ * pre-column behavior — compatible read, no data migration.
+ */
+export type AgentAutonomy = 'observe' | 'act';
+
+/**
+ * C10-C — cross-org trust policy. 'observe' (default): unverified cross-org
+ * input may be delivered and read, but cannot drive self-initiated action.
+ * Elevation to 'auto' requires ONE human approval + an audit row; the only
+ * writer is OrganizationService.setCrossOrgPolicy (the storage repo method is
+ * its instrument, not a public path).
+ */
+export type CrossOrgPolicy = 'observe' | 'auto';
+
+/**
+ * C10-F (2026-11-26, Owner ruling) — the org-level external ingress policy.
+ *
+ * Three states, not two booleans: "accept external input" and "let it drive the
+ * agent" are different questions, and collapsing them forces an admin who wants
+ * a quiet inbox to also cut the wire.
+ *
+ *   'off'     — inbound is refused at the single ingest point. Nothing is
+ *               stored, nothing owes a turn.
+ *   'observe' — inbound is accepted and recorded, but does not owe a turn
+ *               (intent floor `deliver`): the agent sees it on its next turn.
+ *   'accept'  — inbound is accepted and owes a turn (intent floor
+ *               `action_required`), i.e. the pre-policy behaviour.
+ *
+ * Default 'off': for an open-source product the default IS the configuration
+ * most users run, so the safe state has to be the one you get without asking.
+ * The single writer is OrganizationService.setExternalIngress (human + audit);
+ * the single reader is ExternalSourceService.ingest.
+ */
+export type ExternalIngressPolicy = 'off' | 'observe' | 'accept';
+
+/** Runtime guard for the closed set — parsing never invents a fourth state. */
+export function isExternalIngressPolicy(value: unknown): value is ExternalIngressPolicy {
+  return value === 'off' || value === 'observe' || value === 'accept';
+}
+
+/**
+ * C10-C — the ONE predicate deciding whether an agent may self-initiate.
+ *
+ * Exactly one consumer: the patrol admission at the top of `handleHeartbeat`
+ * (core/agent.ts) — every self-initiation path (clock tick, api trigger,
+ * heartbeat mailbox item) converges there. A second call site turns
+ * packages/shared/test/autonomy-single-consumer.test.ts red on purpose.
+ *
+ * `ceiling` is the trust cap (verified=false cross-org input under
+ * cross_org_policy='observe'). It is an INPUT to this same predicate — never a
+ * second permissibility function — and it can only TIGHTEN: a ceiling of 'act'
+ * does not lift an 'observe' agent.
+ *
+ * Fail-open to old behavior by design: only 'observe' blocks; undefined and
+ * historical dirty values pass, so a new field never stalls existing agents.
+ */
+export function maySelfInitiate(
+  autonomy: AgentAutonomy | string | undefined,
+  ceiling?: AgentAutonomy,
+): boolean {
+  const effective = ceiling === 'observe' ? 'observe' : autonomy;
+  return effective !== 'observe';
+}
+
+/**
+ * C10-C — Agent-level trust-boundary port. The Agent asks for the ceiling
+ * INPUT; the org/policy lookup lives on the other side (org-manager assembly),
+ * so core never depends on storage. Absent port ⇒ no ceiling: single-org and
+ * embedded deployments have no cross-org knowledge (documented fail-open —
+ * the autonomy axis itself still bites).
+ */
+export interface TrustBoundaryPort {
+  /**
+   * `unverifiedExternal` (A, Owner 2026-11-25): an unverified external origin is
+   * queued. It has no agent row and no org, so it can never be resolved through
+   * `senderAgentIds` — passing it as an id would silently resolve to nothing and
+   * grant it MORE trust than a known cross-org peer. It is a separate structural
+   * fact: untrusted by construction, capped unless policy says 'auto'.
+   */
+  selfInitiationCeiling(senderAgentIds: string[], unverifiedExternal: boolean): AgentAutonomy | undefined;
+}
+
+/**
+ * C10-C — org-aware variant implemented by org-manager (api-server assembly).
+ * AgentManager binds the receiver org per agent, so the Agent-level contract
+ * stays (senderAgentIds) => ceiling.
+ */
+export interface OrgTrustBoundaryPort {
+  selfInitiationCeiling(
+    receiverOrgId: string,
+    senderAgentIds: string[],
+    unverifiedExternal: boolean,
+  ): AgentAutonomy | undefined;
+}
+
 export interface AgentConfig {
   id: string;
   name: string;
@@ -14,6 +113,13 @@ export interface AgentConfig {
   llmConfig: LLMAssignment;
   channels: ChannelBinding[];
   heartbeatIntervalMs: number;
+  /**
+   * C10-C: autonomy axis. The ONLY consumer is the patrol admission in
+   * core/agent.ts via maySelfInitiate() — do not read this field to make
+   * permissibility decisions anywhere else (the single-consumer guard bites).
+   * Absent ⇒ 'act' (historical behavior).
+   */
+  autonomy?: AgentAutonomy;
   createdAt: string;
   updatedAt: string;
 }
@@ -53,6 +159,12 @@ export interface AgentActivity {
   taskId?: string;
   /** Links this activity back to the mailbox item that triggered it */
   mailboxItemId?: string;
+  /**
+   * C9-B: which WorkUnit (execution epoch) this activity belongs to. Nullable — a
+   * row without an identity is legal (old chain / no WorkUnit), and "still running"
+   * is never derived from this activity (see docs/architecture/derived-views.md).
+   */
+  workUnitRef?: string | null;
   /** For heartbeat type, the heartbeat task name */
   heartbeatName?: string;
   startedAt: string;

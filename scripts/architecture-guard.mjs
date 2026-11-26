@@ -44,6 +44,27 @@ const ALLOWLIST_FILE = join(ROOT, 'scripts', 'architecture-allowlist.json');
 const SCAN_ROOTS = ['packages'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', 'out']);
 
+/** C9-A：`facts` 的唯一 SQL 写者（声明放在规则表之前，规则表在模块初始化时就要读它）。 */
+const FACTS_SINGLE_WRITER = 'packages/org-manager/src/fact-service.ts';
+
+// ── 第九刀 C9-C：阶段闭集的辅助函数 ──────────────────────────────────────────
+//
+// 判据取「`THREAD_STAGES` 数组里那七个字面值」，而不是「文件里出现过这个名字」：
+// 注释、文档、其它地方的同名文字都不该被算进来。顺序一起比 —— 顺序就是文档顺序，
+// 前端按它渲染图例，一端插一个另一端没插会立刻被这条规则抓到。
+const THREAD_STAGE_ORDER = 'waiting_human|running|needs_evidence|in_verification|done|blocked_deps|failed';
+
+function extractStageList(text) {
+  const block = text.match(/THREAD_STAGES\s*=\s*\[([\s\S]*?)\]\s*as const/);
+  if (!block) return null;
+  return [...block[1].matchAll(/'([a-z_]+)'/g)].map(m => m[1]);
+}
+
+/** 去掉行注释与块注释：判定「实现体内有没有时钟/IO」时，注释里提到不算违规。 */
+function stripComments(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+}
+
 const updateAllowlist = process.argv.includes('--update-allowlist');
 const listOnly = process.argv.includes('--list');
 
@@ -78,6 +99,140 @@ const listOnly = process.argv.includes('--list');
  * 永远不会红的门禁比没有门禁更危险）。
  */
 const INVARIANT_RULES = [
+  // 「同一条流的阶段」此前在四个组件里各拼一次；这份规则锁住派生是**纯函数**、
+  // 以及 core 与 web-ui 的闭集**不允许各自漂移**（漏一个 stage = 页面上出现空白徽章）。
+  {
+    id: 'thread-stage-closed-set',
+    title: 'deriveStage 是纯函数，且前后端阶段枚举逐字一致',
+    checks: [
+      {
+        file: 'packages/core/src/facts/derive-stage.ts',
+        label: 'core 的 THREAD_STAGES 声明 7 个 stage（顺序即文档顺序）',
+        hint: '派生闭集被改动 / 被删 → 前端按闭集渲染时漏项，或出现第 8 个未定义阶段',
+        detect: t => extractStageList(t)?.join('|') === THREAD_STAGE_ORDER,
+        fixtures: {
+          ok: "export const THREAD_STAGES = [\n  'waiting_human',\n  'running',\n  'needs_evidence',\n  'in_verification',\n  'done',\n  'blocked_deps',\n  'failed',\n] as const;",
+          bad: "export const THREAD_STAGES = ['waiting_human', 'running', 'done'] as const;",
+        },
+      },
+      {
+        file: 'packages/web-ui/src/lib/threadStage.ts',
+        label: 'web-ui 的镜像与 core 逐字一致',
+        hint: '前端枚举漂移 → 新增 stage 在界面上无文案（空白徽章），或前端编造服务端不会返回的值',
+        detect: t => extractStageList(t)?.join('|') === THREAD_STAGE_ORDER,
+        fixtures: {
+          ok: "export const THREAD_STAGES = [\n  'waiting_human',\n  'running',\n  'needs_evidence',\n  'in_verification',\n  'done',\n  'blocked_deps',\n  'failed',\n] as const;",
+          bad: "export const THREAD_STAGES = [\n  'waiting_human',\n  'running',\n  'needs_evidence',\n  'in_verification',\n  'done',\n  'blocked_deps',\n  'failed',\n  'saved',\n] as const;",
+        },
+      },
+      {
+        file: 'packages/core/src/facts/derive-stage.ts',
+        label: '派生实现体内没有 IO / 时钟 / 随机（去掉注释后不含 Date.now / Math.random / prepare / fetch / readFile）',
+        hint: '派生一旦能读时钟或读库，就不再可复现：同一份输入会给出两个答案，测试也就无从证明它',
+        detect: t => !/Date\.now|Math\.random|\.prepare\(|fetch\(|readFileSync|readFile\(|process\.env/.test(stripComments(t)),
+        fixtures: {
+          ok: 'export function deriveStage(input) { return input.fsm.status === "failed" ? "failed" : "done"; }',
+          bad: 'export function deriveStage(input) { const now = Date.now(); return input.fsm.status === "failed" ? "failed" : "done"; }',
+        },
+      },
+      {
+        file: 'packages/shared/src/facts/predicates.ts',
+        label: '`task.completion_evidence` 仍在谓词闭集里（派生的证据谓词不能是孤儿字符串）',
+        hint: '谓词改名 → 派生永远找不到证据，所有卡永久停在 needs_evidence',
+        detect: t => t.includes("'task.completion_evidence'"),
+        fixtures: {
+          ok: "predicate: 'task.completion_evidence',",
+          bad: "predicate: 'task.done',",
+        },
+      },
+    ],
+  },
+  // 第九刀 C9-A：facts 的唯一写者必须存在，且真的写 facts。
+  // 与路径级规则互补：那条拦住「第二个写者」，这条拦住「唯一的写者被
+  // 重构成了不可写的空实现」—— 两个方向都松不得。
+  {
+    id: 'facts-single-writer',
+    title: 'facts 的唯一 SQL 写者存在，且真的包含写语句',
+    checks: [
+      {
+        file: FACTS_SINGLE_WRITER,
+        label: 'FactService 实现里同时存在 INSERT INTO facts 与 UPDATE facts',
+        hint: '唯一写者丢失了写语句 → facts 永远写不进去（或改由别处写，违背单写者不变量）',
+        detect: t => /INSERT\s+INTO\s+facts\b/i.test(t) && /UPDATE\s+facts\b/i.test(t),
+        fixtures: {
+          ok: "this.db.prepare('INSERT INTO facts (id) VALUES (?)').run(id); this.db.prepare('UPDATE facts SET superseded_by = ? WHERE id = ?').run(a, b);",
+          bad: "this.db.prepare('SELECT * FROM facts').all();",
+        },
+      },
+    ],
+  },
+  // 第九刀 C9-E：终态钩子只能有一个执行点。
+  //
+  // 「提交评审必须有完成证据」「agent 打回必须有驳回理由」这两条不变量住在 TaskService ——
+  // 它是 agent 工具与 REST 两条入口的**唯一**公共路径。若哪天把它们搬到工具层，
+  // REST 调用就会绕过它们（同一个不变量两个执行点 = R2），而且不会有人注意到。
+  {
+    id: 'terminal-hook-single-point',
+    title: '两个终态钩子只在 TaskService 判定，工具层不得另写一份',
+    checks: [
+      {
+        file: 'packages/org-manager/src/task-service.ts',
+        label: 'TaskService 同时持有两个钩子的判定（completion_evidence + rejection_reason）',
+        hint: '某个钩子被删/被移走 → 提交或打回又可以用口语走通，这正是 C9-E 要关掉的门',
+        detect: t =>
+          t.includes("predicate: 'task.completion_evidence'") &&
+          t.includes("predicate: 'task.rejection_reason'"),
+        fixtures: {
+          ok: "queryActive({ subjectKind: 'task', subjectId: id, predicate: 'task.completion_evidence' });\n  queryActive({ subjectKind: 'task', subjectId: id, predicate: 'task.rejection_reason' });",
+          bad: "queryActive({ subjectKind: 'task', subjectId: id, predicate: 'task.completion_evidence' });",
+        },
+      },
+      {
+        file: 'packages/core/src/tools/fact-tools.ts',
+        label: '工具层没有第二份钩子（不自己查 completion_evidence 做准入）',
+        hint: '工具层重新长出准入判定 → REST 与 agent 两条入口开始给出不同答案',
+        detect: t => t.includes('fact_verify') && !/predicate:\s*'task\.completion_evidence'/.test(t),
+        fixtures: {
+          ok: "name: 'fact_verify', predicate: 'task.completion_evidence',".replace("predicate: 'task.completion_evidence',", 'subject_kind: SUBJECT_KINDS,'),
+          bad: "name: 'fact_verify', predicate: 'task.completion_evidence',",
+        },
+      },
+    ],
+  },
+  // 第九刀 C9-D：Inbox 的成员判定只能有一处实现。这条锁住两个方向 ——
+  //   ① 派生层丢掉「无 action ⇒ 丢弃」这条铁律（Inbox 立刻退化成"看着热闹没人能动"）；
+  //   ② 呈现层重新长出「谁该进队列」的判定（回到同一事实多个写者的老路）。
+  {
+    id: 'inbox-single-derivation',
+    title: 'Inbox 的成员/去重只在 deriveInbox 决定，无 action 的行必须被丢弃',
+    checks: [
+      {
+        file: 'packages/web-ui/src/lib/deriveInbox.ts',
+        label: '派生层仍构造 `subjectKind:subjectId:needKind` 的键，且仍记录 no_action 丢弃',
+        hint: '去重键或丢弃规则被删 → 同一件事出现多次，或不可行动的红灯回到列表里',
+        detect: t =>
+          /\$\{subjectKind\}:\$\{subjectId\}:\$\{needKind\}/.test(t) &&
+          /reason:\s*'no_action'/.test(t),
+        fixtures: {
+          ok: 'export function dedupeKey(a, b, c) { return `${subjectKind}:${subjectId}:${needKind}`; }\n  dropped.push({ source: \'approval\', ref: id, reason: \'no_action\' });',
+          bad: 'export function dedupeKey(a, b, c) { return `${subjectKind}:${subjectId}:${needKind}`; }',
+        },
+      },
+      {
+        file: 'packages/web-ui/src/lib/attentionQueue.ts',
+        label: '呈现层只委托 deriveInbox，不再按状态过滤 / 自己维护实体→行映射',
+        hint: '呈现层重新判定成员 → 同一「需要人做什么」的事实有了第二个写者，客户端一多就各自漂移',
+        detect: t =>
+          t.includes('deriveInbox(') &&
+          !/\bstatus\s*[!=]==?\s*'/.test(stripComments(t)) &&
+          !/byEntity|entityKeysOf|dedupeKey\s*\(/.test(stripComments(t)),
+        fixtures: {
+          ok: "const { items } = deriveInbox(snapshot, ports, { lastSeenAt });\nreturn items.map(toRow);",
+          bad: "for (const a of approvals) { if (a.status !== 'pending') continue; rows.push(a); }\nconst { items } = deriveInbox(snapshot, ports);",
+        },
+      },
+    ],
+  },
   {
     id: 'mailbox-claim-uniqueness',
     title: 'item 认领唯一性（原子条件更新 + 幂等唯一键 + core 委托认领）',
@@ -225,6 +380,97 @@ const INVARIANT_RULES = [
       },
     ],
   },
+  {
+    id: 'work-unit-single-writer',
+    title: 'WorkUnit 单一写者（唯一 SQL 写点 / 唯一矩阵定义 / 唯一 ref 生成器）',
+    checks: [
+      {
+        file: 'packages/storage/src/sqlite-storage.ts',
+        label: 'work_units 表 + uq_work_units_ref 唯一索引存在（幂等键由索引裁决）',
+        hint: '缺唯一索引 → 并发 ensure 同一 ref 会长出两行 WU，同一个执行纪元有两张身份证',
+        detect: (t) =>
+          /CREATE TABLE IF NOT EXISTS work_units/.test(t) &&
+          /CREATE UNIQUE INDEX IF NOT EXISTS uq_work_units_ref ON work_units\(ref\)/.test(t),
+        fixtures: {
+          ok: 'CREATE TABLE IF NOT EXISTS work_units ( id TEXT PRIMARY KEY, ref TEXT NOT NULL );\nCREATE UNIQUE INDEX IF NOT EXISTS uq_work_units_ref ON work_units(ref);',
+          bad: 'CREATE TABLE IF NOT EXISTS work_units ( id TEXT PRIMARY KEY, ref TEXT NOT NULL );\nCREATE INDEX IF NOT EXISTS idx_work_units_ref ON work_units(ref);',
+        },
+      },
+      {
+        file: 'packages/storage/src/sqlite-storage.ts',
+        label: 'ensure = ON CONFLICT(ref) DO NOTHING 的原子幂等插入（不是先查后插）',
+        hint: '先查后插在并发下两个 worker 都会看到「不存在」→ 要么两行、要么抛唯一键错误打断业务',
+        detect: (t) =>
+          /INSERT INTO work_units[\s\S]{0,600}?ON CONFLICT\(ref\) DO NOTHING/.test(t),
+        fixtures: {
+          ok: "this.db.prepare('INSERT INTO work_units (id, ref) VALUES (?, ?) ON CONFLICT(ref) DO NOTHING').run(id, ref);",
+          bad: "const existing = this.getByRef(ref); if (existing) return existing; this.db.prepare('INSERT INTO work_units (id, ref) VALUES (?, ?)').run(id, ref);",
+        },
+      },
+      {
+        file: 'packages/storage/src/sqlite-storage.ts',
+        label: 'transition = 乐观并发条件更新（WHERE id = ? AND status = ?）',
+        hint: '无条件 UPDATE → 读到 running 却被别人先改成 terminated 时，会把终态覆盖回 running',
+        detect: (t) =>
+          /UPDATE work_units SET[\s\S]{0,600}?WHERE id = \? AND status = \?/.test(t),
+        fixtures: {
+          ok: "this.db.prepare(`UPDATE work_units SET status = ? WHERE id = ? AND status = ?`).run(to, id, from);",
+          bad: "this.db.prepare(`UPDATE work_units SET status = ? WHERE id = ?`).run(to, id);",
+        },
+      },
+      {
+        file: 'packages/shared/src/work-unit.ts',
+        label: 'WU_TRANSITIONS 矩阵单一定义，且 archived 是终态（不可复活）',
+        hint: '矩阵缺项或允许 archived→running → 归档变成可撤销的装饰，历史读数开始漂移',
+        detect: (t) =>
+          /WU_TRANSITIONS[\s\S]{0,900}?archived:\s*\[\s*\]/.test(t) &&
+          /running:\s*\[\s*'idle'/.test(t),
+        fixtures: {
+          ok: "export const WU_TRANSITIONS = { running: ['idle', 'paused_budget', 'terminated'], idle: ['running'], paused_budget: ['running'], terminated: ['archived'], archived: [] };",
+          bad: "export const WU_TRANSITIONS = { running: ['idle'], idle: ['running'], paused_budget: ['running'], terminated: ['archived'], archived: ['running'] };",
+        },
+      },
+      {
+        // C7-B：名字里的 turn 就是约束 —— 只读内存里的回合 ref，禁止用库查询实现。
+        // 库里只有历史，没有「当前」；按 agentId 反查得到的是错的那一条（父链静默挂错）。
+        file: 'packages/core/src/agent-manager.ts',
+        label: 'turnWorkUnitRef 只读内存回合 ref（禁止库查询实现）',
+        hint: '按 agentId 去库里反查「当前 WU」在结构上无法成立 → 会把子 WU 挂到历史里某条旧 WU 上',
+        detect: (t) => {
+          const m = t.match(/turnWorkUnitRef\(agentId: string\): string \| null \{([\s\S]*?)\n  \}/);
+          if (!m) return false;
+          return !/listByAgent|SELECT|\.repo\./.test(m[1]);
+        },
+        fixtures: {
+          ok: "turnWorkUnitRef(agentId: string): string | null {\n    const agent = this.agents.get(agentId);\n    return agent ? agent.turnWorkUnitRef() : null;\n  }",
+          bad: "turnWorkUnitRef(agentId: string): string | null {\n    const rows = this.repo.listByAgent(agentId);\n    return rows[0]?.ref ?? null;\n  }",
+        },
+      },
+      {
+        // 消费者侧：生产者只许调 service，不许自己写 SQL。命中即红。
+        file: 'packages/org-manager/src/task-service.ts',
+        label: 'task-service 不自己写 work_units（唯一写者在 storage 层）',
+        hint: '第二个 SQL 写者 → 绕过矩阵与唯一索引，WU 状态开始有两个真相',
+        detect: (t) => !/(INSERT INTO work_units|UPDATE work_units)/.test(t),
+        fixtures: {
+          ok: "this.workUnitService.ensure({ ref: WORK_UNIT_REF.task(task.id, round) });",
+          bad: "this.db.prepare('UPDATE work_units SET status = ? WHERE ref = ?').run('idle', ref);",
+        },
+      },
+      {
+        file: 'packages/org-manager/src/api-server.ts',
+        label: 'api-server 不自己写 work_units / 不自己写 work_unit 迁移行',
+        hint: '入口直接写表 → 建实体与建引用的顺序不再受控，可能造出悬空引用',
+        detect: (t) =>
+          !/(INSERT INTO work_units|UPDATE work_units)/.test(t) &&
+          !/entityType:\s*'work_unit'/.test(t),
+        fixtures: {
+          ok: "units.ensure({ ref }); units.linkMailboxItem(itemId, ref);",
+          bad: "this.db.prepare('INSERT INTO work_units (id, ref) VALUES (?, ?)').run(id, ref);",
+        },
+      },
+    ],
+  },
 ];
 
 /** 门禁自检：每条检测器都必须「命中违规样本、放过合规样本」。 */
@@ -289,6 +535,18 @@ const RULE_SCOPE = {
   'event-reachability': (relPath) => /^packages\/(core|org-manager|cli|a2a|comms)\/src\//.test(relPath),
   // 写门禁：只针对 shell 工具的接线点。
   'write-gate': (relPath) => relPath === 'packages/core/src/tools/shell.ts',
+  // facts 单写者：所有服务端 src 都可能成为「第二个写者」，所以全量扫。
+  'facts-single-writer': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
+  // C9-B：「在跑」只能由 work_units 回答 —— 全仓（含 UI / 服务端 / CLI）适用。
+  'no-activity-liveness': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
+  // C9 收尾：身份字符串只有一个建造者 —— 全仓服务端 src 适用（排除 builders 在检测器内）。
+  'identity-string-single-builder': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
+  // C10-0E：append-only —— 全仓 src 适用（与 facts-single-writer 同口径）。
+  'activities-append-only': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
+  // C10-0C：复活守卫 —— 任何包的 src 都不得长出孤儿表读写路径。
+  'no-orphan-marketplace': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
+  // C10-0G：复活守卫 —— 产品级每日身份审计机制已删，src 不得长回自动运行路径。
+  'no-auto-identity-audit': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
 };
 
 /** 递归收集 packages/<pkg>/src/** 下的源码文件（只看 src，不看测试）。 */
@@ -319,6 +577,24 @@ function collectSources() {
   };
   for (const root of SCAN_ROOTS) walk(join(ROOT, root));
   return files;
+}
+
+/**
+ * C9-B：`scripts/` 下的运维脚本。
+ *
+ * 为什么单独收一遍：`SCAN_ROOTS` 只有 `packages`，于是「用 `ended_at` 判在跑」这条
+ * 不变量在 `scripts/` 里**从来没被扫过** —— 上一轮正是漏在这里（`identity-audit.mjs`
+ * 里有一条 `ended_at IS NULL` 判据，全仓 grep 时被当成通过）。只对这条规则补扫，
+ * 不把 `no-console` 之类的产品规则套到工具脚本上。
+ */
+function collectScriptSources() {
+  const dir = join(ROOT, 'scripts');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter(e => e.isFile() && /\.(mjs|js|ts)$/.test(e.name))
+    // 门禁自身不算读路径：它的正则与自检夹具**必须**含违规字面量，扫自己只会自指。
+    .filter(e => e.name !== 'architecture-guard.mjs')
+    .map(e => join(dir, e.name));
 }
 
 /**
@@ -412,6 +688,36 @@ function checkEventReachability(file, text) {
 }
 
 /**
+ * 规则 6：facts-single-writer —— C9-A
+ *
+ * `facts` 的唯一写者是 `packages/org-manager/src/fact-service.ts`。任何其他
+ * 服务端 src 文件里出现 `INSERT INTO facts` / `UPDATE facts`，就是一个「第二个写者」：
+ * 两个写者 = 同一条结论两个当前值，而 supersede 历史会被静默绕过。
+ *
+ * 这不是代码风格，是不变量，所以它进 CI 而不是进 review 注释。
+ */
+function checkFactsSingleWriter(file, text) {
+  const relPath = rel(file);
+  if (!/^packages\/[^/]+\/src\//.test(relPath)) return [];
+  if (relPath === FACTS_SINGLE_WRITER) return [];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    // 注释里说“这点东西不许写”是**合法**的（而且应该鼓励）——只扫真语句。
+    if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) continue;
+    const m = /\b(INSERT\s+INTO\s+facts|UPDATE\s+facts)\b/i.exec(raw);
+    if (!m) continue;
+    return [{
+      rule: 'facts-single-writer',
+      line: i + 1,
+      snippet: `${m[1].toUpperCase()} 出现在非唯一写者文件 —— facts 只能由 ${FACTS_SINGLE_WRITER} 写（用 supersede，不得直写）`,
+    }];
+  }
+  return [];
+}
+
+/**
  * 规则 5：write-gate —— shell 工具必须接入单一写门禁（P0-2 / G1）。
  * 若有人删掉 `assertShellWriteAllowed(` 调用，shell 重定向即可再次绕过写门禁。
  */
@@ -461,6 +767,271 @@ function loadAllowlist() {
   }
 }
 
+/**
+ * 规则 6（C9-B）：观测表是历史，不能回答「在跑」。
+ *
+ * 判据只有一个：`work_units(status='running' + claimed_by + lease_until)`。
+ * `agent_activities.ended_at IS NULL` 不叫在跑，叫「没有记到结束」——worker 被杀时
+ * 它会永远为空，于是僵尸行在 UI 上一直显示「在跑」（C8-E 被打回过的同一根因）。
+ *
+ * 因此本门禁同时拦两侧：
+ *   · 读路径把「未结束」当状态用（`!x.endedAt` / `x.endedAt === null`）；
+ *   · SQL 用 `ended_at IS NULL` 表达任何状态，以及那个已删除的「收口僵尸」扫库机制
+ *     （它存在的唯一作用就是给错误读法铺垫可信度）。
+ *
+ * 契约见 docs/architecture/derived-views.md。
+ */
+const ACTIVITY_LIVENESS_PATTERNS = [
+  { id: 'negated-endedAt', re: /!\s*[A-Za-z_$][\w$]*(?:\.[\w$]+)*\.endedAt\b/ },
+  { id: 'null-endedAt', re: /\.endedAt\s*[!=]==?\s*null/ },
+  { id: 'orphan-activity-sweep', re: /\bcloseOrphansAgainstTerminalMailbox\s*\(/ },
+  { id: 'ended-at-null-sql', re: /ended_at\s+IS\s+NULL/i },
+];
+
+function checkActivityLiveness(_file, text) {
+  const out = [];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    for (const p of ACTIVITY_LIVENESS_PATTERNS) {
+      if (p.re.test(lines[i])) {
+        out.push({ rule: 'no-activity-liveness', line: i + 1, snippet: `${p.id}: ${lines[i].trim().slice(0, 110)}` });
+      }
+    }
+  }
+  return out;
+}
+
+/** 门禁自检：检测器一旦失效必须报警，否则一个永远不红的门禁比没有更危险。 */
+function selfTestActivityLiveness() {
+  const fixtures = [
+    { ok: 'const finished = Boolean(act.endedAt);', bad: 'const isLive = !act.endedAt;' },
+    { ok: 'const label = act.endedAt ?? "—";', bad: 'if (item.activity.endedAt === null) { live = true; }' },
+    { ok: 'const running = units.filter(u => u.status === "running");', bad: 'repo.closeOrphansAgainstTerminalMailbox()' },
+    { ok: 'SELECT 1 FROM agent_activities WHERE id = ?', bad: 'SELECT 1 FROM agent_activities WHERE ended_at IS NULL' },
+  ];
+  const failures = [];
+  for (const f of fixtures) {
+    if (checkActivityLiveness('fixture', f.ok).length !== 0) failures.push({ rule: 'no-activity-liveness', detail: `误报：${f.ok}` });
+    if (checkActivityLiveness('fixture', f.bad).length === 0) failures.push({ rule: 'no-activity-liveness', detail: `漏报：${f.bad}` });
+  }
+  return failures;
+}
+
+/**
+ * 规则 7（C9 收尾）：**身份字符串只有一个建造者**。
+ *
+ * 为什么需要它：`task_<id>_r<n>` 既是 WU 身份、又是任务执行会话 id。旧形态下它有
+ * 14 个建造点和 1 个反解析点，且都能编译通过 —— 改一次格式必有一处漏改，而漏改的
+ * 后果是静默的：C9-E 事故里 `getTaskExecutionRound` 硬编码返回 1，r2 的人类评论被
+ * 注入到 r1 会话（当前执行永远看不到，消息也不报错）。删除那个桩解决不了“下一个人
+ * 再拼一个”的问题，所以把它变成门禁：
+ *
+ *   · 建造 —— 模板字面量 `` `task_${…}_r${…}` `` 与 `'task_' +` 拼接；
+ *   · 反解析 —— `/^task_/` 、`/_r\d+$/` 这类“从字符串反推实体”。
+ *
+ * 唯一合法处：`packages/shared/src/work-unit.ts` 的 `WORK_UNIT_REF.task()`（建造）
+ * 与该模块内的两个 ref 解析器（`entityKeysOfWorkUnitRef` / `taskIdOfWorkUnitRef`）——
+ * 它们解析的是 **WorkUnit ref**（结构事实），不是会话 id（推测身份）。
+ *
+ * **必须字面量级**：注释里写历史形态（文档/教训）不得误报，否则门禁会逼人删掉
+ * 解释性注释 —— 那是把知识当成违规。
+ */
+const IDENTITY_STRING_OWNER = 'packages/shared/src/work-unit.ts';
+const IDENTITY_STRING_PATTERNS = [
+  { id: 'builder-template', re: /`task_\$\{[^}`]*\}_r\$\{/ },
+  { id: 'builder-concat', re: /(['"])task_\1\s*\+/ },
+  { id: 'parse-prefix', re: /\/\^task_/ },
+  { id: 'parse-suffix', re: /_r\\d\+\$?\/?/ },
+];
+
+/** 去注释但保留行号（块注释里的换行不被吃掉，报错行号才可信）。 */
+function stripCommentsKeepLines(text) {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, lead) => lead + ' '.repeat(m.length - lead.length));
+}
+
+function checkIdentitySingleBuilder(file, text) {
+  const relPath = relative(ROOT, file).split(process.platform === 'win32' ? '\\' : '/').join('/');
+  if (relPath === IDENTITY_STRING_OWNER) return [];
+  const out = [];
+  const lines = stripCommentsKeepLines(text).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    for (const p of IDENTITY_STRING_PATTERNS) {
+      if (p.re.test(lines[i])) {
+        out.push({ rule: 'identity-string-single-builder', line: i + 1, snippet: `${p.id}: ${lines[i].trim().slice(0, 110)}` });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** 门禁自检 3 条：“注释不误报 / 真代码模板必报 / 真代码反解析必报”。 */
+function selfTestIdentitySingleBuilder() {
+  const fixtures = [
+    // ok：注释里的历史形态不得误报（说明性文字是知识，不是违规）
+    { ok: '// 旧形态：`task_${taskId}_r${round}` 已收敛到 WORK_UNIT_REF.task()\nconst x = 1;' },
+    // bad ①：真代码建造模板
+    { bad: 'const sessionId = `task_${taskId}_r${round}`;' },
+    // bad ②：真代码反解析（从身份字符串反推实体）
+    { bad: "const taskId = sessionId.replace(/^task_/, '').replace(/_r\\d+$/, '');" },
+  ];
+  const failures = [];
+  for (const f of fixtures) {
+    if (f.ok !== undefined && checkIdentitySingleBuilder('fixture.ts', f.ok).length !== 0) {
+      failures.push({ rule: 'identity-string-single-builder', detail: `误报合规样本：${f.ok}` });
+    }
+    if (f.bad !== undefined && checkIdentitySingleBuilder('fixture.ts', f.bad).length === 0) {
+      failures.push({ rule: 'identity-string-single-builder', detail: `漏过违规样本：${f.bad}` });
+    }
+  }
+  return failures;
+}
+
+/**
+ * 规则 8（C10-0E / G8）：`agent_activities` 是 append-only。
+ *
+ * 活动行只写一次（insertActivity）；「结束 / 更正」是 agent_activity_logs 里新的
+ * activity_end 事件，当前态由读侧派生（ACTIVITY_CURRENT_SELECT，定义只一份）。
+ * 旧 UPDATE 路径让「发生过什么」有第二个写者 —— 历史可以被改写，读者分不清
+ * 原始与篡改。现在两层防线：
+ *   · 数据库层：BEFORE UPDATE 触发器 agent_activities_no_update（结构拒绝，
+ *     行为测试 packages/storage/test/c10-0e-activities-append-only.test.ts）；
+ *   · 源码层：本门禁拦 UPDATE / OR REPLACE / OR IGNORE / ON CONFLICT DO UPDATE。
+ * 契约见 docs/architecture/derived-views.md §14/§15。
+ */
+const ACTIVITIES_APPEND_ONLY_PATTERNS = [
+  { id: 'update-activities', re: /\bUPDATE\s+agent_activities\b/i },
+  { id: 'replace-activities', re: /\bOR\s+(?:REPLACE|IGNORE)\s+INTO\s+agent_activities\b/i },
+];
+// 多行 upsert：对去注释后的全文扫（有界窗口，避免跨语句误报）。
+const ACTIVITIES_UPSERT_RE = /\bINTO\s+agent_activities\b[\s\S]{0,400}?\bON\s+CONFLICT\b[\s\S]{0,200}?\bDO\s+UPDATE\b/i;
+
+function checkActivitiesAppendOnly(_file, text) {
+  const out = [];
+  const stripped = stripCommentsKeepLines(text);
+  const lines = stripped.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    for (const p of ACTIVITIES_APPEND_ONLY_PATTERNS) {
+      if (p.re.test(lines[i])) {
+        out.push({ rule: 'activities-append-only', line: i + 1, snippet: `${p.id}: ${lines[i].trim().slice(0, 110)}` });
+        break;
+      }
+    }
+  }
+  const m = ACTIVITIES_UPSERT_RE.exec(stripped);
+  if (m) {
+    out.push({ rule: 'activities-append-only', line: stripped.slice(0, m.index).split('\n').length, snippet: 'upsert-activities: INSERT ... ON CONFLICT DO UPDATE' });
+  }
+  return out;
+}
+
+/**
+ * 门禁自检。夹具用运行时拼接：验收口径要求 packages/+scripts/ 下
+ * 「UPDATE 后跟 agent_activities」的语句字面量为 0（含本文件）—— 检测器咬人与 grep 为 0 同时成立。
+ */
+function selfTestActivitiesAppendOnly() {
+  const updateStmt = 'UPDATE ' + 'agent_activities SET summary = ? WHERE id = ?';
+  const fixtures = [
+    { ok: 'SELECT * FROM agent_activities WHERE id = ?', bad: updateStmt },
+    { ok: 'INSERT INTO agent_activities (id) VALUES (?)', bad: 'INSERT OR REPLACE INTO agent_activities (id) VALUES (?)' },
+    // ok：注释里的历史形态不得误报（说明性文字是知识，不是违规）
+    { ok: '// 历史形态：' + updateStmt + ' 已在 C10-0E 删除', bad: 'INSERT INTO agent_activities (id) VALUES (?) ON CONFLICT(id) DO UPDATE SET summary = excluded.summary' },
+  ];
+  const failures = [];
+  for (const f of fixtures) {
+    if (checkActivitiesAppendOnly('fixture.ts', f.ok).length !== 0) failures.push({ rule: 'activities-append-only', detail: `误报合规样本：${f.ok}` });
+    if (checkActivitiesAppendOnly('fixture.ts', f.bad).length === 0) failures.push({ rule: 'activities-append-only', detail: `漏过违规样本：${f.bad}` });
+  }
+  return failures;
+}
+
+/**
+ * 规则 9（C10-0C / G7）：孤儿 marketplace 表已冻结，不得复活。
+ *
+ * Owner 裁决（2026-11-19）：不迁移、不 DROP —— 老用户库里那 3 行就地冻结，
+ * 逐字档案在 docs/records/marketplace-orphan-freeze-2026-11-22.md（冻结快照，真库为准）。
+ * #462 已删两表的 CREATE 与 repo，新库不再建表。源码里任何新的读写路径都是违规 ——
+ * 墓碑不能长出第二条命。注释里提到表名是知识，不是违规。
+ */
+const ORPHAN_MARKETPLACE_RE = /\bmarketplace_(?:templates|skills)\b/;
+
+function checkOrphanMarketplace(_file, text) {
+  const out = [];
+  const lines = stripCommentsKeepLines(text).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (ORPHAN_MARKETPLACE_RE.test(lines[i])) {
+      out.push({ rule: 'no-orphan-marketplace', line: i + 1, snippet: lines[i].trim().slice(0, 110) });
+    }
+  }
+  return out;
+}
+
+/** 门禁自检：表名同样运行时拼接（源码字面量保持 0，档案在 docs/records/）。 */
+function selfTestOrphanMarketplace() {
+  const tpl = 'marketplace_' + 'templates';
+  const skl = 'marketplace_' + 'skills';
+  const fixtures = [
+    { ok: 'SELECT * FROM skills WHERE id = ?', bad: `SELECT * FROM ${tpl}` },
+    { ok: `// ${skl} 已由 C10-0C 冻结，档案见 docs/records/`, bad: `db.prepare('INSERT INTO ${skl} (id) VALUES (?)').run(x)` },
+    { ok: 'const marketplaceSkills = [];', bad: `DELETE FROM ${tpl} WHERE id = ?` },
+  ];
+  const failures = [];
+  for (const f of fixtures) {
+    if (checkOrphanMarketplace('fixture.ts', f.ok).length !== 0) failures.push({ rule: 'no-orphan-marketplace', detail: `误报合规样本：${f.ok}` });
+    if (checkOrphanMarketplace('fixture.ts', f.bad).length === 0) failures.push({ rule: 'no-orphan-marketplace', detail: `漏过违规样本：${f.bad}` });
+  }
+  return failures;
+}
+
+/**
+ * 规则 10（C10-0G）：产品级每日身份审计机制已删除，不得复活。
+ *
+ * Owner 裁决（2026-11-22）：永久防线 = 结构（单一构造器 + fail-closed 装配）+ CI
+ * 守卫/行为测试；真库审计是验证仪器，只以 Owner 本地实例的定时任务存在
+ * （scripts/identity-audit.mjs --epoch …），绝不随产品发货。因此各包的 src
+ * 里不得长出任何自动运行的审计机制：
+ *   ① 端口符号族（类型 / option / 字段 / setter / 工厂 / create 函数，任意大小写）；
+ *   ② 时钟源名 / logger 名 / records 目录段用的那个连字符字符串字面量。
+ * 注释里提及是知识，不是违规；仪器本身（scripts/）不在本规则扫描范围。
+ * 检测正则由片段运行时拼接：守卫源码不得含完整违规字面量，否则全仓残留
+ * grep 会命中守卫自身（与 no-orphan-marketplace 同一纪律）。
+ */
+const AUTO_AUDIT_PORT_RE = new RegExp('identity' + 'audit' + 'port', 'i');
+const AUTO_AUDIT_NAME_RE = new RegExp('[\'"`]' + 'identity-audit' + '[\'"`]');
+
+function checkNoAutoIdentityAudit(_file, text) {
+  const out = [];
+  const lines = stripCommentsKeepLines(text).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (AUTO_AUDIT_PORT_RE.test(lines[i]) || AUTO_AUDIT_NAME_RE.test(lines[i])) {
+      out.push({ rule: 'no-auto-identity-audit', line: i + 1, snippet: lines[i].trim().slice(0, 110) });
+    }
+  }
+  return out;
+}
+
+/** 门禁自检：违规样本运行时拼接（守卫源码字面量保持 0）。 */
+function selfTestNoAutoIdentityAudit() {
+  const port = 'Identity' + 'AuditPort';
+  const lower = port.charAt(0).toLowerCase() + port.slice(1);
+  const name = 'identity' + '-audit';
+  const fixtures = [
+    { ok: 'const auditPort = null;', bad: `agent.set${port}(port)` },
+    { ok: `// ${port} 已由 C10-0G 删除；仪器在 scripts/，不进产品`, bad: `private ${lower}?: ${port};` },
+    { ok: "import { makeIdentityGates } from './identity-audit.js';", bad: `this.clock.register({ name: '${name}', everyMs: 86400000 })` },
+    { ok: "const dir = join(home, 'records', 'audit');", bad: `const log = createLogger('${name}')` },
+    { ok: 'function runDailyAudit() {}', bad: `export function create${port}(opts) { return { runDaily() {} }; }` },
+  ];
+  const failures = [];
+  for (const f of fixtures) {
+    if (checkNoAutoIdentityAudit('fixture.ts', f.ok).length !== 0) failures.push({ rule: 'no-auto-identity-audit', detail: `误报合规样本：${f.ok}` });
+    if (checkNoAutoIdentityAudit('fixture.ts', f.bad).length === 0) failures.push({ rule: 'no-auto-identity-audit', detail: `漏过违规样本：${f.bad}` });
+  }
+  return failures;
+}
+
 const rel = (abs) => relative(ROOT, abs).split(process.platform === 'win32' ? '\\' : '/').join('/');
 
 const allowlist = loadAllowlist();
@@ -474,9 +1045,29 @@ for (const file of collectSources()) {
     ...checkSessionIdentity(file, text),
     ...checkEventReachability(file, text),
     ...checkShellWriteGate(file, text),
+    ...checkFactsSingleWriter(file, text),
+    ...checkActivityLiveness(file, text),
+    ...checkIdentitySingleBuilder(file, text),
+    ...checkActivitiesAppendOnly(file, text),
+    ...checkOrphanMarketplace(file, text),
+    ...checkNoAutoIdentityAudit(file, text),
   ]) {
     if (!(RULE_SCOPE[v.rule]?.(relPath) ?? true)) continue;
     violations.push({ ...v, file: relPath, allowed: Boolean(allowlist[v.rule]?.[relPath]) });
+  }
+}
+
+// C9-B/C10：`scripts/` 不属于产品扫描根，但这些路径不变量对运维脚本同样成立。
+// **不做白名单豁免** —— 一个可以豁免的「唯一权威」等于没有。
+for (const file of collectScriptSources()) {
+  const text = readFileSync(file, 'utf-8');
+  const relPath = rel(file);
+  for (const v of [
+    ...checkActivityLiveness(file, text),
+    ...checkActivitiesAppendOnly(file, text),
+    ...checkOrphanMarketplace(file, text),
+  ]) {
+    violations.push({ ...v, file: relPath, allowed: false });
   }
 }
 
@@ -501,7 +1092,7 @@ if (violations.length) {
 
 // 契约门禁自检：每次运行都做。门禁自身的检测器一旦失效（正则不再命中真实违规形态），
 // 必须**拒绝静默放行** —— 一个永远不红的门禁比没有门禁更危险。
-const selfTestFailures = selfTestInvariants();
+const selfTestFailures = [...selfTestInvariants(), ...selfTestActivityLiveness(), ...selfTestIdentitySingleBuilder(), ...selfTestActivitiesAppendOnly(), ...selfTestOrphanMarketplace(), ...selfTestNoAutoIdentityAudit()];
 for (const f of selfTestFailures) {
   console.error(`[guard] ✗ 门禁自检失败：${f.rule} —— ${f.detail}`);
 }
@@ -524,6 +1115,16 @@ if (fresh.length) {
   console.error(`\n[guard] ✗ 门禁失败：有 ${fresh.length} 处新违规（未在白名单中）。`);
   console.error('[guard]   no-console     → 改用 log.*（带上下文），或在白名单里写明豁免理由');
   console.error('[guard]   no-empty-catch → 至少 log.warn 说明为什么可以吞；空吞异常会让故障不可观测');
+  console.error('[guard]   no-activity-liveness → 「在跑」只认 work_units(status=running + claimed_by + lease_until)；');
+  console.error('[guard]                         activity 的 endedAt / ended_at IS NULL 只是历史属性，不是状态');
+  console.error('[guard]   identity-string-single-builder → 身份字符串只许 `WORK_UNIT_REF.task()` 造；');
+  console.error('[guard]                         消费方读结构、不反解字符串（需要实体 id 就显式传入）');
+  console.error('[guard]   activities-append-only → agent_activities 是 append-only：结束/更正 = 新 activity_end 事件，');
+  console.error('[guard]                         读侧派生当前态（契约见 docs/architecture/derived-views.md §14/§15）');
+  console.error('[guard]   no-orphan-marketplace → marketplace 孤儿表已冻结（Owner 裁决：不迁移、不 DROP），');
+  console.error('[guard]                         档案在 docs/records/marketplace-orphan-freeze-2026-11-22.md，不得新增读写路径');
+  console.error('[guard]   no-auto-identity-audit → 产品级每日身份审计机制已由 C10-0G 删除（Owner 裁决：审计只作');
+  console.error('[guard]                         Owner 本地实例定时任务，仪器在 scripts/identity-audit.mjs，不得长回产品 src');
   console.error('[guard]   （确属安全豁免：把它加进 scripts/architecture-allowlist.json 并写理由）\n');
   process.exit(1);
 }

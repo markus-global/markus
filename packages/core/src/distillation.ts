@@ -17,10 +17,14 @@ export interface DistillationPromptInput {
 
 /** Build the user-message seed for scenario: distillation. */
 export function buildDistillationPrompt(input: DistillationPromptInput): string {
-  const round = input.executionRound ?? 1;
+  // round 只有一个所有者：派发侧（`task.executionRound ?? 1` 在 TaskService）。
+  // 这里看不到权威轮次时**不冒充**第 1 轮 —— 模型被告知「未上报」比被告知
+  // 一个编造的数字更安全：它下一句就会写「这是首次完成」这样的错误归因。
+  const round = input.executionRound;
+  const roundKnown = typeof round === 'number' && Number.isInteger(round) && round >= 1;
   const header =
     input.kind === 'revision'
-      ? `[DISTILLATION — Post-Task Reflection (Revision)]\n\nTask "${input.title}" (ID: ${input.taskId}) completed after ${round} execution rounds.`
+      ? `[DISTILLATION — Post-Task Reflection (Revision)]\n\nTask "${input.title}" (ID: ${input.taskId}) completed after ${roundKnown ? `${round} execution rounds` : 'an unreported number of execution rounds'}.`
       : `[DISTILLATION — Post-Task Reflection (Success)]\n\nTask "${input.title}" (ID: ${input.taskId}) completed successfully.`;
 
   const focus =

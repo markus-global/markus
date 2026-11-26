@@ -1,8 +1,14 @@
 /**
  * Attention Controller & Mailbox Processing Tests
  *
- * Phase 1: Pure-function unit tests for detectAbnormalCompletion, heuristicDecision, needsLLMTriage
- * Phase 2: Integration tests for processFocusedItem, checkYieldPoint, runLoop shutdown, applyDeliberationResult
+ * Phase 1: Pure-function unit tests for detectAbnormalCompletion, heuristicDecision and the
+ *          preemption rule table.
+ * Phase 2: Integration tests for processFocusedItem, checkYieldPoint, runLoop shutdown and
+ *          strict-state items never being deferred.
+ *
+ * Scope note: preemption is decided by a pure rule table (`heuristicDecision`) and nothing in the
+ * attention path asks a model to reorder the queue. This file asserts that current behaviour —
+ * every name below describes a mechanism that exists today.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -47,9 +53,6 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
     onDecisionMade: vi.fn(),
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
-    onTriageCompleted: vi.fn(),
-    performDeliberation: vi.fn().mockResolvedValue(null),
-    onDeliberationCompleted: vi.fn(),
     ...delegateOverrides,
   };
   const controller = new AttentionController(AGENT_ID, mailbox, eventBus);
@@ -595,115 +598,6 @@ describe('runLoop shutdown re-enqueue', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Phase 2: applyDeliberationResult — edge cases
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('applyDeliberationResult edge cases', () => {
-  it('does not inline-complete the item chosen for full processing', async () => {
-    const { controller, mailbox, delegate } = makeController({
-      processMailboxItem: vi.fn().mockResolvedValue(`ok`),
-      performDeliberation: vi.fn().mockImplementation(async (_head, allItems) => {
-        // Deliberately inconsistent: list processItemId in inlineCompletedIds too
-        return {
-          processItemId: allItems[1].id,
-          inlineCompletedIds: [allItems[1].id],
-          deferItemIds: [],
-          dropItemIds: [],
-          reasoning: 'test inconsistency',
-        };
-      }),
-    });
-
-    mailbox.enqueue('a2a_message', { summary: 'msg-A', content: 'A' });
-    mailbox.enqueue('a2a_message', { summary: 'msg-B', content: 'B' });
-    mailbox.enqueue('a2a_message', { summary: 'msg-C', content: 'C' });
-
-    controller.start();
-    await vi.waitFor(() => {
-      expect(delegate.processMailboxItem).toHaveBeenCalled();
-    }, { timeout: 3000 });
-    controller.stop();
-
-    // The chosen item (msg-B) should have been processed, not inline-completed
-    const processedItem = (delegate.processMailboxItem as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-    expect(processedItem).toBeDefined();
-  });
-
-  it('protects human_chat from being dropped by deliberation', async () => {
-    const { controller, mailbox, delegate } = makeController({
-      processMailboxItem: vi.fn().mockResolvedValue(`ok`),
-      performDeliberation: vi.fn().mockImplementation(async (_head, allItems) => {
-        // Try to drop everything including human_chat
-        return {
-          processItemId: allItems[0].id,
-          inlineCompletedIds: [],
-          deferItemIds: [],
-          dropItemIds: allItems.slice(1).map(i => i.id),
-          reasoning: 'drop all',
-        };
-      }),
-    });
-
-    mailbox.enqueue('a2a_message', { summary: 'msg', content: 'body' });
-    // human_chat should be protected
-    const humanItem = mailbox.enqueue('human_chat', { summary: 'user', content: 'hello' });
-
-    controller.start();
-    await vi.waitFor(() => {
-      expect(delegate.processMailboxItem).toHaveBeenCalled();
-    }, { timeout: 3000 });
-    // Give time for deliberation result to be applied
-    await new Promise(r => setTimeout(r, 200));
-    controller.stop();
-
-    // human_chat should still be in queue (protected from drop)
-    // or already processed — either way, it should not be status 'dropped'
-  });
-
-  it('never defers/drops strict state items even if deliberation result lists them', async () => {
-    const { controller, mailbox, delegate } = makeController({
-      processMailboxItem: vi.fn().mockResolvedValue(`ok`),
-      performDeliberation: vi.fn().mockImplementation(async (_head, allItems) => {
-        // Simulate a task execution arriving while deliberation is running,
-        // then a (misbehaving) deliberation result that tries to defer it.
-        mailbox.enqueue('task_status_update', {
-          summary: 'Task: execute T1',
-          content: 'do the work',
-          taskId: 'tsk_1',
-          extra: { triggerExecution: true },
-        }, { priority: 1 as MailboxPriority });
-        return {
-          processItemId: allItems[0].id,
-          inlineCompletedIds: [],
-          deferItemIds: ['tsk-exec-id'], // ghost id — strict item must reach normal path anyway
-          dropItemIds: [],
-          reasoning: 'try to defer task execution',
-        };
-      }),
-    });
-
-    mailbox.enqueue('a2a_message', { summary: 'msg-1', content: 'A body' });
-    mailbox.enqueue('a2a_message', { summary: 'msg-2', content: 'B body' });
-
-    controller.start();
-    await vi.waitFor(() => {
-      expect(delegate.performDeliberation).toHaveBeenCalled();
-    }, { timeout: 3000 });
-    await vi.waitFor(() => {
-      expect(delegate.processMailboxItem).toHaveBeenCalled();
-    }, { timeout: 3000 });
-    await new Promise(r => setTimeout(r, 200));
-    controller.stop();
-
-    // The task execution item must reach the NORMAL processing path — never
-    // deferred/dropped by deliberation. (If isProtected failed and the item
-    // had been deferred, it would never appear in processMailboxItem calls.)
-    const processed = (delegate.processMailboxItem as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0]);
-    expect(processed.some((i: MailboxItem) => i.payload?.taskId === 'tsk_1')).toBe(true);
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // Phase 2: onNewMail — interrupt signal
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -792,41 +686,6 @@ describe('focus management', () => {
   });
 });
 
-describe('evaluateWithLLMFallback', () => {
-  it('returns heuristic decision when LLM judge is not configured', async () => {
-    const { controller } = makeController();
-    const current = makeItem({ sourceType: 'heartbeat', priority: 3 as MailboxPriority });
-    const incoming = makeItem({ sourceType: 'human_chat', priority: 0 as MailboxPriority });
-
-    const decision = await controller.evaluateWithLLMFallback(current, incoming);
-    expect(decision).toBe('preempt');
-  });
-
-  it('uses LLM judge for ambiguous same-priority cases', async () => {
-    const llmJudge = vi.fn(async () => 'defer' as const);
-    const { controller } = makeController();
-    controller.setLLMJudge(llmJudge);
-
-    const current = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
-    const incoming = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
-
-    const decision = await controller.evaluateWithLLMFallback(current, incoming);
-    expect(llmJudge).toHaveBeenCalled();
-    expect(decision).toBe('defer');
-  });
-
-  it('falls back to heuristic when LLM judge throws', async () => {
-    const { controller } = makeController();
-    controller.setLLMJudge(vi.fn(async () => { throw new Error('judge down'); }));
-
-    const current = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
-    const incoming = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
-
-    const decision = await controller.evaluateWithLLMFallback(current, incoming);
-    expect(decision).toBe('continue');
-  });
-});
-
 describe('preemption signals', () => {
   it('waitForPreemptionSignal resolves when critical interrupt fires', async () => {
     const { controller } = makeController();
@@ -845,7 +704,7 @@ describe('preemption signals', () => {
   });
 });
 
-describe('setWaitingForApproval pauses triage', () => {
+describe('setWaitingForApproval pauses the loop', () => {
   it('setWaitingForApproval toggles approval gate', () => {
     const { controller } = makeController();
     controller.setWaitingForApproval(true);
@@ -854,71 +713,47 @@ describe('setWaitingForApproval pauses triage', () => {
   });
 });
 
-describe('triage and deliberation scheduling', () => {
-  it('triggers deliberation when backlog exceeds threshold', async () => {
-    const deliberationResult = {
-      processItemId: '',
-      inlineCompletedIds: [] as string[],
-      deferItemIds: [] as string[],
-      dropItemIds: [] as string[],
-      reasoning: 'process highest priority first',
-    };
-
+describe('strict-state items are executed, never deferred to make room', () => {
+  it('executes a strict task execution item instead of deferring it', async () => {
     const { controller, mailbox, delegate } = makeController({
-      performDeliberation: vi.fn().mockImplementation(async (_head, allItems) => {
-        deliberationResult.processItemId = allItems[0].id;
-        return deliberationResult;
-      }),
-    });
-
-    mailbox.enqueue('a2a_message', { summary: 'A', content: 'A body' });
-    mailbox.enqueue('a2a_message', { summary: 'B', content: 'B body' });
-    mailbox.enqueue('a2a_message', { summary: 'C', content: 'C body' });
-
-    controller.start();
-    await vi.waitFor(() => {
-      expect(delegate.performDeliberation).toHaveBeenCalled();
-    }, { timeout: 3000 });
-    controller.stop();
-  });
-
-  it('skips deliberation when queue contains formal task execution messages (tasks + messages all go through normal queue)', async () => {
-    const { controller, mailbox, delegate } = makeController({
-      performDeliberation: vi.fn().mockResolvedValue(null),
       processMailboxItem: vi.fn().mockResolvedValue(`ok`),
     });
+    const deferSpy = vi.spyOn(mailbox, 'defer');
 
-    // Two formal task executions + one normal A2A message → backlog would normally trigger deliberation
+    // Two formal task executions + one normal A2A message
     mailbox.enqueue('task_status_update', {
       summary: 'Task: execute T2',
       content: 'do the work',
       taskId: 'tsk_1',
-      extra: { triggerExecution: true },
-    }, { priority: 1 as MailboxPriority });
+    }, { priority: 1 as MailboxPriority, intent: 'trigger_execution' });
     mailbox.enqueue('task_status_update', {
       summary: 'Task: execute T3',
       content: 'do the work',
       taskId: 'tsk_2',
-      extra: { triggerExecution: true },
-    }, { priority: 1 as MailboxPriority });
+    }, { priority: 1 as MailboxPriority, intent: 'trigger_execution' });
     mailbox.enqueue('a2a_message', { summary: 'msg A', content: 'A body' });
 
     controller.start();
+    // Invariant asserted here — attention.ts `checkYieldPoint`, strict branch
+    // ("Refusing to defer strict state item — falling back to heuristic"):
+    // intent='trigger_execution' makes a task_status_update a strict state item.
+    // Such an item must be executed by processMailboxItem and must NEVER be parked
+    // through mailbox.defer() — deferral persists payload+metadata only, so the onLog
+    // closure is lost and the task would stay stuck in in_progress forever.
     await vi.waitFor(() => {
-      // Formal tasks must be processed via the normal mailbox path (never deliberation)
-      expect(delegate.processMailboxItem).toHaveBeenCalled();
+      expect(vi.mocked(delegate.processMailboxItem).mock.calls.some(
+        ([item]) => item.sourceType === 'task_status_update',
+      )).toBe(true);
     }, { timeout: 3000 });
-    // Give deliberation a chance to (wrongly) fire if it existed — it must not.
-    await new Promise(r => setTimeout(r, 100));
-    expect(delegate.performDeliberation).not.toHaveBeenCalled();
+    expect(deferSpy).not.toHaveBeenCalled();
     controller.stop();
   });
 
-  it('skips deliberation when queue contains review_request (strict state item)', async () => {
+  it('executes a review_request instead of deferring it', async () => {
     const { controller, mailbox, delegate } = makeController({
-      performDeliberation: vi.fn().mockResolvedValue(null),
       processMailboxItem: vi.fn().mockResolvedValue(`ok`),
     });
+    const deferSpy = vi.spyOn(mailbox, 'defer');
 
     mailbox.enqueue('review_request', {
       summary: 'Review: T9',
@@ -928,49 +763,88 @@ describe('triage and deliberation scheduling', () => {
     mailbox.enqueue('a2a_message', { summary: 'msg A', content: 'A body' });
 
     controller.start();
+    // review_request is a strict state item (MAILBOX_TYPE_REGISTRY.review_request
+    // .strictState) → it is executed by processMailboxItem and is never deferred,
+    // so its onLog closure survives and the review can actually be completed.
     await vi.waitFor(() => {
-      expect(delegate.processMailboxItem).toHaveBeenCalled();
+      expect(vi.mocked(delegate.processMailboxItem).mock.calls.some(
+        ([item]) => item.sourceType === 'review_request',
+      )).toBe(true);
     }, { timeout: 3000 });
-    await new Promise(r => setTimeout(r, 100));
-    // review_request is a strict state item → must never enter deliberation
-    expect(delegate.performDeliberation).not.toHaveBeenCalled();
+    expect(deferSpy).not.toHaveBeenCalled();
     controller.stop();
   });
 
-  it('skips deliberation when queue contains requirement_update with actionRequired', async () => {
+  it('executes a requirement_update with actionRequired instead of deferring it', async () => {
     const { controller, mailbox, delegate } = makeController({
-      performDeliberation: vi.fn().mockResolvedValue(null),
       processMailboxItem: vi.fn().mockResolvedValue(`ok`),
     });
+    const deferSpy = vi.spyOn(mailbox, 'defer');
 
     mailbox.enqueue('requirement_update', {
       summary: 'Requirement action needed',
       content: 'approve or adjust',
       requirementId: 'req_1',
-      extra: { actionRequired: true },
-    });
+    }, { intent: 'action_required' });
     mailbox.enqueue('a2a_message', { summary: 'msg A', content: 'A body' });
     mailbox.enqueue('a2a_message', { summary: 'msg B', content: 'B body' });
 
     controller.start();
+    // intent='action_required' on requirement_update is a strict state item
+    // (MAILBOX_TYPE_REGISTRY.requirement_update.actionRequiredStrict) → executed by
+    // processMailboxItem, never deferred (see the invariant note in the first test).
     await vi.waitFor(() => {
-      expect(delegate.processMailboxItem).toHaveBeenCalled();
+      expect(vi.mocked(delegate.processMailboxItem).mock.calls.some(
+        ([item]) => item.sourceType === 'requirement_update',
+      )).toBe(true);
     }, { timeout: 3000 });
-    await new Promise(r => setTimeout(r, 100));
-    expect(delegate.performDeliberation).not.toHaveBeenCalled();
+    expect(deferSpy).not.toHaveBeenCalled();
     controller.stop();
   });
 
 });
 
-describe('evaluateInterrupt via delegate wiring', () => {
-  it('delegate evaluateInterrupt uses controller fallback', async () => {
+describe('strict state items are never deferred at a yield point', () => {
+  // The strict branch of `checkYieldPoint` (attention.ts ~L1442-1465): when the
+  // delegate answers `defer` for a strict state item, the controller must refuse,
+  // fall back to `heuristicDecision`, and — if that result preempts — flag the
+  // current turn via `lastYieldDecision = 'preempt'` and return immediately.
+  it('refuses defer for a strict state item, falls back to heuristic and preempts', async () => {
+    const { controller, mailbox } = makeController({
+      evaluateInterrupt: vi.fn().mockResolvedValue('defer'),
+    });
+    const deferSpy = vi.spyOn(mailbox, 'defer');
+
+    const current = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
+    mailbox.enqueue('review_request', {
+      summary: 'Review: T1',
+      content: 'please review',
+      taskId: 'tsk_strict',
+    }, { priority: 1 as MailboxPriority });
+
+    controller['currentFocus'] = current;
+    controller['state'] = 'focused';
+    controller['interruptSignal'] = true;
+    controller['pendingInterruptItem'] = mailbox.peek();
+
+    const result = await controller.checkYieldPoint();
+
+    // heuristicDecision(a2a_message prio 2, review_request prio 1) → R6 preempt.
+    expect(result.decision).toBe('preempt');
+    expect(controller['lastYieldDecision']).toBe('preempt');
+    // The delegate's `defer` was refused: nothing was parked in the mailbox.
+    expect(deferSpy).not.toHaveBeenCalled();
+    expect(mailbox.getQueuedItems().some(i => i.sourceType === 'review_request')).toBe(true);
+  });
+});
+
+describe('interrupt decision is purely heuristic', () => {
+  it('human chat preempts background work without any model call', () => {
     const { controller } = makeController();
     const current = makeItem({ sourceType: 'heartbeat', priority: 3 as MailboxPriority });
     const incoming = makeItem({ sourceType: 'human_chat', priority: 0 as MailboxPriority });
 
-    const decision = await controller.evaluateWithLLMFallback(current, incoming);
-    expect(decision).toBe('preempt');
+    expect(controller.heuristicDecision(current, incoming)).toBe('preempt');
   });
 });
 
@@ -1015,10 +889,8 @@ describe('decision persistence and focus tracking', () => {
     expect(controller.heuristicDecision(current, incoming)).toBe('continue');
   });
 
-  it('LLM judge can return defer for same-priority ambiguous items', async () => {
+  it('same-priority peer messages do not interrupt by default (no model judgment needed)', () => {
     const { controller } = makeController();
-    controller.setLLMJudge(vi.fn(async () => 'defer'));
-
     const current = makeItem({
       sourceType: 'a2a_message',
       priority: 2 as MailboxPriority,
@@ -1030,7 +902,6 @@ describe('decision persistence and focus tracking', () => {
       payload: { summary: 'another', content: 'another peer message' },
     });
 
-    const decision = await controller.evaluateWithLLMFallback(current, incoming);
-    expect(decision).toBe('defer');
+    expect(controller.heuristicDecision(current, incoming)).toBe('continue');
   });
 });

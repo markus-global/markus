@@ -1,0 +1,633 @@
+/**
+ * 第七刀 C7-A —— 三条日常链路的**真实数据库探针**。
+ *
+ * 判据（计划 §5.2 / 卡面）：chat / task / a2a 各有一条
+ * `mailbox_items.work_unit_ref IS NOT NULL` 的行，且 `work_units` 里能查到对应实体。
+ *
+ * 这里跑的是**真实 SQLite 文件 + 真实生产者代码**（`APIServer.persistChatTurn` /
+ * `TaskService.createTask` / `AgentDelivery.deliver`），不是对 mock 的断言：
+ * 唯一被替换的是「与 WU 无关的外围依赖」（orgService / ws / agent 运行时），
+ * 因为起完整实例需要 LLM 凭据与端口；持久化这一层是零 mock 的。
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
+import {
+  openSqlite,
+  closeSqlite,
+  SqliteWorkUnitRepo,
+  SqliteMailboxRepo,
+  SqliteChatSessionRepo,
+} from '../../storage/src/sqlite-storage.js';
+import { WorkUnitService } from '../src/work-unit-service.js';
+import { APIServer } from '../src/api-server.js';
+import { TaskService } from '../src/task-service.js';
+import { AgentDelivery } from '../src/agent-delivery.js';
+
+let tempDir: string;
+let dbPath: string;
+let db: DatabaseSync;
+
+beforeEach(() => {
+  closeSqlite();
+  tempDir = mkdtempSync(join(tmpdir(), 'markus-c7a-probe-'));
+  dbPath = join(tempDir, 'data.db');
+  db = openSqlite(dbPath) as unknown as DatabaseSync;
+  // `chat_sessions.agent_id` 有 FK：探针需要真实的父行，否则建会话就会被
+  // FOREIGN KEY 拒绝（那会把「会话建不起来」误读成「WU 没建」）。
+  db.prepare('INSERT INTO organizations (id, name, owner_id) VALUES (?, ?, ?)')
+    .run('org_1', 'Probe Org', 'owner_1');
+  for (const id of ['agt_a', 'agt_b', 'agt_x', 'agt_y', 'agt_p', 'agt_q']) {
+    db.prepare('INSERT INTO agents (id, name, org_id, role_id, role_name) VALUES (?, ?, ?, ?, ?)')
+      .run(id, id, 'org_1', 'role_worker', 'Worker');
+  }
+});
+
+afterEach(() => {
+  closeSqlite();
+  rmSync(tempDir, { recursive: true, force: true });
+});
+
+function service(): WorkUnitService {
+  return new WorkUnitService({ repo: new SqliteWorkUnitRepo(db) });
+}
+
+/**
+ * 投递端口与 `APIServer.delivery` 同形：**不是**把 `WorkUnitService` 直接当端口传。
+ *
+ * C7-B 给端口加了一个读方法（`turnWorkUnitRef`，跨团队委派的父链来源），
+ * 服务本身没有它 —— 这也是「端口只声明能力、不泄漏服务形状」的实证。
+ */
+function deliveryPort(units: WorkUnitService, currentRef: string | null = null) {
+  return {
+    ensure: (seed: Parameters<WorkUnitService['ensure']>[0]) => units.ensure(seed),
+    turnWorkUnitRef: () => currentRef,
+    // C10-0B：`linkMailboxItem` 已从端口删除 —— 身份在入队时写入，没有事后补列的写者。
+    transition: (ref: string, to: string, opts?: unknown) =>
+      units.tryTransition(ref, to as never, opts as never),
+  };
+}
+
+function mailboxRowsWithWu(): Array<{ id: string; work_unit_ref: string }> {
+  return db
+    .prepare('SELECT id, work_unit_ref FROM mailbox_items WHERE work_unit_ref IS NOT NULL')
+    .all() as Array<{ id: string; work_unit_ref: string }>;
+}
+
+describe('C7-A 三条链路：mailbox_items.work_unit_ref 首次有值', () => {
+  it('chat：persistChatTurn 一轮 ⇒ 1 个 WU + 该 mailbox 行在入队时就带着 ref', async () => {
+    const units = service();
+    const mailbox = new SqliteMailboxRepo(db);
+    const chatRepo = new SqliteChatSessionRepo(db);
+
+    const server = Object.create(APIServer.prototype) as APIServer;
+    (server as unknown as Record<string, unknown>)['storage'] = {
+      chatSessionRepo: chatRepo,
+      workUnitRepo: new SqliteWorkUnitRepo(db),
+    };
+    (server as unknown as Record<string, unknown>)['_workUnits'] = units;
+
+    // 回合**开始**：入口先用唯一构造器定下本轮 ref（真实生产点 prepareChatTurnWorkUnit）。
+    // C10-0B：这个 ref 在**入队那一刻**就写进 mailbox 行；persistChatTurn 不再回填
+    // （删掉了 settle 里的第二次写者 —— chat 行入队时就带着同一个 ref）。
+    const turnRef = await (server as unknown as {
+      prepareChatTurnWorkUnit: (a: string, s: string | undefined, k?: string | null) => Promise<string | null>;
+    }).prepareChatTurnWorkUnit('agt_a', undefined);
+    expect(turnRef).toMatch(/^session:/);
+
+    // 人类消息这一行是入口入队产生的（用真 repo 落一行，模拟入口），身份随行落地。
+    mailbox.save({
+      id: 'mbx_chat_1',
+      agentId: 'agt_a',
+      sourceType: 'human_chat',
+      priority: 0,
+      status: 'completed',
+      payload: { summary: 'hi', content: 'hi' },
+      metadata: {},
+      queuedAt: '2026-11-13T00:00:00.000Z',
+      workUnitRef: turnRef,
+    } as never);
+
+    // 入队那一刻行就带身份 —— 不是 settle 回填的产物。
+    expect(mailbox.getById('mbx_chat_1')!.workUnitRef).toBe(turnRef);
+
+    await (server as unknown as {
+      persistChatTurn: (
+        agentId: string, user: string, reply: string, senderId: string | undefined,
+        tokens?: number, meta?: unknown, itemId?: string | null,
+        memorySessionId?: string | null, turnWorkUnitRef?: string | null,
+      ) => Promise<void>;
+    }).persistChatTurn('agt_a', 'hi', 'hello', undefined, 3, undefined, 'mbx_chat_1', null, turnRef);
+
+    const rows = mailboxRowsWithWu();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.work_unit_ref.startsWith('session:')).toBe(true);
+    // 行身份没有被第二个写者改动（C10-0B：那个写者已删除）。
+    expect(rows[0]!.work_unit_ref).toBe(turnRef);
+
+    const wu = new SqliteWorkUnitRepo(db).getByRef(rows[0]!.work_unit_ref)!;
+    expect(wu.agentId).toBe('agt_a');
+    // 回合已收口（回复已落库）= 这条活不再在跑 → `running → idle`。
+    // 新建时默认 `running`，`persistChatTurn` 在落库后立刻收口，所以这里读到 `idle`。
+    expect(wu.status).toBe('idle');
+    expect(wu.contextRef).toBeTruthy();
+    // 收口必须**留痕**：不留痕的话「这一轮什么时候结束的」只能从消息时间戳猜。
+    // `status_transitions.entity_id` 记的是 WU 行的数字 id，不是 ref（见
+    // SqliteWorkUnitRepo.transition 里的 `entityId: current.id`）。
+    const transitions = db.prepare(
+      "SELECT reason FROM status_transitions WHERE entity_type='work_unit' AND entity_id=? ORDER BY id DESC LIMIT 1",
+    ).all(String(wu.id)) as Array<{ reason: string | null }>;
+    expect(transitions[0]?.reason).toBe('chat_turn_settled');
+    // 第二轮必须产生新 ref（不复用）。真实链路上入口会先 prepare 出 r2 的 ref，
+    // 入队即带身份；这里用同一个生产派生点模拟。
+    const turnRef2 = await (server as unknown as {
+      prepareChatTurnWorkUnit: (a: string, s: string | undefined, k?: string | null) => Promise<string | null>;
+    }).prepareChatTurnWorkUnit('agt_a', undefined);
+    expect(turnRef2).not.toBe(turnRef);
+    await (server as unknown as {
+      persistChatTurn: (agentId: string, u: string, r: string, s: string | undefined,
+        t?: number, m?: unknown, i?: string | null, ms?: string | null, tw?: string | null) => Promise<void>;
+    }).persistChatTurn('agt_a', 'again', 'reply', undefined, 0, undefined, null, null, turnRef2);
+    expect(new SqliteWorkUnitRepo(db).listByAgent('agt_a')).toHaveLength(2);
+  });
+
+  it('task：createTask ⇒ 1 个 WU，ref 复用 task_<id>_r<round> 既有格式', () => {
+    const units = service();
+    const taskService = new TaskService();
+    taskService.setWorkUnitService(units);
+
+    const task = taskService.createTask({
+      orgId: 'org_1',
+      title: 'C7-A probe task',
+      description: 'probe',
+      priority: 'medium',
+      assignedAgentId: 'agt_a',
+      reviewerId: 'agt_b',
+      createdBy: 'agt_b',
+      creatorRole: 'manager',
+      requirementId: 'req_probe',
+    } as never);
+
+    const rows = new SqliteWorkUnitRepo(db).listByAgent('agt_a');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.ref).toBe(`task_${task.id}_r${task.executionRound}`);
+    expect(rows[0]!.taskId).toBe(task.id);
+  });
+
+  it('a2a：deliver ⇒ 1 个 WU（接收方），mailbox 行挂上 ref', () => {
+    const units = service();
+    const mailbox = new SqliteMailboxRepo(db);
+    let seq = 0;
+    const delivery = new AgentDelivery({
+      getAgent: (agentId: string) => ({
+        config: { name: agentId },
+        enqueueToMailbox: (sourceType: string, payload: unknown, options: unknown) => {
+          const item = {
+            id: `mbx_a2a_${++seq}`,
+            agentId,
+            sourceType,
+            priority: 2,
+            status: 'queued',
+            payload,
+            metadata: {},
+            queuedAt: '2026-11-13T00:00:00.000Z',
+            workUnitRef: (options as { workUnitRef?: string } | undefined)?.workUnitRef ?? null,
+          };
+          mailbox.save(item as never);
+          return item;
+        },
+      }),
+      workUnits: deliveryPort(units),
+    } as never);
+
+    const outcome = delivery.deliver({
+      orgId: 'org_1',
+      channelKey: 'dm:a2a:x:y',
+      fromAgentId: 'agt_x',
+      fromAgentName: 'X',
+      content: 'hello',
+      targetAgentIds: ['agt_y'],
+      chainId: 'chain_1',
+      depth: 0,
+    });
+
+    expect(outcome.state).toBe('queued');
+    const rows = mailboxRowsWithWu();
+    expect(rows).toHaveLength(1);
+    // C8-A：身份是「这件事」，不是「这次投递」——`deliveryId` 不再进 ref。
+    // 发送方没有回合 WU 时，实体的正确回答是一次对话本身（`channel:`），
+    // 所以 ref 是 `a2a:channel:<channelKey>`；同一对话的多次投递共享它。
+    expect(rows[0]!.work_unit_ref).toBe('a2a:channel:dm:a2a:x:y');
+    // `work_units.agent_id` 记的是**发送方**（干活的那个），不是接收方。
+    // 一次投递给 N 个接收方 → N 个 item 共享同一个 ref，这是定义不是缺陷。
+    expect(new SqliteWorkUnitRepo(db).getByRef(rows[0]!.work_unit_ref)!.agentId).toBe('agt_x');
+  });
+
+  it('a2a：发送方有本轮 WU 时，投递产生的子 WU 落 parent_id（跨团队委派的父子链）', () => {
+    const units = service();
+    const parent = units.ensure({
+      ref: 'task_tsk_parent_r1',
+      agentId: 'agt_x',
+      status: 'running',
+      contextRef: 'sess_parent_x',
+    })!;
+    const delivery = new AgentDelivery({
+      getAgent: (agentId: string) => ({
+        config: { name: agentId },
+        enqueueToMailbox: (_sourceType: string, _payload: unknown) => ({
+          id: `mbx_a2a_parent_${agentId}`,
+          agentId,
+          workUnitRef: null,
+        }),
+      }),
+      workUnits: deliveryPort(units, 'task_tsk_parent_r1'),
+    } as never);
+
+    const outcome = delivery.deliver({
+      orgId: 'org_1',
+      channelKey: 'dm:a2a:x:y',
+      fromAgentId: 'agt_x',
+      fromAgentName: 'X',
+      content: 'delegated work',
+      targetAgentIds: ['agt_y'],
+      chainId: 'chain_2',
+      depth: 0,
+    });
+
+    const repo = new SqliteWorkUnitRepo(db);
+    // C8-A：发送方本轮 WU 属于 `tsk_parent` → 实体是那个任务，ref 不带投递 id。
+    const child = repo.getByRef('a2a:task:tsk_parent')!;
+    // 父链是结构字段，不是从 chainId / 文本推断出来的。
+    expect(child.parentId).toBe(parent.id);
+  });
+
+  it('三条链路合起来：三种 ref 前缀各自出现，实体全部可查（终极读数）', async () => {
+    const units = service();
+    const mailbox = new SqliteMailboxRepo(db);
+    const chatRepo = new SqliteChatSessionRepo(db);
+
+    const server = Object.create(APIServer.prototype) as APIServer;
+    (server as unknown as Record<string, unknown>)['storage'] = {
+      chatSessionRepo: chatRepo, workUnitRepo: new SqliteWorkUnitRepo(db),
+    };
+    (server as unknown as Record<string, unknown>)['_workUnits'] = units;
+    // chat 行在入队时就带着本轮 ref（persistChatTurn 不再回填；见上方 chat 用例）。
+    const turnRef = await (server as unknown as {
+      prepareChatTurnWorkUnit: (a: string, s: string | undefined, k?: string | null) => Promise<string | null>;
+    }).prepareChatTurnWorkUnit('agt_a', undefined);
+    mailbox.save({
+      id: 'mbx_chat_x', agentId: 'agt_a', sourceType: 'human_chat', priority: 0,
+      status: 'completed', payload: { summary: 's', content: 'c' }, metadata: {},
+      queuedAt: '2026-11-13T00:00:00.000Z', workUnitRef: turnRef,
+    } as never);
+    await (server as unknown as {
+      persistChatTurn: (a: string, u: string, r: string, s: string | undefined,
+        t?: number, m?: unknown, i?: string | null, ms?: string | null, tw?: string | null) => Promise<void>;
+    }).persistChatTurn('agt_a', 'hi', 'yo', undefined, 0, undefined, 'mbx_chat_x', null, turnRef);
+
+    const taskService = new TaskService();
+    taskService.setWorkUnitService(units);
+    taskService.createTask({
+      orgId: 'org_1', title: 't', description: 'd', priority: 'medium',
+      assignedAgentId: 'agt_a', reviewerId: 'agt_b', createdBy: 'agt_b', creatorRole: 'manager',
+      requirementId: 'req_probe',
+    } as never);
+
+    let seq = 100;
+    const delivery = new AgentDelivery({
+      getAgent: (agentId: string) => ({
+        config: { name: agentId },
+        enqueueToMailbox: (
+          sourceType: string, payload: unknown,
+          options?: { workUnitRef?: string | null },
+        ) => {
+          const item = {
+            id: `mbx_a2a_${++seq}`, agentId, sourceType, priority: 2, status: 'queued',
+            payload, metadata: {}, queuedAt: '2026-11-13T00:00:00.000Z',
+            // C10-0B：投递入队就把实体 ref 写进 item（唯一写者 = INSERT；没有事后补列）。
+            workUnitRef: options?.workUnitRef ?? null,
+          };
+          mailbox.save(item as never);
+          return item;
+        },
+      }),
+      workUnits: deliveryPort(units),
+    } as never);
+    delivery.deliver({
+      orgId: 'org_1', channelKey: 'dm:a2a:p:q', fromAgentId: 'agt_p', fromAgentName: 'P',
+      content: 'm', targetAgentIds: ['agt_q'], chainId: 'c1', depth: 0,
+    });
+
+    const refs = mailboxRowsWithWu().map((r) => r.work_unit_ref);
+    expect(refs.some((r) => r.startsWith('session:'))).toBe(true);
+    expect(refs.some((r) => r.startsWith('a2a:'))).toBe(true);
+    // task 链路的 mailbox 行由任务分发入队产生（不在本探针范围），但实体必须存在
+    expect(new SqliteWorkUnitRepo(db).listByAgent('agt_a').some((r) => r.ref.startsWith('task_'))).toBe(true);
+  });
+
+  it('C8-A 验收判据（真实 DB）：同一实体两次投递 ⇒ 2 行、1 个 ref，且 ref 里没有投递 id', () => {
+    // 这是卡面上写死的验收读数，在**真实 SQLite** 上执行，而不是靠 mock 数调用次数：
+    //   `COUNT(DISTINCT work_unit_ref)` 必须明显小于消息数，且 ref 不含 `dlv_`。
+    const units = service();
+    const parent = units.ensure({
+      ref: 'task_tsk_accept_r1',
+      agentId: 'agt_x',
+      status: 'running',
+      contextRef: 'sess_accept_x',
+    })!;
+    const mailbox = new SqliteMailboxRepo(db);
+
+    let seq = 900;
+    const delivery = new AgentDelivery({
+      getAgent: (agentId: string) => ({
+        config: { name: agentId },
+        enqueueToMailbox: (
+          sourceType: string,
+          payload: unknown,
+          options?: { workUnitRef?: string | null },
+        ) => {
+          const item = {
+            id: `mbx_acc_${++seq}`,
+            agentId,
+            sourceType,
+            priority: 2,
+            status: 'queued',
+            payload,
+            metadata: {},
+            queuedAt: '2026-11-14T00:00:00.000Z',
+            // 真实链路的 enqueue 会把 WorkUnit 身份带在 item 上（C8-A）
+            workUnitRef: options?.workUnitRef ?? null,
+          };
+          mailbox.save(item as never);
+          return item;
+        },
+      }),
+      workUnits: deliveryPort(units, 'task_tsk_accept_r1'),
+    } as never);
+
+    for (const content of ['m1', 'm2']) {
+      delivery.deliver({
+        orgId: 'org_1', channelKey: 'dm:a2a:x:y', fromAgentId: 'agt_x', fromAgentName: 'X',
+        content, targetAgentIds: ['agt_y'], chainId: 'chain_acc', depth: 0,
+      });
+    }
+
+    const rows = db
+      .prepare("SELECT work_unit_ref FROM mailbox_items WHERE id LIKE 'mbx_acc_%'")
+      .all() as Array<{ work_unit_ref: string }>;
+    expect(rows).toHaveLength(2);
+    // 判据 1：行数 2，ref 数 1（旧实现这里是 2，因为 deliveryId 编进了身份）
+    expect(new Set(rows.map((r) => r.work_unit_ref)).size).toBe(1);
+    // 判据 2：ref 是实体，不含投递 id
+    expect(rows[0]!.work_unit_ref).toBe('a2a:task:tsk_accept');
+    expect(rows[0]!.work_unit_ref.includes('dlv_')).toBe(false);
+    // 父子链仍是结构字段（C7-B 语义未回退）
+    const entity = new SqliteWorkUnitRepo(db).getByRef('a2a:task:tsk_accept')!;
+    expect(entity.parentId).toBe(parent.id);
+    expect(entity.agentId).toBe('agt_x');
+  });
+});
+
+/**
+ * C7 尾巴（2026-11-14）—— task 链路「一个执行纪元 = 一个 WorkUnit」的实体必须真的存在。
+ *
+ * 缺陷：`createTask()` 只给 round 1 建实体，而执行入口无条件把 `task_<id>_r<round>`
+ * 当作身份。`mailbox_items.work_unit_ref` 是纯 TEXT 列（无 FK），所以 round ≥2 的
+ * 引用指向不存在的实体也不会有任何报错 —— resolve(ref) 返 null → 锁键退化、
+ * 该回合发起的委派 `parent_id` 落 NULL。不崩，但结构事实是假的。
+ *
+ * C10-0B §3.1：`linkExecutionEpoch(itemId, taskId, round)` 已改成
+ * `ensureExecutionEpoch(taskId, round): string` —— 它**先 ensure 实体并迁 running**，
+ * 然后**返回**本纪元的 ref；调用方把它作为 `sendTaskExecution` 的必填参数，在入队那一刻
+ * 写进 mailbox 行（内存 + DB 同源）。不再有第二个写者去回填这一列。
+ *
+ * 判据只认事实：引用写进 mailbox 行**且** `getByRef()` 查得到实体。
+ */
+describe('C7 尾巴：task 链路每个执行纪元都必须有实体（round ≥2 不再悬空）', () => {
+  function seedMailboxItem(id: string, agentId: string, workUnitRef: string | null): void {
+    new SqliteMailboxRepo(db).save({
+      id,
+      agentId,
+      sourceType: 'task_status_update',
+      priority: 2,
+      status: 'queued',
+      payload: { taskId: 'tsk_probe' },
+      metadata: {},
+      queuedAt: '2026-11-14T00:00:00.000Z',
+      workUnitRef,
+    } as never);
+  }
+
+  function refOfMailboxRow(id: string): string | null {
+    const row = db.prepare('SELECT work_unit_ref FROM mailbox_items WHERE id = ?').get(id) as
+      | { work_unit_ref: string | null }
+      | undefined;
+    return row?.work_unit_ref ?? null;
+  }
+
+  /**
+   * 直接驱动生产代码里那个「先实体、后引用」的唯一执行点。
+   *
+   * C10-0B：返回值就是本纪元的身份（`task_<id>_r<round>`）—— 不再传 itemId、
+   * 不再回写 mailbox 行。顺序：ensure 先于入队（否则就是“先引用后实体”）。
+   */
+  function ensureEpoch(svc: TaskService, taskId: string, round: number): string {
+    return (svc as unknown as { ensureExecutionEpoch: (t: string, r: number) => string })
+      .ensureExecutionEpoch(taskId, round);
+  }
+
+  function makeTask(svc: TaskService) {
+    return svc.createTask({
+      orgId: 'org_1',
+      title: 'epoch probe',
+      description: 'probe',
+      priority: 'medium',
+      assignedAgentId: 'agt_a',
+      reviewerId: 'agt_b',
+      createdBy: 'agt_b',
+      creatorRole: 'manager',
+      requirementId: 'req_probe',
+    } as never);
+  }
+
+  it('round 1：引用与实体同时成立（ensure 先于入队）', () => {
+    const units = service();
+    const svc = new TaskService();
+    svc.setWorkUnitService(units);
+    const task = makeTask(svc);
+
+    // 入队**之前**先拿到身份：ensure 复用 createTask 预建的行并迁到 running。
+    const ref = ensureEpoch(svc, task.id, 1);
+    expect(ref).toBe(`task_${task.id}_r1`);
+    expect(new SqliteWorkUnitRepo(db).getByRef(ref)!.status).toBe('running');
+
+    // 入队那一刻把这个 ref 写进行（唯一写者 = INSERT）。
+    seedMailboxItem('mbx_epoch_r1', 'agt_a', ref);
+
+    expect(refOfMailboxRow('mbx_epoch_r1')).toBe(ref);
+    expect(new SqliteWorkUnitRepo(db).getByRef(ref)).not.toBeNull();
+  });
+
+  it('round ≥2（打回返工）：引用必须落到真实存在的实体上', () => {
+    const units = service();
+    const svc = new TaskService();
+    svc.setWorkUnitService(units);
+    const task = makeTask(svc); // createTask 建的是 round 1 的实体
+
+    // 新纪元：ensureExecutionEpoch 先建 round-2 实体并返回它的 ref。
+    const ref = ensureEpoch(svc, task.id, 2);
+    expect(ref).toBe(`task_${task.id}_r2`);
+    // 这条断言就是缺陷的判据：引用指向的实体必须查得到 —— 旧实现只写引用 → 红。
+    expect(new SqliteWorkUnitRepo(db).getByRef(ref)).not.toBeNull();
+    seedMailboxItem('mbx_epoch_r2', 'agt_a', ref);
+    expect(refOfMailboxRow('mbx_epoch_r2')).toBe(ref);
+    // 两个执行纪元 = 两个实体，不复用同一行。
+    expect(new SqliteWorkUnitRepo(db).listByAgent('agt_a')).toHaveLength(2);
+  });
+
+  it('零悬空：mailbox 侧所有 work_unit_ref 都能 JOIN 到实体', () => {
+    const units = service();
+    const svc = new TaskService();
+    svc.setWorkUnitService(units);
+    const task = makeTask(svc);
+
+    for (const [id, round] of [['mbx_zero_r1', 1], ['mbx_zero_r2', 2], ['mbx_zero_r3', 3]] as const) {
+      const ref = ensureEpoch(svc, task.id, round);
+      seedMailboxItem(id, 'agt_a', ref);
+    }
+
+    const dangling = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM mailbox_items m
+         LEFT JOIN work_units w ON w.ref = m.work_unit_ref
+         WHERE m.work_unit_ref IS NOT NULL AND w.id IS NULL`,
+      )
+      .get() as { n: number };
+    expect(dangling.n).toBe(0);
+  });
+
+  describe('C10-0A：通知预建 idle ⇒ 执行开始必须把同一条 WU 迁到 running', () => {
+    it('createTask 预建（pending→idle）：ensureEpoch 复用同一行并迁 running，且留痕', () => {
+      const units = service();
+      const svc = new TaskService();
+      svc.setWorkUnitService(units);
+      const task = makeTask(svc); // createTask 预建 round-1 实体：pending → idle
+      const ref = `task_${task.id}_r1`;
+      const repo = new SqliteWorkUnitRepo(db);
+      const before = repo.getByRef(ref)!;
+      expect(before.status).toBe('idle'); // 预建不是 running
+
+      // ensure 先于入队：同一行被复用并迁到 running，返回的正是这条 ref。
+      const ensured = ensureEpoch(svc, task.id, 1);
+      expect(ensured).toBe(ref);
+      seedMailboxItem('mbx_prebuilt_r1', 'agt_a', ensured);
+
+      const after = repo.getByRef(ref)!;
+      // 复用同一行而不是删旧建新：ensure 是 insert-or-nothing。
+      expect(after.id).toBe(before.id);
+      // 这条断言就是 C10-0A 的判据：删掉 transition 块 → 停在 idle → 红。
+      expect(after.status).toBe('running');
+      expect(repo.listByAgent('agt_a')).toHaveLength(1); // 不产生重复实体
+      expect(refOfMailboxRow('mbx_prebuilt_r1')).toBe(ref);
+      // 迁移必须留痕（与 chat 链路 chat_turn_settled 同一口径）。
+      const transitions = db.prepare(
+        "SELECT reason FROM status_transitions WHERE entity_type='work_unit' AND entity_id=? ORDER BY id DESC LIMIT 1",
+      ).all(String(after.id)) as Array<{ reason: string | null }>;
+      expect(transitions[0]?.reason).toBe('execution_started');
+    });
+  });
+});
+
+describe('C10-0A：身份端口接线 —— 声明的 ref 在装配点必须有实体（真实 DB 探针）', () => {
+  type IdentityPort = {
+    ensureIdentity: (seed: {
+      ref: string;
+      agentId: string;
+      taskId?: string | null;
+      requirementId?: string | null;
+    }) => boolean;
+  };
+
+  /** 驱动真实 wireWorkUnits：只有外围 manager 是桩，持久化零 mock。 */
+  function wireIdentityPort(
+    units: WorkUnitService,
+    taskSvc: TaskService,
+    requirementCreator: string | null,
+  ): IdentityPort {
+    let port: IdentityPort | undefined;
+    const manager = {
+      setFactService: () => {},
+      setWorkUnitStatusProvider: () => {},
+      setWorkUnitPort: () => {},
+      setTrustBoundaryPort: () => {},
+      setMailboxIdentityPort: (p: IdentityPort) => {
+        port = p;
+      },
+      hasAgent: (id: string) =>
+        ['agt_a', 'agt_b', 'agt_x', 'agt_y', 'agt_p', 'agt_q'].includes(id),
+    };
+    const server = Object.create(APIServer.prototype) as APIServer;
+    const s = server as unknown as Record<string, unknown>;
+    s['storage'] = { workUnitRepo: new SqliteWorkUnitRepo(db), factService: null };
+    s['_workUnits'] = units;
+    s['taskService'] = taskSvc;
+    s['orgService'] = { getAgentManager: () => manager };
+    s['requirementService'] = requirementCreator
+      ? {
+          getRequirement: (id: string) =>
+            id === 'req_probe' ? { createdBy: requirementCreator } : undefined,
+        }
+      : undefined;
+    (server as unknown as { wireWorkUnits: () => void }).wireWorkUnits();
+    if (!port) throw new Error('wireWorkUnits did not attach the identity port');
+    return port;
+  }
+
+  it('requirement 实体 ref：装配点落实体，所有者解析到需求创建者（不是接收方）', () => {
+    const port = wireIdentityPort(service(), new TaskService(), 'agt_b');
+    const ok = port.ensureIdentity({
+      ref: 'requirement:req_probe',
+      agentId: 'agt_a',
+      requirementId: 'req_probe',
+    });
+    expect(ok).toBe(true);
+    const wu = new SqliteWorkUnitRepo(db).getByRef('requirement:req_probe')!;
+    expect(wu.agentId).toBe('agt_b');
+    expect(wu.status).toBe('idle');
+  });
+
+  it('task 纪元 ref（round≥2 预建）：所有者解析到 assignee，不是接收方', () => {
+    const units = service();
+    const taskSvc = new TaskService();
+    const port = wireIdentityPort(units, taskSvc, null);
+    const task = taskSvc.createTask({
+      orgId: 'org_1',
+      title: 'identity probe',
+      description: 'probe',
+      priority: 'medium',
+      assignedAgentId: 'agt_a',
+      reviewerId: 'agt_b',
+      createdBy: 'agt_b',
+      creatorRole: 'manager',
+      requirementId: 'req_probe',
+    } as never);
+    const ref = `task_${task.id}_r2`;
+    expect(new SqliteWorkUnitRepo(db).getByRef(ref)).toBeFalsy(); // round2 尚未预建
+    const ok = port.ensureIdentity({ ref, agentId: 'agt_x', taskId: task.id });
+    expect(ok).toBe(true);
+    expect(new SqliteWorkUnitRepo(db).getByRef(ref)!.agentId).toBe('agt_a');
+  });
+
+  it('所有者解析不到（创建者不是合法 agent）→ 落接收方，绝不静默丢', () => {
+    const port = wireIdentityPort(service(), new TaskService(), 'agt_ghost');
+    const ok = port.ensureIdentity({
+      ref: 'requirement:req_probe',
+      agentId: 'agt_a',
+      requirementId: 'req_probe',
+    });
+    expect(ok).toBe(true);
+    expect(new SqliteWorkUnitRepo(db).getByRef('requirement:req_probe')!.agentId).toBe('agt_a');
+  });
+});

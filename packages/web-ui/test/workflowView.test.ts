@@ -10,7 +10,20 @@
  *
  * Each block below fails if the corresponding lie comes back.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import i18n from '../src/i18n/index.ts';
+
+// 本套件断言中文文案（'功能开发（副本）'、状态名）。文案走 i18n 后，jsdom 里
+// LanguageDetector 会探到 en，断言就会因为语言而不是因为行为变红。钉住语言
+// （同 src/components/filePreviewHost.test.tsx 先例）。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
+afterAll(async () => {
+  // i18next 是模块单例，别把语言留给下一个套件。
+  await i18n.changeLanguage('zh-CN');
+});
+
 import {
   RUN_STATUS_META,
   UNKNOWN_STATUS,

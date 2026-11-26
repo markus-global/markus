@@ -1,0 +1,206 @@
+/**
+ * Facts audit page — pure helpers (C9-E).
+ *
+ * Two deliberate mirrors live here, both with the reason written down:
+ *
+ *  · `FACT_SUBJECT_KINDS` mirrors `@markus/shared`'s `FactSubjectKind`. `packages/web-ui` cannot
+ *    import `@markus/shared` (it is not a dependency, there is no vite alias and no tsconfig
+ *    paths — 12 files in this package record the same constraint). Mirroring a *constant* is
+ *    safe; mirroring an algorithm is not. The server is the authority: an unknown kind sent here
+ *    simply returns no rows.
+ *  · Nothing here derives "who is waiting for what" — that is C9-C's `deriveStage`, server-side.
+ *    This page only renders rows it was given.
+ */
+
+export const FACT_SUBJECT_KINDS = ['task', 'requirement', 'agent', 'deliverable', 'work_unit'] as const;
+export type FactSubjectKind = (typeof FACT_SUBJECT_KINDS)[number];
+
+export interface FactVerificationView {
+  result: 'pass' | 'fail';
+  verifiedBy: string;
+  /** 验证者名字；解析不到时回落到 id。 */
+  verifiedByName?: string | null;
+  evidenceRefs?: string[];
+  verifiedAt?: string;
+  workUnitRef?: string;
+}
+
+export interface FactRowView {
+  id: string;
+  subjectKind: FactSubjectKind | string;
+  subjectId: string;
+  /** 服务端解析出的可读名字（task.title / agent.name / …）；解析不到时回落到 id。 */
+  subjectLabel?: string | null;
+  predicate: string;
+  value: unknown;
+  workUnitRef: string;
+  assertedBy: string;
+  /** 断言者名字；解析不到时回落到 id。 */
+  assertedByName?: string | null;
+  sourceRefs: string[];
+  verification: FactVerificationView | null;
+  confidence: number;
+  createdAt: string;
+  supersededBy: string | null;
+  supersededAt: string | null;
+}
+
+export interface FactsResponse {
+  facts: FactRowView[];
+  truncated: boolean;
+  disabled?: boolean;
+}
+
+export interface FactsQueryInput {
+  subjectKind?: string;
+  subjectId?: string;
+  predicate?: string;
+  predicatePrefix?: string;
+  /** `datetime-local` value (no timezone) or ISO. Empty = no bound. */
+  since?: string;
+  until?: string;
+  includeSuperseded?: boolean;
+  limit?: number;
+}
+
+/** `datetime-local` has no timezone; the browser knows which one the user meant. */
+export function toIso(local: string | undefined): string | undefined {
+  const raw = (local ?? '').trim();
+  if (!raw) return undefined;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  return parsed.toISOString();
+}
+
+/**
+ * Query string for `GET /api/facts`. Empty filters are omitted (an empty `subjectId=` would be a
+ * filter for the empty id, i.e. "no rows", which is not what a blank input means).
+ */
+export function buildFactsQuery(input: FactsQueryInput): string {
+  const params = new URLSearchParams();
+  const put = (key: string, value: string | undefined) => {
+    const v = (value ?? '').trim();
+    if (v.length > 0) params.set(key, v);
+  };
+  put('subjectKind', input.subjectKind);
+  put('subjectId', input.subjectId);
+  put('predicate', input.predicate);
+  put('predicatePrefix', input.predicatePrefix);
+  put('since', toIso(input.since));
+  put('until', toIso(input.until));
+  if (input.includeSuperseded) params.set('includeSuperseded', '1');
+  if (typeof input.limit === 'number' && Number.isFinite(input.limit)) {
+    params.set('limit', String(input.limit));
+  }
+  const qs = params.toString();
+  return qs.length > 0 ? `?${qs}` : '';
+}
+
+/** Index by id so a chain can be rendered without a second fetch. */
+export function indexFacts(rows: readonly FactRowView[]): Map<string, FactRowView> {
+  const map = new Map<string, FactRowView>();
+  for (const row of rows) map.set(row.id, row);
+  return map;
+}
+
+/** Newest first; ties broken by id so two renders of the same data cannot disagree. */
+export function sortFacts(rows: readonly FactRowView[]): FactRowView[] {
+  return [...rows].sort((a, b) => {
+    if (a.createdAt === b.createdAt) return a.id < b.id ? 1 : -1;
+    return a.createdAt < b.createdAt ? 1 : -1;
+  });
+}
+
+/**
+ * The supersede chain text for one row, in the reader's terms: **旧值 → 新值 → 谁在何时**.
+ *
+ * The superseding row is often not in the loaded set (a filter can hide it), so the text must
+ * still be true when only the id is known — it then says so instead of inventing a value.
+ */
+export interface SupersedeLink {
+  /** The other fact's id — for the `title` attribute, never for the visible label. */
+  factId: string;
+  /** When it happened (replacing fact's creation time out, this row's creation time in). */
+  at?: string;
+  /** Who asserted the replacing fact (outgoing only). */
+  by?: string;
+  /** The other end is not part of this result set. */
+  missing?: boolean;
+}
+
+export interface SupersedeChain {
+  outgoing: SupersedeLink | null;
+  incoming: SupersedeLink | null;
+}
+
+export function describeSupersedeChain(
+  row: FactRowView,
+  byId: Map<string, FactRowView>,
+): SupersedeChain {
+  // Structured, not pre-formatted. The previous version returned
+  // `→ fact_6d4f1fcb… (agt_b56c… @ 2026-11-15T05:50:02.801Z)` — three machine identifiers
+  // shown to the person the page exists for, and wording hard-coded past i18n. Data out,
+  // copy in the component (Owner 2026-11-15: 不要有让人迷惑的东西).
+  const outgoing = row.supersededBy
+    ? (() => {
+        const next = byId.get(row.supersededBy);
+        return next
+          ? { factId: next.id, at: row.supersededAt ?? next.createdAt, by: next.assertedBy }
+          : { factId: row.supersededBy, at: row.supersededAt ?? undefined, missing: true };
+      })()
+    : null;
+
+  // Is this row itself a replacement for something? Rows are matched by supersededBy === this id.
+  const previous = [...byId.values()].find(r => r.supersededBy === row.id);
+  const incoming = previous ? { factId: previous.id, at: previous.createdAt } : null;
+
+  return { outgoing, incoming };
+}
+
+/** True when the row carries an independent pass verdict (verifier ≠ assertor). */
+export function isIndependentlyVerified(row: FactRowView): boolean {
+  const v = row.verification;
+  if (!v || v.result !== 'pass') return false;
+  const verifier = (v.verifiedBy ?? '').trim();
+  return verifier.length > 0 && verifier !== row.assertedBy;
+}
+
+/**
+ * 把内部 ref 拆成"人话 + 值"，由组件决定措辞（i18n 在这里断开，不在字符串里拼接）。
+ *
+ * `session:cs_66bc…:r89` 是**会话 id**，直接摊在页面上等于让读者去背一串随机字符。
+ * 读者真正要知道的是"这是一次会话的第 89 轮"，需要精确值时再 hover。
+ */
+export type WorkUnitRefLabel =
+  | { kind: 'session'; round: string | null }
+  | { kind: 'a2a' }
+  | { kind: 'raw'; value: string };
+
+export function parseWorkUnitRef(ref: string): WorkUnitRefLabel {
+  if (!ref) return { kind: 'raw', value: '' };
+  const m = /^session:[^:]+(?::r(\d+))?$/.exec(ref);
+  if (m) return { kind: 'session', round: m[1] ?? null };
+  if (ref.startsWith('a2a:')) return { kind: 'a2a' };
+  return { kind: 'raw', value: ref };
+}
+
+/** `commit:33cf01ef…` → 「提交 33cf01ef」；`probe:…` → 「实测记录」；认不出就原样。 */
+export type SourceRefLabel =
+  | { kind: 'commit'; hash: string }
+  | { kind: 'probe' }
+  | { kind: 'task'; id: string }
+  | { kind: 'deliverable'; id: string }
+  | { kind: 'raw'; value: string };
+
+export function parseSourceRef(ref: string): SourceRefLabel {
+  const idx = ref.indexOf(':');
+  const kind = idx === -1 ? '' : ref.slice(0, idx);
+  const value = idx === -1 ? '' : ref.slice(idx + 1);
+  switch (kind) {
+    case 'commit': return { kind: 'commit', hash: value.slice(0, 8) };
+    case 'probe': return { kind: 'probe' };
+    case 'task': return { kind: 'task', id: value };
+    case 'deliverable': return { kind: 'deliverable', id: value };
+    default: return { kind: 'raw', value: ref };
+  }
+}

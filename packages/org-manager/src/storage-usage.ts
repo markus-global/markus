@@ -39,7 +39,7 @@
  * `depthLimited` is reported rather than swallowed.
  */
 
-import { lstatSync, readdirSync } from 'node:fs';
+import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** One top-level entry of the walked directory and the bytes attributed to it. */
@@ -97,37 +97,53 @@ const IGNORED_ENTRIES = new Set(['.DS_Store']);
  * where it physically lives. `symlinksSkipped` reports the count so a caller can
  * tell that something was left out on purpose.
  */
-export function bucketedDirUsage(
+export async function bucketedDirUsage(
   dir: string,
   options: BucketedDirUsageOptions = {},
-): BucketedDirUsage {
+): Promise<BucketedDirUsage> {
   const maxDepth = options.maxDepth ?? 4;
-
-  const result: BucketedDirUsage = {
-    total: 0,
-    buckets: [],
-    depthLimited: false,
-    symlinksSkipped: 0,
-  };
 
   let topLevel: string[];
   try {
-    topLevel = readdirSync(dir);
+    topLevel = await readdir(dir);
   } catch {
     // Missing or unreadable directory == no storage to report. Not an error:
     // agents that have never run have no workspace/ yet.
-    return result;
+    return { total: 0, buckets: [], depthLimited: false, symlinksSkipped: 0 };
   }
 
-  for (const name of topLevel) {
-    if (IGNORED_ENTRIES.has(name)) continue;
-    const size = walkInto(join(dir, name), maxDepth, 1, result).size;
-    if (size > 0) result.buckets.push({ name, size });
-    result.total += size;
+  // Children are walked concurrently and each subtree returns its own counters.
+  // The previous version was synchronous *and* mutated a shared `result` object,
+  // so a real org (100+ agents, measured at >60 s) held the Node event loop for
+  // the entire scan — every other request in the app stalled behind it.
+  const walked = await Promise.all(
+    topLevel
+      .filter(name => !IGNORED_ENTRIES.has(name))
+      .map(async name => ({ name, ...(await walkInto(join(dir, name), maxDepth, 1)) })),
+  );
+
+  const result: BucketedDirUsage = { total: 0, buckets: [], depthLimited: false, symlinksSkipped: 0 };
+  for (const child of walked) {
+    if (child.size > 0) result.buckets.push({ name: child.name, size: child.size });
+    result.total += child.size;
+    if (child.depthLimited) result.depthLimited = true;
+    result.symlinksSkipped += child.symlinksSkipped;
   }
 
   result.buckets.sort((a, b) => b.size - a.size || a.name.localeCompare(b.name));
   return result;
+}
+
+/**
+ * Total bytes under `dir`, bounded by `maxDepth`.
+ *
+ * Thin wrapper over `bucketedDirUsage` so there is exactly **one** walk
+ * implementation. Three hand-written copies of this loop had already drifted
+ * apart before (see the module header), and each new copy is another place for
+ * the symlink and depth rules to be forgotten.
+ */
+export async function dirSizeAsync(dir: string, maxDepth = 3): Promise<number> {
+  return (await bucketedDirUsage(dir, { maxDepth })).total;
 }
 
 /**
@@ -137,48 +153,49 @@ export function bucketedDirUsage(
  * directory at `depth >= maxDepth` sets `depthLimited` and is not entered, so
  * the caller knows its number is a lower bound.
  */
-function walkInto(
+async function walkInto(
   path: string,
   maxDepth: number,
   depth: number,
-  result: BucketedDirUsage,
-): { size: number } {
-  // lstat, not stat: `statSync` follows symlinks, which would make the
+): Promise<{ size: number; depthLimited: boolean; symlinksSkipped: number }> {
+  // lstat, not stat: `stat` follows symlinks, which would make the
   // `isSymbolicLink()` guard below dead code and re-open both the double-count
   // and the cycle problems this module is meant to avoid.
   let st;
   try {
-    st = lstatSync(path, { throwIfNoEntry: false });
+    st = await lstat(path);
   } catch {
-    return { size: 0 };
-  }
-  if (!st) return { size: 0 };
-
-  if (st.isSymbolicLink()) {
-    result.symlinksSkipped++;
-    return { size: 0 };
+    return { size: 0, depthLimited: false, symlinksSkipped: 0 };
   }
 
-  if (st.isFile()) return { size: st.size };
+  if (st.isSymbolicLink()) return { size: 0, depthLimited: false, symlinksSkipped: 1 };
 
-  if (!st.isDirectory()) return { size: 0 };
+  if (st.isFile()) return { size: st.size, depthLimited: false, symlinksSkipped: 0 };
 
-  if (depth >= maxDepth) {
-    result.depthLimited = true;
-    return { size: 0 };
-  }
+  if (!st.isDirectory()) return { size: 0, depthLimited: false, symlinksSkipped: 0 };
+
+  if (depth >= maxDepth) return { size: 0, depthLimited: true, symlinksSkipped: 0 };
 
   let entries: string[];
   try {
-    entries = readdirSync(path);
+    entries = await readdir(path);
   } catch {
-    return { size: 0 };
+    return { size: 0, depthLimited: false, symlinksSkipped: 0 };
   }
 
-  let total = 0;
-  for (const name of entries) {
-    if (IGNORED_ENTRIES.has(name)) continue;
-    total += walkInto(join(path, name), maxDepth, depth + 1, result).size;
+  const children = await Promise.all(
+    entries
+      .filter(name => !IGNORED_ENTRIES.has(name))
+      .map(name => walkInto(join(path, name), maxDepth, depth + 1)),
+  );
+
+  let size = 0;
+  let depthLimited = false;
+  let symlinksSkipped = 0;
+  for (const child of children) {
+    size += child.size;
+    if (child.depthLimited) depthLimited = true;
+    symlinksSkipped += child.symlinksSkipped;
   }
-  return { size: total };
+  return { size, depthLimited, symlinksSkipped };
 }

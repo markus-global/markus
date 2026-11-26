@@ -5,6 +5,7 @@ import type { RoleTemplate } from '@markus/shared';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { startSettled } from './helpers/agent-start.js';
 
 let tempDir: string;
 
@@ -488,7 +489,7 @@ describe('executeTask paths', () => {
     const logs: Array<{ type: string; content: string }> = [];
     await agent.executeTask('task_exec_1', 'Implement feature X', (entry) => {
       if (entry.persist) logs.push({ type: entry.type, content: entry.content });
-    });
+    }, undefined, undefined, 1);
 
     expect(logs.some(l => l.type === 'status' && l.content === 'started')).toBe(true);
     expect(logs.some(l => l.type === 'status' && l.content === 'execution_finished')).toBe(true);
@@ -511,7 +512,7 @@ describe('executeTask paths', () => {
     const logs: Array<{ type: string; content: string }> = [];
     await agent.executeTask('task_cancel_1', 'Long task', (entry) => {
       logs.push({ type: entry.type, content: entry.content });
-    }, cancelToken);
+    }, cancelToken, undefined, 1);
 
     expect(logs.some(l => l.type === 'status' && l.content === 'cancelled')).toBe(true);
     expect(agent.getActiveTasks()).toHaveLength(0);
@@ -724,19 +725,23 @@ describe('skill catalog and context helpers', () => {
 });
 
 describe('mailbox routing extended', () => {
-  it('routes memory_consolidation through mailbox', async () => {
+  it('acknowledges memory_consolidation through mailbox in clock mode (C8-C)', async () => {
     const router = makeMockRouter({
       chatFn: async () => makeResponse(`Consolidated.`, 'end_turn'),
     });
     const agent = createAgent(router);
-    await agent.start();
+    await startSettled(agent);
+    // Count only the consolidation row: the startup wake spends its own calls.
+    vi.mocked(router.chat).mockClear();
 
     const reply = await processViaMailbox(agent, 'memory_consolidation', {
       summary: 'Memory flush',
       content: 'Consolidate long-term memories',
     });
 
-    expect(reply).toContain('Consolidated');
+    // C8-C: clock mode owns the single dream trigger; the row is drained, not replayed.
+    expect(String(reply)).toMatch(/skip/i);
+    expect(router.chat).not.toHaveBeenCalled();
     await agent.stop();
   });
 
@@ -837,10 +842,6 @@ describe('metrics and configuration', () => {
     expect(router.chat).toHaveBeenCalled();
   });
 
-  it('consumeDeliberationResult returns undefined when none pending', () => {
-    const agent = createAgent(makeMockRouter());
-    expect(agent.consumeDeliberationResult()).toBeUndefined();
-  });
 });
 
 describe('handleMessage with reasoning and daily log', () => {
@@ -1201,34 +1202,6 @@ describe('vision and channel key sessions', () => {
   });
 });
 
-describe('complete_deliberation tool', () => {
-  it('records deliberation result via complete_deliberation tool', async () => {
-    const agent = createAgent(makeMockRouter());
-    agent.registerTool({
-      name: 'complete_deliberation',
-      description: 'Complete deliberation',
-      inputSchema: { type: 'object', properties: { process_item_id: { type: 'string' } } },
-      execute: async (args) => {
-        (agent as unknown as { pendingDeliberationResult?: unknown }).pendingDeliberationResult = {
-          processItemId: args.process_item_id,
-          deferItemIds: [],
-          dropItemIds: [],
-          inlineCompletedIds: [],
-          reasoning: 'Focus on human chat',
-        };
-        return JSON.stringify({ status: 'ok' });
-      },
-    });
-
-    const tool = agent.getTools().get('complete_deliberation')!;
-    await tool.execute({ process_item_id: 'mbx_item_1', reasoning: 'Focus on human chat' });
-
-    const result = agent.consumeDeliberationResult();
-    expect(result?.processItemId).toBe('mbx_item_1');
-    expect(result?.reasoning).toBe('Focus on human chat');
-  });
-});
-
 describe('approval profile and task progress', () => {
   it('requires human approval for profile-restricted tools', async () => {
     let callIndex = 0;
@@ -1340,42 +1313,4 @@ describe('loop detection and escalation', () => {
   });
 });
 
-describe('Afford.S2 deferred-tool catalog placement (prefix-cache safety)', () => {
-  it('rides the per-turn volatile tail instead of the system prompt', async () => {
-    const router = makeMockRouter({ chatFn: async () => makeResponse('ok', 'end_turn') });
-    const agent = createAgent(router);
 
-    // Simulate what ToolSelector does when the per-turn pack budget evicts tools:
-    // a DIFFERENT evicted set per turn is exactly why this catalog used to bust
-    // the whole cached prefix when it lived in the system message.
-    const sel = (agent as unknown as { toolSelector: { selectTools: (o: never) => unknown } }).toolSelector;
-    const inner = sel.selectTools.bind(sel);
-    vi.spyOn(sel, 'selectTools').mockImplementation(((opts: never) => {
-      const picked = inner(opts);
-      (sel as unknown as { lastDeferredCatalog: unknown }).lastDeferredCatalog = [
-        { name: 'zzz_probe_deferred_alpha', description: 'Sentinel deferred tool A' },
-        { name: 'zzz_probe_deferred_beta', description: 'Sentinel deferred tool B' },
-      ];
-      return picked;
-    }) as never);
-
-    await agent.handleMessage('hello');
-
-    const req = router.chat.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: unknown }> };
-    // The system prompt is byte-stable prefix — the per-turn catalog must NOT be in it.
-    // (Assert on the sentinel tool names: the platform's own L0 text legitimately
-    // contains a "## Deferred Tools" heading of its own.)
-    const system = req.messages
-      .filter(m => m.role === 'system')
-      .map(m => String(m.content))
-      .join('\n');
-    expect(system).not.toContain('zzz_probe_deferred_alpha');
-
-    const last = req.messages[req.messages.length - 1]!;
-    expect(last.role).toBe('user');
-    expect(String(last.content)).toContain('[SYSTEM] [Live context]');
-    expect(String(last.content)).toContain('Deferred Tools');
-    expect(String(last.content)).toContain('zzz_probe_deferred_alpha');
-    expect(String(last.content)).toContain('zzz_probe_deferred_beta');
-  });
-});

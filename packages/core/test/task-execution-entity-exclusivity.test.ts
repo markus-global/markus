@@ -86,8 +86,10 @@ function makeTaskExecutionItem(taskId: string, itemId: string, round = 1): Mailb
       summary: `Task: ${taskId}`,
       content: `Execute ${taskId}`,
       taskId,
-      extra: { triggerExecution: true, onLog: () => { /* noop */ }, executionRound: round },
+      extra: { onLog: () => { /* noop */ }, executionRound: round },
     },
+    // 第六刀 C2：权威意图是结构字段（旧读法 extra.triggerExecution 已删除）。
+    envelope: { intent: 'trigger_execution' } as never,
     queuedAt: new Date().toISOString(),
   } as MailboxItem;
 }

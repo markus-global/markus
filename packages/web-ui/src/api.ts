@@ -1,6 +1,7 @@
 const BASE = '/api';
 
 import { createStreamWatchdog } from './lib/streamResilience.ts';
+import type { FactsResponse } from './lib/factsAudit.js';
 import { normalizeRequirement, normalizeDeliverable, normalizeTask } from './lib/entityShapes.ts';
 import type {
   PlatformListResponse,
@@ -24,6 +25,7 @@ import {
   type RemoteSetupTargets,
   type RemoteStatusV2,
 } from './lib/remoteAccess.ts';
+import type { ExternalIngressPolicy, ExternalSourcesResponse } from './lib/externalSources.ts';
 
 export type { RemoteStatusV2 } from './lib/remoteAccess.ts';
 
@@ -626,8 +628,7 @@ export interface ValidateKeyResponse {
   models: CatalogModel[];
 }
 
-async function request<T>(path: string, opts?: RequestInit): Promise<T> {
-  const method = opts?.method?.toUpperCase() ?? 'GET';
+async function request<T>(path: string, opts?: RequestInit): Promise<T> {  const method = opts?.method?.toUpperCase() ?? 'GET';
   const isGet = method === 'GET' && !opts?.body;
   if (isGet) {
     const cached = _dedupCache.get(path);
@@ -853,6 +854,8 @@ export interface ActivityRecord {
   taskId?: string | null;
   startedAt: string;
   endedAt?: string | null;
+  /** C9-B：所属 WorkUnit（可空）。只用于判断「在跑」，不能反过来当状态。 */
+  workUnitRef?: string | null;
   totalTokens: number;
   totalTools: number;
   success: boolean;
@@ -861,12 +864,6 @@ export interface ActivityRecord {
 
 export interface AgentMindState {
   attentionState: string;
-  isDeliberating?: boolean;
-  deliberationActivity?: {
-    activityId: string;
-    label: string;
-    startedAt: string;
-  };
   currentFocus?: {
     mailboxItemId: string;
     type: string;
@@ -886,14 +883,6 @@ export interface AgentMindState {
     reasoning: string;
     createdAt: string;
   }>;
-  lastTriage?: {
-    reasoning: string;
-    processedItemId: string;
-    deferredItemIds: string[];
-    droppedItemIds: string[];
-    inlineCompletedIds?: string[];
-    timestamp: string;
-  };
   notebook?: Array<{
     key: string;
     text: string;
@@ -915,6 +904,8 @@ export interface MailboxHistoryActivity {
   label: string;
   startedAt: string;
   endedAt?: string | null;
+  /** C9-B：所属 WorkUnit（可空）；「在跑」只由 work_units 回答。 */
+  workUnitRef?: string | null;
   totalTokens: number;
   totalTools: number;
   success: boolean;
@@ -937,11 +928,41 @@ export interface EnrichedMailboxItem {
   activity?: MailboxHistoryActivity | null;
 }
 
+/** C8-E：「在跑」的权威行（来自 work_units，不从 activity/内存注册表派生）。 */
+export interface AgentWorkUnitRow {
+  ref: string;
+  status: string;
+  parentId: string | null;
+  claimedBy: string | null;
+  leaseUntil: string | null;
+  budget: number | null;
+  used: number;
+  contextRef?: string | null;
+  /** 服务端由 `taskIdOfWorkUnitRef(ref)` 解析（客户端不自己拆 ref）。 */
+  taskId?: string | null;
+  /** 内部 session（requirement_* / channel_dm:* / session:*）—— 用户可见的“运行与注意力”必须能显示它。 */
+  internal: boolean;
+}
+
+export interface AgentWorkUnitsResponse {
+  source: 'work_units';
+  running: number;
+  units: AgentWorkUnitRow[];
+}
+
 export interface AgentMailboxResponse {
   queued: Array<{ id: string; sourceType: string; priority: number; status: string; summary: string; queuedAt: string }>;
   queueDepth: number;
   statusCounts?: Record<string, number>;
   sourceTypeCounts?: Record<string, number>;
+  /** 左栏实体类别计数（`mode=groups` 返回）。 */
+  kindCounts?: Record<string, number>;
+  /**
+   * **陈旧** `processing` 行数（Agent 已空闲却仍挂在处理中）。
+   * 服务端用与「清理」按钮**同一判据**算出，是 agent 级的权威读数 ——
+   * 不要用「可见那页记录里有多少条 processing」代替它。
+   */
+  staleProcessingCount?: number;
   history: EnrichedMailboxItem[];
 }
 
@@ -1086,6 +1107,26 @@ export interface TaskInfo {
     nextRunAt?: string;
     paused?: boolean;
   };
+  /**
+   * C9-C：这条流此刻在等谁（服务端 `deriveStage()` 的闭集输出）。
+   *
+   * 前端**只读不算**：值不认识就按「不显示」处理（`asThreadStage()`），绝不自己
+   * 再从 approvals / blockedBy / 消息拼一次 —— 那正是同一个问题出现多个答案的来源。
+   */
+  threadStage?: string;
+  /** 「凭什么说做完了」的证据指针（当前事实的投影，不含原始 JSON）。 */
+  evidence?: ThreadEvidenceInfo[];
+}
+
+/** 与 `org-manager/src/thread-stage.ts` 的 `ThreadEvidenceView` 逐字对应。 */
+export interface ThreadEvidenceInfo {
+  factId: string;
+  predicate: string;
+  value: unknown;
+  assertedBy: string;
+  sourceRefs: string[];
+  verification: { result: 'pass' | 'fail'; verifiedBy: string } | null;
+  createdAt: string;
 }
 
 export interface DeliverableItem {
@@ -1258,10 +1299,22 @@ export interface AgentMemorySummary {
   dailyLog: string | null;
   recentDailyLogs: string | null;
   longTermMemory: string | null;
-  // 审计 P-12/§9.1：记忆健康可观测字段（由 /agents/:id/memory 返回）
-  usedPercent?: number;
-  budgetChars?: number;
-  budgetLimit?: number;
+  // 审计 P-12/§9.1：记忆健康可观测字段（由 /agents/:id/memory 返回）。
+  // 【两个独立预算，不共用一个分母】注入轴 = 本轮 prompt 实际注入 / 本轮注入上限；
+  // 磁盘策展区 = knowledge.md 的 curated 区 / 15000（仅报告）。
+  // 一个进度条只能代表一个轴，否则数字与长度会永远对不上。
+  injectedChars?: number;
+  injectionCapChars?: number;
+  injectionPercent?: number;
+  injectionOmittedCount?: number;
+  injectionMeasured?: boolean;
+  curatedChars?: number;
+  curatedCap?: number;
+  curatedPercent?: number;
+  // 观察缓冲：第三个独立预算（不注入）
+  observationChars?: number;
+  observationLimit?: number;
+  observationPercent?: number;
   observationCount?: number;
   curatedCount?: number;
   archivedChars?: number;
@@ -1472,7 +1525,43 @@ export function dispatchThinkingDelta(
   handlers.onChunk?.(`<think>${thinking}</think>`);
 }
 
+/**
+ * C9-E · facts 审计轨迹（只读，owner/admin）。
+ *
+ * 查询串由 `lib/factsAudit.ts#buildFactsQuery` 构造：空过滤器被省略（空串不是“等于空 id”）。
+ * 服务端在 facts 层未接线时回 `disabled: true`，页面必须把它与「没有数据」分开呈现。
+ */
+export const factsAudit = {
+  list: (query = '') => request<FactsResponse>(`/facts${query}`),
+};
+
 export const api = {
+  /**
+   * C10-F — external signals (webhook / RSS). The org-level ingress policy and
+   * the per-agent source list are one surface: a toggle without the list hides
+   * the doors it governs, and a list without the policy hides why they are shut.
+   */
+  externalSignals: {
+    getIngress: (orgId: string) =>
+      request<{ policy: ExternalIngressPolicy }>(`/orgs/${encodeURIComponent(orgId)}/external-ingress`),
+    setIngress: (orgId: string, policy: ExternalIngressPolicy) =>
+      request<{ ok: boolean; from: ExternalIngressPolicy; to: ExternalIngressPolicy }>(
+        `/orgs/${encodeURIComponent(orgId)}/external-ingress`,
+        { method: 'POST', body: JSON.stringify({ policy }) },
+      ),
+    list: (agentId: string) =>
+      request<ExternalSourcesResponse>(`/external-sources?agentId=${encodeURIComponent(agentId)}`),
+    setEnabled: (agentId: string, sourceId: string, enabled: boolean) =>
+      request<{ status: string; enabled?: boolean; hint?: string }>(
+        `/external-sources/${encodeURIComponent(sourceId)}/toggle`,
+        { method: 'POST', body: JSON.stringify({ agentId, enabled }) },
+      ),
+    rotateSecret: (agentId: string, sourceId: string) =>
+      request<{ status: string; secret?: string; secretPreview?: string; hint?: string }>(
+        `/external-sources/${encodeURIComponent(sourceId)}/token`,
+        { method: 'POST', body: JSON.stringify({ agentId }) },
+      ),
+  },
   agents: {
     /** `lean` skips the per-agent runtime derivation — use for pickers/searchers. */
     list: (opts?: { lean?: boolean }) => request<{ agents: AgentInfo[] }>(`/agents${opts?.lean ? '?lean=1' : ''}`).then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
@@ -1489,13 +1578,13 @@ export const api = {
       }),
     /** 丢弃单条 mailbox 项（带理由，可回溯）——与 cancelProcessing（打断）不同。 */
     dropMailboxItem: (id: string, itemId: string, reason?: string) =>
-      request<{ status: string; itemId: string; dropped: boolean }>(`/agents/${id}/mailbox/${encodeURIComponent(itemId)}/drop`, {
+      request<{ status: string; itemId: string; applied: boolean; dropReason?: string }>(`/agents/${id}/mailbox/${encodeURIComponent(itemId)}/drop`, {
         method: 'POST',
         body: JSON.stringify({ reason }),
         headers: { 'Content-Type': 'application/json' },
       }),
     recoverStaleMailbox: (id: string) =>
-      request<{ dropped: number }>(`/agents/${id}/mailbox/recover-stale`, { method: 'POST' }),
+      request<{ bounced: number }>(`/agents/${id}/mailbox/recover-stale`, { method: 'POST' }),
     evolveFromMessage: (
       id: string,
       body: {
@@ -1547,6 +1636,25 @@ export const api = {
     removeSkill: (id: string, skillName: string) =>
       request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' }),
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
+    /**
+     * 单个 agent 的磁盘占用（只扫它自己的目录）。
+     *
+     * 不要用 `system.storage()` 代替 —— 后者遍历整个数据目录（每个 agent 都扫一遍，
+     * 实测 1.4s / 60KB+），而本页只要一个 agent 的数字。
+     */
+    storage: (id: string) =>
+      request<{ agentId: string; dataDir: string; size: number; subItems: Array<{ name: string; size: number }>; depthLimited: boolean }>(
+        `/agents/${id}/storage`,
+      ),
+    /**
+     * 给单个 agent 发一条消息（= 用户自己开口），用于「让 Agent 整理记忆」这类
+     * 需要 Agent 自己动手（memory_organize）的场景——平台不替 Agent 搬运记忆。
+     */
+    sendToAgent: (agentId: string, text: string) =>
+      request<{ status: string }>('/message', {
+        method: 'POST',
+        body: JSON.stringify({ targetAgentId: agentId, text }),
+      }),
     triggerHeartbeat: (id: string) => request<{ status: string; message: string }>(`/agents/${id}/heartbeat/trigger`, { method: 'POST' }),
     cancelWakeup: (id: string, wakeupId: string) => request<{ status: string; wakeupId: string }>(`/agents/${id}/wakeups/${wakeupId}`, { method: 'DELETE' }),
     getRecentActivities: (id: string) => request<{ activities: ActivitySummary[] }>(`/agents/${id}/recent-activities`),
@@ -1564,16 +1672,26 @@ export const api = {
     getMindState: (id: string) => request<AgentMindState>(`/agents/${id}/mind`),
     sendCommand: (id: string, command: string, args?: string) =>
       request<{ status: string; command: string }>(`/agents/${id}/command`, { method: 'POST', body: JSON.stringify({ command, args }) }),
-    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string }) => {
+    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string; itemId?: string; mode?: string; entity?: string; entityKind?: string }) => {
       const params = new URLSearchParams();
       if (opts?.limit) params.set('limit', String(opts.limit));
       if (opts?.offset) params.set('offset', String(opts.offset));
       if (opts?.category) params.set('category', opts.category);
       if (opts?.sourceType) params.set('sourceType', opts.sourceType);
       if (opts?.status) params.set('status', opts.status);
+      // 单条详情：列表把正文裁到 800 字，展开时用这个取全文。
+      if (opts?.itemId) params.set('itemId', opts.itemId);
+      // 工作记录：`mode=groups` = 左栏实体列表（服务端聚合 + 分页）；
+      // `entity=<kind:id>` = 右栏该实体的**全部**记录。
+      if (opts?.mode) params.set('mode', opts.mode);
+      if (opts?.entity) params.set('entity', opts.entity);
+      // 左栏实体类别筛选（task / requirement / channel / none）。
+      if (opts?.entityKind) params.set('entityKind', opts.entityKind);
       const qs = params.toString();
-      return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);
-    },
+      return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);    },
+    // C8-E：「在跑」只读 work_units（status + claimed_by + lease_until）。
+    workUnits: (id: string, status = 'running', limit = 50) =>
+      request<AgentWorkUnitsResponse>(`/agents/${id}/work-units?status=${encodeURIComponent(status)}&limit=${limit}`),
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
     messageStream: (
@@ -1813,8 +1931,10 @@ export const api = {
       return request<{ tasks: TaskInfo[]; total: number; page: number; pageSize: number; totalPages: number }>(`/tasks${qs ? `?${qs}` : ''}`)
         .then(r => ({ ...r, tasks: (r.tasks ?? []).map(normalizeTask) }));
     },
-    get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`)
-      .then(r => ({ ...r, task: normalizeTask(r.task) })),
+    get: (id: string) => request<{ task: TaskInfo; threadStage?: string; evidence?: ThreadEvidenceInfo[] }>(`/tasks/${id}`)
+      // C9-C: 阶段与证据是**同一个响应的一部分**（服务端派生一次），挂到任务视图上再交给
+      // 页面，避免每个读取点各自再拼一次「现在需要人做什么」。
+      .then(r => ({ ...r, task: { ...normalizeTask(r.task), threadStage: r.threadStage, evidence: r.evidence ?? [] } })),
     create: (title: string, description: string, assignedAgentId: string, reviewerId: string, priority?: string, projectId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string; maxRuns?: number; timezone?: string }, reviewerType?: 'agent' | 'human') =>
       request<{ task: TaskInfo }>('/tasks', { method: 'POST', body: JSON.stringify({ title, description, assignedAgentId, reviewerId, priority, projectId, blockedBy, requirementId, taskType, scheduleConfig, reviewerType }) }),
     update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) =>
@@ -2415,14 +2535,6 @@ export const api = {
       request<{ name: string; email: string }>(`/auth/invite-info?token=${encodeURIComponent(token)}`),
     uploadAvatar: (image: string, type: 'user' | 'agent' = 'user', id?: string) =>
       request<{ avatarUrl: string }>('/avatars/upload', { method: 'POST', body: JSON.stringify({ image, type, id }) }),
-  },
-  license: {
-    get: () => request<{ plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean; features: string[]; limits: { maxAgents: number; maxTeams: number; maxToolCallsPerDay: number; maxUsers: number }; usage?: { agents: number; teams: number; toolCallsToday: number; users: number }; instanceId: string; hubUserId?: string; username?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number }>('/license'),
-    refresh: () => request<{ plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean; features: string[]; limits: { maxAgents: number; maxTeams: number; maxToolCallsPerDay: number; maxUsers: number }; usage?: { agents: number; teams: number; toolCallsToday: number; users: number }; instanceId: string; hubUserId?: string; username?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number }>('/license/refresh', { method: 'POST' }),
-    activate: (licenseKey: string) =>
-      request<{ success: boolean; error?: string }>('/license/activate', { method: 'POST', body: JSON.stringify({ licenseKey }) }),
-    trial: () =>
-      request<{ success: boolean; error?: string }>('/license/trial', { method: 'POST' }),
   },
   sessions: {
     hasAny: () =>

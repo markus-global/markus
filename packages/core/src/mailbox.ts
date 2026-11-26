@@ -3,6 +3,20 @@ import {
   generateId,
   MAILBOX_QUEUED_TTL_MS,
   TRIAGE_STALE_INFO_TTL_MS,
+  buildDeliveryEnvelope,
+  parseEnvelope,
+  agentAddressRef,
+  platformOriginRef,
+  canTransitionSignal,
+  catchAllTargetOf,
+  isBounceReason,
+  isKnownSignalStatus,
+  normalizeSignalStatus,
+  resolveEnvelopeTarget,
+  type ActiveBounceReason,
+  type AddressRef,
+  type DeliveryEnvelope,
+  type MailboxIntent,
   type MailboxItem,
   type MailboxItemType,
   type MailboxPayload,
@@ -10,10 +24,12 @@ import {
   type MailboxItemRuntime,
   type MailboxItemStatus,
   type MailboxPriority,
+  type SignalAddressLookup,
   MAILBOX_TYPE_REGISTRY,
   resolveEntityKeys,
   isStrictStateItem,
   routeMailboxItem,
+  PLATFORM_INTERNAL_SOURCE_TYPES,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import { bumpMergeCount, displayLabelOf } from './mailbox-summary.js';
@@ -65,6 +81,13 @@ const UNICAST_WAKE_TYPES: ReadonlySet<MailboxItemType> = new Set<MailboxItemType
 ]);
 
 /**
+ * 粘性路由宽限窗（concurrent-processing.md §3.4）：owner 忙碌时，同实体 item 最多等
+ * 这么久（自 queuedAt 起）；超过后任何空闲 worker 可偷走（所有权转移并记日志）。
+ * 活性是硬不变量，粘性是优化——宽限窗是两者的显式边界。
+ */
+export const STICKY_STEAL_GRACE_MS = 30_000;
+
+/**
  * P2 可观测事件名（结构化日志）。
  *
  * 仅日志、无指标后端：每条日志都带稳定的 `event` 字段与可加总的计数字段，
@@ -73,6 +96,8 @@ const UNICAST_WAKE_TYPES: ReadonlySet<MailboxItemType> = new Set<MailboxItemType
 export const MAILBOX_OBSERVABILITY_EVENTS = {
   /** 认领竞争：候选已被其它 worker / 实例认领，本次认领失败并让位。 */
   claimContested: 'mailbox.claim_contested',
+  /** 粘性所有权转移：busy-owner 宽限偷取或 gone-owner 接手（§3.4）。reason 区分两种。 */
+  stickyTransfer: 'mailbox.sticky_transfer',
   /** 认领通道异常（持久层抛错）→ 保守放行（fail-open）。 */
   claimError: 'mailbox.claim_error',
   /** 租约过期重放：过期租约被回收、item 退回 queued 后可被重新认领。 */
@@ -81,6 +106,15 @@ export const MAILBOX_OBSERVABILITY_EVENTS = {
   leaseLost: 'mailbox.lease_lost',
   /** 重复投递被丢弃：幂等键（items 唯一键 / 入队幂等键）拦截，未入队。 */
   duplicateDeliveryDropped: 'mailbox.duplicate_delivery_dropped',
+  /**
+   * 信号退信并归集到 catch-all（第六刀 C5 补入）。
+   *
+   * 为什么需要它：这条日志此前复用了 `duplicateDeliveryDropped`，于是「陈旧信号过期 /
+   * 心跳折叠 / 报文缺字段 / 操作员丢弃」全都记成同一个「重复投递被拒」——事件名在撒谎，
+   * 按 event 聚合得到的「重复投递数」是个混合口径。现在起：`duplicate*` 只描述真正的
+   * 重复投递，本条描述其余全部退信，真实原因看 `dropReason` 字段。
+   */
+  signalBounced: 'mailbox.signal_bounced',
   /**
    * 重投复用原行回队（P1.x (a)(R6)）：同键冲突但既有行未收口（`dropped`/`failed`）
    * 或调用方显式交还在飞项 → 复用原行回队，**不新增行**。
@@ -98,14 +132,86 @@ export const MAILBOX_OBSERVABILITY_EVENTS = {
  * 返回 `undefined` 表示**不加约束**（类型不在作用域内，或缺少 taskId/round）。
  */
 export function mailboxDedupKey(
-  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
+  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'> & {
+    envelope?: Pick<DeliveryEnvelope, 'intent'>;
+    round?: number;
+  },
 ): string | undefined {
   return routeMailboxItem(item).dedupeKey;
+}
+
+/**
+ * 投递来源 —— 投递点**真正知道**的那几件事（第六刀 §2.3）。
+ *
+ * 为什么不是把整份信封交给调用方：信封是「谁发给谁」的完整身份头，其中 `to`
+ * 由 mailbox 自己知道（就是本 agentId），`signalClass` 由注册表派生，`intent`
+ * 由调用方用结构化参数给出。让三个投递点各拼一份完整信封，就是三份形状定义。
+ */
+export interface DeliveryOrigin {
+  /** 谁发的。`agent:<id>` / `im:<platform>:<user>` / 邮件地址，均只从 shared 构造点构造。 */
+  from: DeliveryEnvelope['from'];
+  /**
+   * 平台内唯一 id（外部邮件 = RFC Message-ID）。缺省用本 item 的 `mbx_*` id。
+   * 提供它就让「同一条外部消息投两次」在结构上只能落一行（V5）。
+   */
+  messageId?: string;
+  /** 因果链（In-Reply-To / References 等价物）；只读保存，不参与路由/去重。 */
+  externalThreadRef?: string | null;
+  /** `from` 是否已验证（只有 `kind='external'` 有意义）；本卡恒 false。 */
+  fromVerified?: boolean;
+  /** 展示摘要；缺省用 `payload.summary`。 */
+  subject?: string;
+  /**
+   * 收件人地址（第六刀 C3）：投递点声明的目标。缺省 = 本 agent（mailbox 自己知道收件人）。
+   *
+   * 声明它就让 `resolve(envelope)` 成为唯一解析器：解析不到 → 退信（`no_active_target` /
+   * `unresolved_address`），而不是“暂存到当前 agent 算了”。结构上避免“错投给能收的人”。
+   */
+  to?: AddressRef;
 }
 
 export interface EnqueueOptions {
   priority?: MailboxPriority;
   metadata?: MailboxItemMetadata;
+  /**
+   * 投递意图（结构化）：`deliver`（默认）/ `trigger_execution` / `action_required`。
+   * 取代 `payload.extra.triggerExecution` / `extra.actionRequired` 两个布尔推断。
+   */
+  intent?: MailboxIntent;
+  /** 轮次（结构化）：幂等键 `(sourceType, taskId, round)` 的输入。 */
+  round?: number;
+  /**
+   * 第七刀 C7-A：本条投递所属的 WorkUnit ref（`work_units.ref`）。
+   *
+   * 只在 WU 已存在时传；缺省 `undefined` = 不挂身份（旧行为）。
+   */
+  workUnitRef?: string | null;
+  /**
+   * C8-P0：本条事实的**身份来源声明**（元数据，不入库）。
+   *
+   * 存在意义：`workUnitRef == null` 有两种含义——「确实没有实体」与「忘了传」，
+   * 而类型上分不出来。2026-11-14 六个同族缺陷全是后者：某条路径没传，下游当默认。
+   *
+   * - `entity` / `turn`：带 ref（实体身份 / 当前回合身份）
+   * - `platform-internal`：本质无实体（回执 / 内部事件），不报错
+   *
+   * C10-0B：**删除了「身份迟到」这一档取值**。它是一张许可证：允许「先入队、
+   * 再由另一个写者补 DB 列」，而补写只改列、不改内存，于是
+   * 台账（读内存）与库分成两套真相 —— 真机 94% 的 pick 决策 `work_unit_ref IS NULL`
+   * 就是这么来的。现在身份只有**一个**建造点：入队时。
+   *
+   * 不声明且没 ref ⇒ `enqueue()` 报错并计数（不再静默）。
+   */
+  refOrigin?: 'entity' | 'turn' | 'platform-internal';
+  /**
+   * C8-B：更正链 —— 本条事实替换了哪些既有事实的 id。
+   * 结构字段（不解析正文）；非空即「与正在执行的前提矛盾」。
+   */
+  supersedes?: string[] | null;
+  /** C8-B：本条事实推翻了接收方正在执行的前提（撤单 / 驳回 / 回滚）。 */
+  invalidatesPremise?: boolean;
+  /** 投递来源（谁发的 / 外部 messageId）；缺省 = 平台自身（`noreply@`）。 */
+  origin?: DeliveryOrigin;
   /**
    * In-process runtime callbacks (never persisted — see `MailboxItemRuntime`).
    * Persistence serializes only `payload` + `metadata`, so callbacks here cannot
@@ -131,12 +237,39 @@ export interface MailboxPersistence {
    *          `true` / `undefined`（旧实现或未接线）= 已落库。
    */
   save(item: MailboxItem, dedupKey?: string): void | boolean;
+  /**
+   * 第六刀 C2（V5）：按 `(agent, messageId)` 查既有的**非退信**行（只读最小字段）。
+   * 未实现时跳过 messageId 幂等判定（旧持久层降级，行为同 C2 之前）。
+   */
+  findByMessageId?(agentId: string, messageId: string): MailboxExistingRow | undefined;
+  /**
+   * 第六刀 C2（§2.5）：把一次**没投进去**的投递写成 `status='bounced'` 的结构化退信行。
+   *
+   * 为什么必须落行而不是只写日志：旧实现把「没投进去」写成 `dropped` 终态，
+   * 真实库 ≥28621 行没有任何回声，人被静默丢弃。退信必须可查、可按原因聚合。
+   * catch-all 归集（`bounce_target`）是 C3 的事，本卡只保证「原因可查」。
+   */
+  saveBounced?(item: MailboxItem, dropReason: string): void;
+  /** C3：`message_route(messageId)` 只读取证入口。未实现 ⇒ 工具不注册。 */
+  findRouteByMessageId?(agentId: string, messageId: string): unknown[];
+  /** C3：catch-all 概览只读。未实现 ⇒ 工具不注册。 */
+  listCatchAll?(agentId: string, limit?: number): unknown;
+  /**
+   * C3：读一行的当前状态（ghost 路径用）。
+   *
+   * 行不在内存队列时，`drop()` 没有 `from` 状态就无法让矩阵裁决。没有这个读口，
+   * 它只能“假定 queued”盲写：一个已收口（completed）的行会被鬼影 drop 重写成退信行，
+   * 同一事实被第二次写坏。未实现 ⇒ 退回旧行为（只靠执行点的原因/桶校验）。
+   */
+  getStatus?(itemId: string): MailboxItemStatus | undefined;
   updateStatus(itemId: string, status: MailboxItemStatus, extra?: Partial<MailboxItem>): void;
-  /** Mark all items stuck in 'processing' as 'dropped' (stale after restart).
+  /** C3：陈旧 `processing` 行结案 → `bounced(drop_reason='lease_expired')`。
    *  When `currentOwnerId` is supplied, rows claimed by a DIFFERENT instance are also
    *  treated as stale (a dead instance's claim must not be "respected" merely because its
    *  lease has not expired yet). */
-  markStaleProcessingAsDropped?(agentId: string, nowIso?: string, currentOwnerId?: string): number;
+  markStaleProcessingAsBounced?(agentId: string, nowIso?: string, currentOwnerId?: string): number;
+  /** 只读：有多少条**陈旧** `processing` 行（与 `markStaleProcessingAsBounced` 同一判据）。 */
+  countStaleProcessing?(agentId: string, currentOwnerId?: string): number;
   /** Load persisted queued items for this agent (for recovery on restart). */
   loadQueued?(agentId: string): MailboxItem[];
   /** Load persisted deferred items for this agent (for auto-resurface). */
@@ -213,7 +346,10 @@ export type ReinjectDecision =
  *  - 调用方声明 `explicitReuseId === 既有行 id`（停机重投：该行就是刚被本实例取走、
  *    未处理完的项）→ 一律 `reuse`；**即使其状态是 `processing`** —— 否则同键冲突会让
  *    这条在飞项永远停在 `processing`（直到租约过期甚至被 `MAILBOX_QUEUED_TTL_MS` 判死）；
- *  - 状态 ∈ {`dropped`,`failed`}（未收口终态）→ `reuse`（R6：丢消息后可补偿重投）；
+ *  - 状态 ∈ {`bounced`,`failed`} / 历史 `dropped`（未收口终态）→ `reuse`（R6：丢消息后可补偿重投）；
+ *    注意 `dropped` 已不是当前取值域（C3 删终态），这里只对**历史行**的读做兼容；
+ *  - 状态 `catch_all`（已归集到概览、等人认领）→ `suppress(settled)`：再投一次会让同一条
+ *    信号在概览里出现两次（违反「恰好可见一次」）；人认领走 `catch_all → queued`；
  *  - 状态 ∈ {`completed`,`merged`}（已收口 / 已合并）→ `suppress(settled)`（重投会重复执行）；
  *  - 其余（`queued` / `processing` / `deferred` / 未知）→ `suppress(in-flight)`（保守：宁延迟不重复）。
  */
@@ -227,13 +363,65 @@ export function resolveReinjectDecision(
     return { action: 'reuse', itemId: existing.id };
   }
 
-  if (existing.status === 'dropped' || existing.status === 'failed') {
+  // `dropped` 只为历史行（存盘早于 C3）读兼容：归一语义上它就是 bounced。
+  if (existing.status === 'dropped' || existing.status === 'bounced' || existing.status === 'failed') {
     return { action: 'reuse', itemId: existing.id };
   }
-  if (existing.status === 'completed' || existing.status === 'merged') {
+  if (existing.status === 'completed' || existing.status === 'merged' || existing.status === 'catch_all') {
     return { action: 'suppress', itemId: existing.id, status: existing.status, reason: 'settled' };
   }
   return { action: 'suppress', itemId: existing.id, status: existing.status, reason: 'in-flight' };
+}
+
+/**
+ * 持久化行 → 结构化字段（**唯一一处**）。
+ *
+ * C2 之前落库的行没有 `envelope` / `intent` / `round` 列（值为 NULL）。这些行的语义
+ * （任务执行指令、评审轮次）必须继续成立，否则 resurface 后一个真实任务会被当成
+ * 信息类信号 → 任务永久卡死。就在这里解码**一次**，下游只看到结构字段。
+ *
+ * **移除条件**：一旦真实库里 `envelope IS NULL` 的 mailbox_items 行数为 0（C4 实测后）。
+ */
+export function rehydrateStructuredFields(row: {
+  id: string;
+  agentId: string;
+  sourceType: MailboxItemType;
+  envelope?: string | null;
+  payload: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}): { envelope?: DeliveryEnvelope; round?: number } {
+  const payload = (row.payload ?? {}) as unknown as MailboxPayload;
+  const extra = (payload.extra ?? {}) as Record<string, unknown>;
+  const legacyRoundRaw = extra['round'] ?? row.metadata?.['round'];
+  const round = typeof legacyRoundRaw === 'number' && Number.isFinite(legacyRoundRaw)
+    ? legacyRoundRaw
+    : undefined;
+
+  const stored = parseEnvelope(row.envelope);
+  if (stored) return { envelope: stored, round };
+
+  // 旧行：无信封。只在这里从载荷解码 intent（trigger_execution / action_required），
+  // 并用 item id 做 messageId（永不自撞，不会把历史行误判成重复投递）。
+  const legacyIntent: MailboxIntent = extra['triggerExecution'] === true
+    ? 'trigger_execution'
+    : extra['actionRequired'] === true
+      ? 'action_required'
+      : 'deliver';
+  const route = routeMailboxItem({ sourceType: row.sourceType, payload, metadata: row.metadata as MailboxItemMetadata | undefined, round });
+  log.warn('Mailbox row has no envelope — rehydrated from payload (pre-C2 row)', {
+    itemId: row.id, agentId: row.agentId, sourceType: row.sourceType, legacyIntent,
+  });
+  return {
+    round,
+    envelope: buildDeliveryEnvelope({
+      from: platformOriginRef(),
+      to: agentAddressRef(row.agentId),
+      messageId: row.id,
+      signalClass: route.signalClass,
+      intent: legacyIntent,
+      subject: typeof payload.summary === 'string' ? payload.summary : '',
+    }),
+  };
 }
 
 /**
@@ -243,8 +431,68 @@ export function resolveReinjectDecision(
  * Emits 'mailbox:new-item' on the EventBus whenever a new item is enqueued,
  * which the AttentionController listens to for event-driven interrupts.
  */
+// ─── C8-P0：身份缺失守卫 ────────────────────────────────────────────────
+/**
+ * 本质上**没有实体**的事实类型（回执 / 平台内部事件）。
+ *
+ * 它们带 NULL ref 是正确语义，而不是“忘了传”——把这条名单写成数据，
+ * 比在每个生产者里各写一句注释可审计。
+ *
+ * C10-0B：名单本身在 `@markus/shared`（`PLATFORM_INTERNAL_SOURCE_TYPES`），
+ * 因为身份门禁的 SQL 也要用它（`NOT IN (...)`）。两份名单 = 同一个事实两个写者，
+ * 而这张卡修的正是这个句式。导出的**类型**是 Set 是因为入队守卫要 O(1) 判定。
+ */
+export const PLATFORM_INTERNAL_SOURCES: ReadonlySet<string> = new Set(PLATFORM_INTERNAL_SOURCE_TYPES);
+
+/** 累计“没声明的空身份”次数，供诊断接口 / CI 校验读取。 */
+let unclaimedIdentityCount = 0;
+
+/** 读取并重置计数（CI 门禁用）。 */
+export function takeUnclaimedIdentityCount(): number {
+  const n = unclaimedIdentityCount;
+  unclaimedIdentityCount = 0;
+  return n;
+}
+
+/** C10-0A：累计「声明了 ref 但 ensure 失败」次数（业务不被打断，但失败可计数）。 */
+let identityEnsureFailedCount = 0;
+
+/** 读取并重置计数（诊断 / CI 门禁用）。 */
+export function takeIdentityEnsureFailedCount(): number {
+  const n = identityEnsureFailedCount;
+  identityEnsureFailedCount = 0;
+  return n;
+}
+
+/**
+ * C10-0A —— 身份 ensure 端口：声明了的 `workUnitRef` 在装配点必须存在。
+ *
+ * 实现归 org-manager（WorkUnitService.ensure 适配器）：core 不反向依赖实体语义。
+ * 所有者解析（task → assignee / requirement → creator）也在实现侧，不在这里猜。
+ * 返回 false = ensure 失败：入队照常（观测设施不成为业务故障点），但计数可告警。
+ */
+export interface MailboxIdentityPort {
+  ensureIdentity(seed: {
+    ref: string;
+    agentId: string;
+    taskId?: string | null;
+    requirementId?: string | null;
+  }): boolean;
+}
+
 export class AgentMailbox {
   private queue: MailboxItem[] = [];
+  /**
+   * C8-B：插入序号（单调、进程内）。轮内 delta 的快照依据。
+   *
+   * 刻意**不用** `Date.now()` / `queued_at`：同秒并列让「谁在后」不可判，
+   * 而时间戳一旦进入渲染字节，同一逻辑输入就会产生两种序列 —— 缓存前缀
+   * 直接失效，且只有 `hitRate`（噪声）会变化，没有测试会发现。
+   * 序号只在**唯一插入点**分配（`insertSorted`），合并时**递增重分配**，
+   * 保证「合并进旧行的事实」不会被 delta 漏掉。
+   */
+  private itemSeq = new Map<string, number>();
+  private seqCounter = 0;
   private readonly agentId: string;
   private readonly eventBus: EventBus;
   private persistence?: MailboxPersistence;
@@ -256,14 +504,26 @@ export class AgentMailbox {
   /** 租约 TTL；可通过 `setLeaseTtlMs()` 覆盖（测试用）。 */
   private leaseTtlMs: number = MAILBOX_LEASE_TTL_MS;
   /**
-   * Idle waiters — one per concurrently-dequeuing attention worker.
+   * Idle waiters — keyed by registration seq (NOT worker id: multiple anonymous
+   * waiters must coexist); each entry carries its worker id (0 = serial/anonymous)
+   * so unicast wake can prefer the entity owner.
    * Multi-consumer: enqueue / unlock wake ALL waiters; each then re-dequeues
    * and `shift`-style selection keeps items exclusive. Single-waiter in
    * serial mode — exactly the old behavior.
    */
-  private idleWaiters = new Set<() => void>();
+  private idleWaiters = new Map<number, { workerId: number; wake: () => void }>();
+  /** 单调注册序号：waiter 身份是「这次注册」，不是 workerId。 */
+  private waiterSeq = 0;
   /** 实体亲和锁：entityKey → holder（处理中的 mailbox item id）。同一实体永不并发。 */
   private entityLocks = new Map<string, string>();
+  /**
+   * 粘性路由（concurrent-processing.md §3.4）：主实体键 → owner workerId。
+   * 锁回答「能否并发」（互斥），所有权回答「该谁处理」（连续性）——同层、同一执行点
+   * （dequeue）。epoch  scoped：launchWorkerPool 重置；持久化它会声称一份已不存在的温热。
+   */
+  private entityOwners = new Map<string, number>();
+  /** worker 存活探针——attention 在池启动时安装；mailbox 从不猜测 worker 状态。 */
+  private workerProbe?: (workerId: number) => 'idle' | 'busy' | 'gone';
   /**
    * Set by cancelWait(): waiting dequeueAsync calls should exit with
    * MailboxCancelledError. Cleared on any real wakeup (enqueue/unlock),
@@ -310,16 +570,219 @@ export class AgentMailbox {
     this.persistence = p;
   }
 
+  /** 第六刀 C3：地址簿只读端口（`resolve(envelope)` 的唯一输入）。未接线 ⇒ 只认 `agent:` 直达。 */
+  private addressLookup?: SignalAddressLookup;
+
+  setAddressLookup(lookup: SignalAddressLookup | undefined): void {
+    this.addressLookup = lookup;
+  }
+
+  /** C10-0A：身份 ensure 端口（装配唯一入口 wireWorkUnits 接线；未接则声明 ref 照常放行）。 */
+  private identityPort?: MailboxIdentityPort;
+
+  setIdentityPort(port: MailboxIdentityPort | undefined): void {
+    this.identityPort = port;
+  }
+
+  /**
+   * 投递状态机的**唯一执行点**（第六刀 §2.5 / FSM-2）。
+   *
+   * 所有信号状态变更——`bounce()`、陈旧清理、合并、回队——都必须走这里。它同时做三件
+   * 不可拆的事，拆开就会出现「状态正确但原因缺失」的中间态：
+   *  1. **矩阵校验**：`canTransitionSignal(from, to)` 不合法就拒绝 + 可行动日志；
+   *  2. **退信必带原因**：`to='bounced'` 时 `dropReason` 必填且在闭集内；
+   *  3. **归集必带桶**：`to='catch_all'` 时 `bounceTarget` 必填。
+   *
+   * `from` 未知（行不在内存：ghost / 已出队）时只跳过矩阵校验，原因/桶的强制校验照旧。
+   */
+  private updateSignalStatus(
+    item: MailboxItem | { id: string; status?: MailboxItemStatus },
+    to: MailboxItemStatus,
+    opts: {
+      dropReason?: ActiveBounceReason;
+      bounceTarget?: string;
+      extra?: Partial<MailboxItem>;
+      why?: string;
+      /**
+       * 显式 `from`：调用方已读过**真实持久状态**（`getStatus`）时用它，
+       * 而不是内存副本上的 `item.status`。
+       *
+       * 为什么必须有这条通道：内存副本会过期（ghost / 已被别处收口）。拿过期副本
+       * 当 `from`，会让一条 `completed` 行被本地的 `processing` 覆盖 —— 那正是
+       * 「同一事实被第二次写坏」，矩阵拦不住它，因为它看到的是一个假 `from`。
+       */
+      from?: MailboxItemStatus;
+    } = {},
+  ): boolean {
+    const from = opts.from ?? (item as MailboxItem).status;
+    if (from && !canTransitionSignal(from, to)) {
+      log.error('Illegal mailbox signal transition refused', {
+        agentId: this.agentId,
+        itemId: item.id,
+        from,
+        to,
+        reason: opts.why ?? '',
+      });
+      return false;
+    }
+    if (to === 'bounced' && (!opts.dropReason || !isBounceReason(opts.dropReason))) {
+      log.error('Bounce refused — drop_reason is required and must be in the closed set', {
+        agentId: this.agentId,
+        itemId: item.id,
+        dropReason: opts.dropReason ?? null,
+      });
+      return false;
+    }
+    if (to === 'catch_all' && !opts.bounceTarget) {
+      log.error('Catch-all collection refused — bounce_target is required', {
+        agentId: this.agentId, itemId: item.id,
+      });
+      return false;
+    }
+
+    const next = item as MailboxItem & { status: MailboxItemStatus };
+    next.status = to;
+    if (opts.dropReason) next.dropReason = opts.dropReason;
+    if (opts.bounceTarget) next.bounceTarget = opts.bounceTarget;
+    if (opts.extra) Object.assign(next, opts.extra);
+
+    this.persistence?.updateStatus(item.id, to, {
+      ...(opts.extra ?? {}),
+      ...(opts.dropReason ? { dropReason: opts.dropReason } : {}),
+      ...(opts.bounceTarget ? { bounceTarget: opts.bounceTarget } : {}),
+    } as Partial<MailboxItem>);
+    return true;
+  }
+
+  /**
+   * **同状态字段写**（payload / priority / retryCount / mergeCount）：不改状态。
+   *
+   * 为什么必须单独一个口，而不是复用 `updateSignalStatus`：合并 survivor、改优先级
+   * 这类操作**没有发生迁移**，硬塞一个 `to = from` 会让守卫无法区分「迁移动了状态」
+   * 与「只是把合并后的 payload 落库」。显式命名之后，架构守卫只放行两处落库点
+   * （本方法 + `updateSignalStatus`），第三处即红。
+   *
+   * 前置条件（调用方保证）：`fields` 里**不含** `status`；本方法原样写回当前状态。
+   */
+  private updateFields(item: MailboxItem, fields: Partial<MailboxItem>): void {
+    this.persistence?.updateStatus(item.id, item.status, fields);
+  }
+
+  /**
+   * **投影**（不落库的终态标记）：把**从未持久化**的行对象标成退信，供调用方读取。
+   *
+   * 为什么它不算“绕过矩阵”：这两条路径（幂等抑制 / messageId 重复）的 item 根本
+   * 没有落库行（或被 `saveBounced` 单独插入），这里改的是**返回值投影**，不是任何
+   * 已存在行的迁移。把它们集中在具名方法里，守卫才能把“投影”与“迁移”分开判定，
+   * 而不是把内存赋值一律当违规。
+   */
+  private projectBounced(item: MailboxItem, dropReason: ActiveBounceReason): void {
+    item.status = 'bounced';
+    item.dropReason = dropReason;
+  }
+
+  /**
+   * **投影**：原子认领（`claimItem`）已在 DB 内完成 `queued → processing`，
+   * 并把 `started_at / claimed_by / lease_until` 一并写入；这里只把内存副本对齐。
+   *
+   * 与 `updateSignalStatus` 的分工：那一处是**内存 → DB** 的写者（矩阵在前）；
+   * 这一处是**DB → 内存**的回写（矩阵已在调用侧的闸门判决过）。把两者写成同一个
+   * 函数会让“到底谁在写库”变成注释题目 —— 而守卫要的是一个可判定的名字。
+   */
+  private projectClaimed(item: MailboxItem, startedAt: string): void {
+    item.status = 'processing';
+    item.startedAt = startedAt;
+  }
+
+  /**
+   * **投影**：回队的持久写已由 `requeueItem`（原子 SQL，清认领 + 刷 `queued_at`）完成，
+   * 这里只把内存副本对齐。矩阵在 `putBack()` 里预先裁决。
+   */
+  private projectRequeued(item: MailboxItem, queuedAt: string): void {
+    item.status = 'queued';
+    item.startedAt = undefined;
+    item.claimedBy = undefined;
+    item.leaseUntil = undefined;
+    item.queuedAt = queuedAt;
+  }
+
+  /**
+   * 从内存副本提取「可持久化字段」（storage.updateStatus 只认这几列）。
+   *
+   * 存在的理由：老的旁路写法把整个 item 当 extra 传下去（`updateStatus(id,'queued',item)`），
+   * 读代码的人以为 payload / metadata 也落了库 —— 实际只落了 priority / retryCount
+   * 那几列。把投影写成一个具名函数，行为不变而「到底写了什么」变得可读、可审。
+   */
+  private persistableFields(item: MailboxItem): Partial<MailboxItem> {
+    return { priority: item.priority, retryCount: item.retryCount };
+  }
+
+  /**
+   * 退信（第六刀 §2.5）：记录 + 归集到 catch-all 概览。
+   *
+   * 两步都是真实迁移（`X → bounced` 然后 `bounced → catch_all`），都走唯一执行点；
+   * 外部只看到**一行**终态 `catch_all`，带原因与桶 —— 概览里恰好可见一次。
+   *
+   * 保留 `bounced` 这一跳而不是直接写 `catch_all`：前者是「没投进去」的事实，
+   * 后者是「已交给概览里的人」。压成一种态会让「已记录但未归集」变得不可表达。
+   */
+  private bounceSignal(
+    item: MailboxItem,
+    dropReason: ActiveBounceReason,
+    why?: string,
+  ): MailboxItem {
+    const bounceTarget = catchAllTargetOf(this.agentId);
+    const inQueue = this.queue.some(q => q.id === item.id);
+    if (!inQueue) {
+      // 新行（从未被队列持有）：INSERT 一条带原因的退信行。
+      this.persistence?.saveBounced?.(item, dropReason);
+    }
+    this.updateSignalStatus(item, 'bounced', { dropReason, why });
+    this.updateSignalStatus(item, 'catch_all', { bounceTarget, why });
+    log.warn('Mailbox signal bounced and collected into catch-all', {
+      event: MAILBOX_OBSERVABILITY_EVENTS.signalBounced,
+      agentId: this.agentId,
+      itemId: item.id,
+      type: item.sourceType,
+      messageId: item.envelope?.messageId,
+      dropReason,
+      bounceTarget,
+      reason: why ?? '',
+      count: 1,
+    });
+    this.eventBus.emit('mailbox:bounced', {
+      agentId: this.agentId,
+      itemId: item.id,
+      sourceType: item.sourceType,
+      dropReason,
+      bounceTarget,
+    });
+    return item;
+  }
+
+  /** C3 工具面：按 messageId 取最近一次路由事实（只读）。 */
+  routeOfMessage(messageId: string): unknown[] {
+    return this.persistence?.findRouteByMessageId?.(this.agentId, messageId) ?? [];
+  }
+
+  /** C3 工具面：catch-all 概览（只读）。 */
+  catchAll(): unknown {
+    return this.persistence?.listCatchAll?.(this.agentId) ?? { items: [], legacyDropped: 0 };
+  }
+
   /**
    * On startup:
-   * 1. Mark any persisted items stuck in 'processing' as 'dropped'.
+   * 1. Mark any persisted items stuck in 'processing' as `bounced(lease_expired)`
+   *    and collect them into the catch-all overview (C3: the `dropped` terminal is gone).
    * 2. Reload surviving 'queued' items into the in-memory queue.
-   * Returns { dropped, restored }.
+   * Returns { bounced, restored, expired, merged }.
    */
-  recoverStaleItems(): { dropped: number; restored: number; expired: number; merged: number } {
+  recoverStaleItems(): { bounced: number; restored: number; expired: number; merged: number } {
     // Pass our ownerId: on startup any pre-existing 'processing' row belongs to a dead
     // prior process, so a foreign claim is stale even if its lease still looks valid.
-    const dropped = this.persistence?.markStaleProcessingAsDropped?.(this.agentId, undefined, this.ownerId) ?? 0;
+    // 第六刀 C3：返回字段名从 `dropped` 改为 `bounced` —— 它写的就是 bounced 行，
+    // 叫 dropped 会让调用方以为还有那个终态。
+    const bounced = this.persistence?.markStaleProcessingAsBounced?.(this.agentId, undefined, this.ownerId) ?? 0;
 
     let restored = 0;
     let expired = 0;
@@ -333,7 +796,8 @@ export class AgentMailbox {
       // long-running agent does not keep replaying stale background completions.
       const ttl = routeMailboxItem(item).triageStaleDrop ? TRIAGE_STALE_INFO_TTL_MS : MAILBOX_QUEUED_TTL_MS;
       if (age > ttl) {
-        this.persistence?.updateStatus(item.id, 'dropped');
+        // C3：过期不是“归档”——它是“没投出去且原因可查”（stale_signal）。
+        this.bounceSignal(item, 'stale_signal', 'queued-ttl-expired');
         expired++;
         continue;
       }
@@ -355,24 +819,37 @@ export class AgentMailbox {
     }
     // If the attention loop is already waiting, restored items must wake it.
     if (restored > 0) this.wakeIdleLoop();
-    return { dropped, restored, expired, merged };
+    return { bounced, restored, expired, merged };
   }
 
   /**
-   * Runtime self-healing: mark DB items stuck in 'processing' as 'dropped'.
-   * Called by the watchdog when no item is being processed in memory.
+   * Runtime self-healing: mark DB items stuck in 'processing' as
+   * `bounced(lease_expired)` + catch-all. Called by the watchdog when no item is
+   * being processed in memory.
    *
    * 语义修正（不再标 'completed'）：completed = 「Agent 明确正常结束」——
    * 卡住/被打断/超时的工作**不属于完成**，且 completed 会让 resolveReinjectDecision
    * 判定为 settled（抑制同键补偿重投），等于把未完成工作静默吞掉。
-   * 改标 'dropped'：异常可见（UI 红色）+ 允许后续补偿重投（dropped → reuse）。
+   * 改标 'bounced'（C3：原因 `lease_expired`，同时归集到 catch-all）：异常可见 +
+   * 允许后续补偿重投（bounced → reuse）。
    * 除「无认领/租约空/租约过期」外，还传入本实例 ownerId：**认领者非本实例**的行也判
    * 陈旧（跨实例死认领 —— 被杀实例的 in-flight 行租约未到期也不会永远卡 processing）。
    * 单进程下每个 agent 只有一个 AgentMailbox（只有 `Agent` 构造器会 new），故不存在会
    * 被误杀的「其它存活实例」。strict-state 项会回队重试。
    */
   cleanStaleProcessing(): number {
-    return this.persistence?.markStaleProcessingAsDropped?.(this.agentId, undefined, this.ownerId) ?? 0;
+    return this.persistence?.markStaleProcessingAsBounced?.(this.agentId, undefined, this.ownerId) ?? 0;
+  }
+
+  /**
+   * 只读：还有多少条**陈旧** `processing` 行（Agent 已空闲却仍挂在处理中）。
+   *
+   * 与 `cleanStaleProcessing()` 同一判据（持久层唯一实现）。UI 用它决定是否显示
+   * 「存在异常处理中项目」告警条 —— 而不是去数「当前可见的那一页记录」。
+   * 未实现持久层读口 ⇒ 0（不主张存在异常）。
+   */
+  countStaleProcessing(): number {
+    return this.persistence?.countStaleProcessing?.(this.agentId, this.ownerId) ?? 0;
   }
 
   /**
@@ -398,7 +875,8 @@ export class AgentMailbox {
       for (let k = heartbeatIndices.length - 2; k >= 0; k--) {
         const idx = heartbeatIndices[k];
         const [item] = this.queue.splice(idx, 1);
-        this.persistence?.updateStatus(item.id, 'dropped');
+        // C3：折叠掉的旧巡检不是静默消失——它在概览里留一行 stale_signal。
+        this.bounceSignal(item, 'stale_signal', 'heartbeat-collapsed');
         removed++;
       }
     }
@@ -461,11 +939,12 @@ export class AgentMailbox {
       if (item.priority < survivor.priority) {
         survivor.priority = item.priority;
       }
-      this.persistence?.updateStatus(survivor.id, 'queued', survivor);
+      // 合并是**同状态字段写**（内容/优先级变了，状态没变）——走字段口，不伪装成迁移。
+      this.updateFields(survivor, this.persistableFields(survivor));
 
       // Remove the duplicate (mark as merged, not dropped — content is preserved in survivor)
+      this.updateSignalStatus(item, 'merged', { extra: { mergedInto: survivor.id }, why: 'entity-merge' });
       this.queue.splice(i, 1);
-      this.persistence?.updateStatus(item.id, 'merged', { mergedInto: survivor.id });
       removed++;
       i--; // re-check same index since we spliced
     }
@@ -491,7 +970,6 @@ export class AgentMailbox {
     // Group by taskId
     removed += this.consolidateGroup(
       (item) => item.payload.taskId ?? (item.metadata?.taskId as string | undefined),
-      'task',
     );
 
     // Group by requirementId (only for items that don't also have a taskId)
@@ -500,20 +978,26 @@ export class AgentMailbox {
         if (item.payload.taskId || item.metadata?.taskId) return undefined;
         return item.payload.requirementId;
       },
-      'requirement',
     );
 
-    // Group by channel: merge a2a_messages from the same group chat so the
-    // agent reads them as one conversation thread instead of N separate items.
-    // Skip items already grouped by task/requirement above.
+    // Group the remaining a2a messages by **entity**, so the agent reads one
+    // conversation thread instead of N separate items.
+    //
+    // C8-A：这是**呈现层合并**（为了一个线程读一次），不是并发/调度判定 ——
+    // 那两件事由 `resolveEntityKeys()` 回答。既是呈现层，合并键就必须和实体一致：
+    // 有 WorkUnit 的用 `work_unit_ref`（一件事一条），没有的（旧行 / 非 WU 链路）
+    // 才退到 `channelKey`。
+    //
+    // 为什么不能只按 channelKey（旧写法）：同一频道里**两件不同的事**会被并成一条，
+    // agent 只看到一段拼接文本，第二件事的执行理由消失；反过来同一件事经两个频道
+    // 到达又不合并。两种错都由「用投递通道当实体」造成，与 C8-A 的根因同一个。
     removed += this.consolidateGroup(
       (item) => {
         if (item.sourceType !== 'a2a_message') return undefined;
         if (item.payload.taskId || item.metadata?.taskId) return undefined;
         if (item.payload.requirementId) return undefined;
-        return item.payload.extra?.channelKey as string | undefined;
+        return item.workUnitRef ?? (item.payload.extra?.channelKey as string | undefined);
       },
-      'channel',
       { skipProtectedCheck: true },
     );
 
@@ -536,9 +1020,20 @@ export class AgentMailbox {
     'review_request',
   ]);
 
+  /**
+   * 按 `getKey` 给出的实体键做**呈现层预合并**：队列里同键的 queued 项并成一条，
+   * 让 LLM 一件事只读一次而不是读 N 条散件。
+   *
+   * 它**不**决定调度、不并发互斥、不改身份 —— 那三件事的唯一判定点是
+   * `resolveEntityKeys()` / `routeMailboxItem()`。合并只动 `payload.content`，被并入
+   * 的那条落 `merged` 终态并记 `mergedInto`，内容不会丢。
+   *
+   * （旧签名有个 `_groupType: string` 参数，三个调用点传 `'task'` / `'requirement'` /
+   * `'channel'` 却从没人读 —— 它唯一的作用是让“按频道分组”看起来像一条规则。
+   * C8-A 删掉它：分组读什么，只看 `getKey`。）
+   */
   private consolidateGroup(
     getKey: (item: MailboxItem) => string | undefined,
-    _groupType: string,
     opts?: { skipProtectedCheck?: boolean },
   ): number {
     let removed = 0;
@@ -567,10 +1062,10 @@ export class AgentMailbox {
       if (item.priority < survivor.priority) {
         survivor.priority = item.priority;
       }
-      this.persistence?.updateStatus(survivor.id, 'queued', survivor);
+      this.updateFields(survivor, this.persistableFields(survivor));
 
+      this.updateSignalStatus(item, 'merged', { extra: { mergedInto: survivor.id }, why: 'cross-type-consolidate' });
       this.queue.splice(i, 1);
-      this.persistence?.updateStatus(item.id, 'merged', { mergedInto: survivor.id });
       removed++;
       i--;
     }
@@ -599,10 +1094,25 @@ export class AgentMailbox {
     payload: MailboxPayload,
     options?: EnqueueOptions,
   ): MailboxItem {
+    // 投递意图 / 轮次：**结构化参数**，不再从 `payload.extra` 推断（R3'）。
+    // 一次路由决策同时给出 strictState / affinity / dedupeKey / signalClass——
+    // 信封的 signalClass 也来自这里，避免出现「第二个分类器」。
+    const intent: MailboxIntent = options?.intent ?? 'deliver';
+    const route = routeMailboxItem({
+      sourceType,
+      payload,
+      metadata: options?.metadata,
+      envelope: { intent },
+      round: options?.round,
+    });
+
     // 注意：显式复用（reuseItemId）不走内存合并 —— 调用方要求把**这一条在飞项**
     // 送回队列，若被合并进别的 item，原行会永远停在 processing（直到租约过期 / 被 TTL 判死）。
+    // 合并进去的那条项的旧信封保留（合并的是内容，不是身份）。
     const reuseItemId = options?.reuseItemId;
-    const merged = reuseItemId ? undefined : this.tryMergeIntoExisting(sourceType, payload);
+    const merged = reuseItemId
+      ? undefined
+      : this.tryMergeIntoExisting(sourceType, payload, options?.workUnitRef ?? null);
     if (merged) {
       this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item: merged });
       this.wakeIdleLoop();
@@ -647,7 +1157,8 @@ export class AgentMailbox {
       && sourceType === 'heartbeat'
       // 【不得折叠带动作的心跳】折叠保留既有那条、丢弃本次这条；若本次携带
       // actionRequired / directMention，折叠就等于静默丢掉一个待办动作 → 只折叠纯巡检心跳。
-      && payload.extra?.actionRequired !== true
+      // 旧读法 `extra.actionRequired` 已换成结构字段 `intent`（同样由入参决定）。
+      && intent !== 'action_required'
       && payload.extra?.directMention !== true
     ) {
       const queuedHb = this.queue.find(
@@ -680,17 +1191,136 @@ export class AgentMailbox {
       }
     }
 
+    const itemId = reuseItemId ?? generateId('mbx');
+    // ── 信封：唯一装配点（第六刀 §2.1 / I4）──────────────────────────────
+    // `to` 由 mailbox 自己知道（就是本 agent）；`signalClass` 来自唯一路由决策；
+    // `from` / `messageId` 由投递点提供。因此每条新信号都必带信封，不存在第三条路径。
+    const origin = options?.origin;
+    const envelope: DeliveryEnvelope = buildDeliveryEnvelope({
+      from: origin?.from ?? platformOriginRef(),
+      to: origin?.to ?? agentAddressRef(this.agentId),
+      messageId: origin?.messageId ?? itemId,
+      signalClass: route.signalClass,
+      intent,
+      subject: origin?.subject ?? payload.summary,
+      externalThreadRef: origin?.externalThreadRef ?? null,
+      fromVerified: origin?.fromVerified ?? false,
+      supersedes: options?.supersedes ?? null,
+      invalidatesPremise: options?.invalidatesPremise === true,
+    });
+
+    // ── C3 / I3：唯一解析器 —— 收件人解析不出来就退信，绝不静默吞掉 ──────────────
+    // 这是「没有第三种「悄悄丢掉」」的**执行点**：`resolve(envelope)` 只读信封
+    // （`payload` / `sourceType` 在这个签名里根本拿不到，I2 是构造性的，不是靠自觉的）。
+    // 三种失败都走同一条退信通道，区别只在原因：
+    //  - 信封 `to` 没有 active 目标 → `no_active_target`
+    //  - `to` 根本不是可投的内部地址（外部域 / 平台保留 / IM 身份）→ `unresolved_address`
+    //  - `to` 解析到了**别的 agent** → 也是 `no_active_target`（本邮箱不是它的收件人；
+    //    结构上不允许「错投给能收的人」）
+    const resolution = resolveEnvelopeTarget(envelope, this.agentId, this.addressLookup);
+    if (!resolution.matched || resolution.agentId !== this.agentId) {
+      const bounced: MailboxItem = {
+        id: itemId,
+        agentId: this.agentId,
+        sourceType,
+        priority: options?.priority ?? DEFAULT_PRIORITY[sourceType],
+        status: 'queued',
+        payload,
+        metadata: options?.metadata,
+        envelope,
+        round: options?.round,
+        // C10-0A：退信行保留原投递声明的身份（否则非平台类型的退信行落 NULL，
+        // 门禁把「投不进去的回声」误判成「忘了传身份」）。
+        workUnitRef: options?.workUnitRef ?? null,
+        queuedAt: new Date().toISOString(),
+        runtime: options?.runtime,
+      };
+      return this.bounceSignal(
+        bounced,
+        resolution.matched ? 'no_active_target' : resolution.reason,
+        resolution.matched
+          ? `addressed-to-other-agent:${resolution.agentId}`
+          : `unresolved:${resolution.address}`,
+      );
+    }
+
     const item: MailboxItem = {
-      id: reuseItemId ?? generateId('mbx'),
+      id: itemId,
       agentId: this.agentId,
       sourceType,
       priority: options?.priority ?? DEFAULT_PRIORITY[sourceType],
       status: 'queued',
       payload,
       metadata: options?.metadata,
+      envelope,
+      round: options?.round,
+      workUnitRef: options?.workUnitRef ?? null,
       queuedAt: new Date().toISOString(),
       runtime: options?.runtime,
     };
+
+    // ── C10-0A：声明了的身份必须存在（唯一装配点保证 ref ⇒ WorkUnit）─────
+    // 根因：声明 ref 的路径没人保证实体存在 → 悬空 ref（11-16 实测 5 条）。
+    // ensure 幂等（insert-or-nothing）；失败不打断业务，但计数可告警。
+    if (item.workUnitRef && this.identityPort) {
+      try {
+        const ok = this.identityPort.ensureIdentity({
+          ref: item.workUnitRef,
+          agentId: this.agentId,
+          taskId: payload.taskId ?? null,
+          requirementId: payload.requirementId ?? null,
+        });
+        if (!ok) {
+          identityEnsureFailedCount += 1;
+          log.error('Mailbox identity ensure failed — ref declared but WorkUnit not created', {
+            agentId: this.agentId, sourceType, itemId: item.id, workUnitRef: item.workUnitRef,
+          });
+        }
+      } catch (err) {
+        identityEnsureFailedCount += 1;
+        log.error('Mailbox identity ensure threw', {
+          agentId: this.agentId, sourceType, itemId: item.id, error: String(err),
+        });
+      }
+    }
+
+    // ── C8-P0：缺失不再静默 ───────────────────────────────────────────
+    // 判据：`workUnitRef` 为空时，调用方必须**表态**（`platform-internal`）。
+    // 没表态 = 忘了传 —— 这正是今晚六层缺陷的共同句式。
+    // C10-0B：`platform-internal` 之外**没有**第二种表态。旧实现还有一档「身份
+    // 稍后由另一个写者补上」，而那个写者只能改 DB 列 → 内存永远 null。
+    // 身份必须在这里就是事实，否则「入队」与「有身份」是两件事。
+    // C10-0A：提示升级为两条出路——实体信号用唯一构造器 WORK_UNIT_REF 声明 ref
+    // （人触发的通知路径结构上拿不到回合身份，旧提示对它们不可行动）。
+    if (!item.workUnitRef && !options?.refOrigin && !PLATFORM_INTERNAL_SOURCES.has(sourceType)) {
+      unclaimedIdentityCount += 1;
+      const msg =
+        `mailbox.enqueue(${sourceType}) has no workUnitRef and no refOrigin — ` +
+        'identity would be silently NULL. Pass workUnitRef built by WORK_UNIT_REF ' +
+        '(entity identity) at enqueue time, or — if this source genuinely has no ' +
+        'entity (platform wake / receipt) — declare refOrigin: "platform-internal"';
+      // C10-0B：提示里不再有第二条出路。旧提示曾让“晚点再补身份”看起来合法，
+      // 而“补”的写者只改 DB 列，台账读的是内存 → 同一事实两套真相。
+      // 默认**拒绝**：可选的严格性不守任何东西。旧实现只在 CI 环境变量下抛错，
+      // 生产走「记日志 + 放行」，于是 242,496 条输入里只有 0.18% 带身份
+      //（2026-11-18 实测）—— 校验存在，但它不拦任何人。
+      //
+      // 平台只守硬不变量：拒绝 + 给可行动提示，不替调用方猜一个身份填进去。
+      // 应急放行用 MARKUS_LENIENT_IDENTITY=1（显式、可审计），不是默认。
+      if (process.env['MARKUS_LENIENT_IDENTITY'] !== '1') {
+        throw new Error(msg);
+      }
+      log.error(msg, { agentId: this.agentId, sourceType, itemId: item.id });
+    }
+
+    // ── C2 / V5：同一条消息不得入队两次 ─────────────────────────────────
+    // 幂等身份是 `envelope.messageId`（外部邮件 = RFC Message-ID；平台内 = 发送方给的 id）。
+    // 命中既有非退信行 → 本次投递写一条 `duplicate_message_id` 退信行后返回，
+    // 不产生第二条 queued（旧行为是静默“suppressed”，人看不到任何回声）。
+    if (this.persistence?.findByMessageId) {
+      const existing = this.persistence.findByMessageId(this.agentId, envelope.messageId);
+      if (existing) return this.bounceDuplicateMessage(item, existing);
+    }
 
     // P0 幂等键（根因 #5）：**先落库再入内存队列**。落库被唯一键拒绝（返回 false）
     // 即「同一 (agent, sourceType, taskId, round) 已投递过」——此时**不入队**，
@@ -734,7 +1364,7 @@ export class AgentMailbox {
 
     this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item });
     // P1：把「入队事件」的类型 + 路由键交给唤醒器，让其对单播类型只唤醒一个 waiter。
-    this.wakeIdleLoop({ type: sourceType, key: AgentMailbox.unicastRouteKey(item) });
+    this.wakeIdleLoop({ type: sourceType, key: AgentMailbox.unicastRouteKey(item), entityKey: this.entityKeyOf(item) });
 
     return item;
   }
@@ -742,7 +1372,18 @@ export class AgentMailbox {
   /**
    * Wake all attention workers blocked in `dequeueAsync`.
    */
-  private wakeIdleLoop(routeHint?: { type: MailboxItemType; key: string }): void {
+  /**
+   * 公开的「把空闲的注意力循环叫起来」入口。
+   *
+   * 【为什么需要它】rest 条件命中时**不再**合成一条唤醒消息：被匹配的那条 item 就是
+   * 载体（它已在队列里，入队时已过一次 `wakeIdleLoop`）。但入队与订阅匹配之间存在
+   * 时序窗口，这里补一次唤醒只是**内部信号**，不新增任何记录。
+   */
+  pokeIdle(): void {
+    this.wakeIdleLoop();
+  }
+
+  private wakeIdleLoop(routeHint?: { type: MailboxItemType; key: string; entityKey?: string }): void {
     if (this.idleWaiters.size === 0) return;
 
     // P1 单播（根因 #3）：语义上「一次事件只需一个 worker」的类型只唤醒**恰好一个**
@@ -752,32 +1393,39 @@ export class AgentMailbox {
     // 只当存在多个 waiter 时才需要单播；单 waiter 时广播 / 单播等价（走到下面的分支）。
     if (routeHint && UNICAST_WAKE_TYPES.has(routeHint.type)
       && this.idleWaiters.size > 1) {
-      const waiters = [...this.idleWaiters];
+      const entries = [...this.idleWaiters.entries()];
+      // 粘性路由（§3.4）：优先唤醒实体 owner 的 waiter——唤醒非 owner 只会让它空转
+      // 一次（它认领不了）。无 owner / owner 未注册时退回落确定性 hash 路由。
+      const owner = routeHint.entityKey ? this.entityOwners.get(routeHint.entityKey) : undefined;
+      const ownerEntry = owner !== undefined ? entries.find(([, w]) => w.workerId === owner) : undefined;
       // 确定性路由：hash(taskId+round) % n —— 同一轮评审稳定落到同一 waiter，
       // 不依赖注册顺序、不用随机数（可复现、可断言）。
-      const idx = AgentMailbox.hashKey(routeHint.key) % waiters.length;
-      const target = waiters[idx]!;
+      const idx = ownerEntry
+        ? entries.indexOf(ownerEntry)
+        : AgentMailbox.hashKey(routeHint.key) % entries.length;
+      const [targetSeq, target] = entries[idx]!;
       // 只把被选中的 waiter 移出在册集合并唤醒；**其余保持注册**（若一并移出而不
       // resolve，它们将永远不再被唤醒 = 死锁）。
-      this.idleWaiters.delete(target);
+      this.idleWaiters.delete(targetSeq);
       this.cancelPending = false;
       log.info('Mailbox unicast wake — exactly one waiter selected', {
         event: MAILBOX_OBSERVABILITY_EVENTS.unicastWake,
         agentId: this.agentId,
         type: routeHint.type,
         routeKey: routeHint.key,
-        waiters: waiters.length,
+        waiters: entries.length,
         targetIndex: idx,
+        ownerPreferred: !!ownerEntry,
       });
-      target();
+      target.wake();
       return;
     }
 
-    const waiters = [...this.idleWaiters];
+    const waiters = [...this.idleWaiters.values()];
     this.idleWaiters.clear();
     // Real work arrived — cancel intent is void (stop → restart scenario).
     this.cancelPending = false;
-    for (const resolve of waiters) resolve();
+    for (const w of waiters) w.wake();
   }
 
   /**
@@ -799,9 +1447,9 @@ export class AgentMailbox {
    */
   private static unicastRouteKey(item: MailboxItem): string {
     const taskId = item.payload.taskId ?? (item.metadata?.taskId as string | undefined);
-    const roundRaw = item.payload.extra?.round
-      ?? (item.metadata as Record<string, unknown> | undefined)?.['round'];
-    const round = typeof roundRaw === 'number' && Number.isFinite(roundRaw) ? roundRaw : undefined;
+    // 结构字段（第六刀 C2）：载荷里的 `extra.round` / `metadata.round` 不再是事实来源 ——
+    // 同一份「这是第几轮」若有两个读法，单播路由和幂等键就会给出不同答案。
+    const round = item.round;
     if (taskId) return `${taskId}:r${round ?? '?'}`;
     return mailboxDedupKey(item) ?? item.id;
   }
@@ -810,8 +1458,9 @@ export class AgentMailbox {
    * Whether any queued item is currently runnable (i.e. not blocked by an
    * entity lock). Used to avoid waking workers on exclusively locked queues.
    */
-  private hasRunnableItem(): boolean {
-    return this.queue.some(it => it.status === 'queued' && !this.isItemEntityLocked(it));
+  private hasRunnableItem(workerId?: number): boolean {
+    return this.queue.some(it => it.status === 'queued'
+      && !this.isItemEntityLocked(it) && this.stickyClaimable(it, workerId));
   }
 
   /**
@@ -890,6 +1539,69 @@ export class AgentMailbox {
     return this.entityKeysOf(item).some(k => this.entityLocks.has(k));
   }
 
+  // ── 粘性 entity→worker 路由（concurrent-processing.md §3.4）─────────────────
+  // 锁回答「能否并发」（互斥），所有权回答「该谁处理」（连续性）。唯一执行点在
+  // dequeue(workerId)；worker 存活由 attention 的探针表态，mailbox 不猜。
+
+  /** 安装/清除 worker 存活探针（attention 在池启动时调用）。 */
+  setWorkerProbe(probe: ((workerId: number) => 'idle' | 'busy' | 'gone') | undefined): void {
+    this.workerProbe = probe;
+  }
+
+  /** worker 池换代（launchWorkerPool）时调用：所有权是 epoch 内的声明，新纪元从零开始。 */
+  resetEntityOwnership(): void {
+    this.entityOwners.clear();
+  }
+
+  /**
+   * 所有权键 = 主实体键（entityKeysOf[0]），不是全键集。req:/user: 是协调维度：
+   * 钉住 req: 会把同一需求的所有任务钉到一个 worker，杀掉跨实体并行。互斥锁仍锁
+   * 全键；所有权只钉连续性维度。user:-primary（无 task/req/conv 可解析）不设 owner。
+   */
+  private ownershipKeyOf(item: MailboxItem): string | undefined {
+    const key = this.entityKeysOf(item)[0];
+    return key && !key.startsWith('user:') ? key : undefined;
+  }
+
+  /**
+   * 粘性判定：null = 可认领；Infinity = owner 空闲，永不偷；有限值 = 最早可偷时刻
+   * （owner 忙碌 + 宽限窗）。串行模式（workerId undefined）不过滤。
+   */
+  private stickyBlockedUntil(item: MailboxItem, workerId: number | undefined): number | null {
+    if (workerId === undefined) return null;
+    const key = this.ownershipKeyOf(item);
+    if (!key) return null;
+    const owner = this.entityOwners.get(key);
+    if (owner === undefined || owner === workerId) return null;
+    if (!this.workerProbe) return null; // fail-open：活性优先
+    const state = this.workerProbe(owner);
+    if (state === 'gone') return null;
+    if (state === 'idle') return Infinity;
+    return Date.parse(item.queuedAt) + STICKY_STEAL_GRACE_MS;
+  }
+
+  private stickyClaimable(item: MailboxItem, workerId: number | undefined): boolean {
+    const until = this.stickyBlockedUntil(item, workerId);
+    return until === null || until <= Date.now();
+  }
+
+  /** 认领成功后记录所有权；跨 worker 转移必须可观测（steal / owner-gone），绝不静默。 */
+  private recordOwnership(item: MailboxItem, workerId: number | undefined): void {
+    if (workerId === undefined) return;
+    const key = this.ownershipKeyOf(item);
+    if (!key) return;
+    const prev = this.entityOwners.get(key);
+    if (prev !== undefined && prev !== workerId) {
+      log.info('Sticky ownership transferred', {
+        event: MAILBOX_OBSERVABILITY_EVENTS.stickyTransfer,
+        agentId: this.agentId, entityKey: key, fromWorker: prev, toWorker: workerId,
+        reason: this.workerProbe?.(prev) === 'gone' ? 'owner-gone' : 'steal',
+        waitedMs: Date.now() - Date.parse(item.queuedAt), count: 1,
+      });
+    }
+    this.entityOwners.set(key, workerId);
+  }
+
   /**
    * 原子认领一项（P0 · 根因 #2）。持久层支持 `claimItem` 时以 DB 原子条件更新决定
    * **唯一胜者**；不支持时退化为「本地即胜」（旧行为，保持向后兼容）。
@@ -899,6 +1611,14 @@ export class AgentMailbox {
   private tryClaim(item: MailboxItem): boolean {
     const p = this.persistence;
     if (!p?.claimItem) return true; // 无持久层或旧实现：本地即胜
+    // 矩阵闸门：认领就是 `queued → processing` 这条边。在这里先判，
+    // 才能让原子 SQL 端口与矩阵共用同一份判据（否则矩阵只对内存路径生效）。
+    if (!canTransitionSignal(item.status, 'processing')) {
+      log.error('claim refused by the transition matrix', {
+        agentId: this.agentId, itemId: item.id, from: item.status,
+      });
+      return false;
+    }
     const startedAt = new Date().toISOString();
     const leaseUntil = new Date(Date.now() + this.leaseTtlMs).toISOString();
     let won = false;
@@ -995,20 +1715,30 @@ export class AgentMailbox {
    * 认领失败（已被其它实例/worker 拿走）的候选会被移出本地队列并继续找下一个，
    * 保证「同一 item 至多一个 worker 处理」。
    */
-  dequeue(): MailboxItem | undefined {
+  dequeue(workerId?: number): MailboxItem | undefined {
     for (;;) {
-      const idx = this.queue.findIndex(it => it.status === 'queued' && !this.isItemEntityLocked(it));
+      const idx = this.queue.findIndex(it => it.status === 'queued'
+        && !this.isItemEntityLocked(it) && this.stickyClaimable(it, workerId));
       if (idx === -1) return undefined;
       const candidate = this.queue[idx]!;
 
       if (!this.persistence?.claimItem) {
         // 旧路径：无原子认领能力 → 本地即胜（保持原行为逐字节兼容）。
-        const [item] = this.queue.splice(idx, 1);
-        item!.status = 'processing';
-        item!.startedAt = new Date().toISOString();
-        this.persistence?.updateStatus(item!.id, 'processing', { startedAt: item!.startedAt });
-        if (item!.sourceType === 'heartbeat') this._processingHeartbeatId = item!.id;
-        return item;
+        const candidate = this.queue[idx]!;
+        const startedAt = new Date().toISOString();
+        const applied = this.updateSignalStatus(candidate, 'processing', {
+          extra: { startedAt }, why: 'dequeue-local-claim',
+        });
+        this.queue.splice(idx, 1);
+        if (!applied) {
+          log.error('dequeue: transition refused — candidate dropped from queue to avoid a spin', {
+            agentId: this.agentId, itemId: candidate.id, from: candidate.status,
+          });
+          return undefined;
+        }
+        if (candidate.sourceType === 'heartbeat') this._processingHeartbeatId = candidate.id;
+        this.recordOwnership(candidate, workerId);
+        return candidate;
       }
 
       if (!this.tryClaim(candidate)) {
@@ -1029,9 +1759,10 @@ export class AgentMailbox {
       }
 
       const [item] = this.queue.splice(idx, 1);
-      item!.status = 'processing';
-      // claimItem 已在 DB 内一并写入 processing + started_at + claimed_by + lease_until。
+      // 原子认领已在 DB 内完成 queued → processing；矩阵在 tryClaim 之前已裁决过。
+      this.projectClaimed(item!, item!.startedAt ?? new Date().toISOString());
       if (item!.sourceType === 'heartbeat') this._processingHeartbeatId = item!.id;
+      this.recordOwnership(item!, workerId);
       return item;
     }
   }
@@ -1045,24 +1776,43 @@ export class AgentMailbox {
    * between the empty check and wait cannot lose its wakeup (classic lost-wakeup
    * race — leaves attention "idle" forever with items still queued).
    */
-  async dequeueAsync(): Promise<MailboxItem> {
+  async dequeueAsync(workerId?: number): Promise<MailboxItem> {
+    const waiterKey = workerId ?? 0;
     for (;;) {
-      const item = this.dequeue();
+      const item = this.dequeue(workerId);
       if (item) {
         this.cancelPending = false;
         return item;
       }
 
       await new Promise<void>(resolve => {
-        this.idleWaiters.add(resolve);
-        // Close the race: runnable work may have arrived after the empty dequeue above.
-        if (this.hasRunnableItem()) {
-          this.idleWaiters.delete(resolve);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const seq = ++this.waiterSeq;
+        const done = () => {
+          if (timer !== undefined) clearTimeout(timer);
+          this.idleWaiters.delete(seq);
           resolve();
+        };
+        this.idleWaiters.set(seq, { workerId: waiterKey, wake: done });
+        // Close the race: runnable work may have arrived after the empty dequeue above.
+        if (this.hasRunnableItem(workerId)) {
+          done();
+          return;
+        }
+        // 定时唤醒（§3.4）：只被「忙碌 owner」挡住的 item 的最早可偷时刻。没有它，
+        // 偷取要等一个无关事件来唤醒——活性漏洞。Infinity（owner 空闲）不参与。
+        let earliest = Infinity;
+        for (const it of this.queue) {
+          if (it.status !== 'queued' || this.isItemEntityLocked(it)) continue;
+          const until = this.stickyBlockedUntil(it, workerId);
+          if (until !== null && until < earliest) earliest = until;
+        }
+        if (earliest < Infinity) {
+          timer = setTimeout(done, Math.max(0, earliest - Date.now()) + 1);
         }
       });
 
-      const afterWake = this.dequeue();
+      const afterWake = this.dequeue(workerId);
       if (afterWake) {
         this.cancelPending = false;
         return afterWake;
@@ -1107,19 +1857,55 @@ export class AgentMailbox {
     return [...this.queue];
   }
 
+  /** C8-B：当前插入序号 —— 回合开始时取一次快照，回合内不变。 */
+  currentSeq(): number {
+    return this.seqCounter;
+  }
+
+  /** C8-B：某条 item 的插入序号（不在表里 = 0，即「快照之前」）。 */
+  seqOf(itemId: string): number {
+    return this.itemSeq.get(itemId) ?? 0;
+  }
+
+  /**
+   * C8-B：**同一件活**上、序号晚于快照的待处理事实。
+   *
+   * 唯一来源是本内存队列 —— 它就是「尚未被处理的同实体事实」的索引。
+   * 不去查库：同一事实的第二个读者必然漂移，而队列正是入队唯一写入点。
+   * 无 `workUnitRef` 时返回空数组（没有实体就不主张相关性，**不猜**）。
+   */
+  deltaSince(workUnitRef: string | null, afterSeq: number): MailboxItem[] {
+    if (!workUnitRef) return [];
+    return this.queue
+      .filter(i => i.status === 'queued' && i.workUnitRef === workUnitRef
+        && (this.itemSeq.get(i.id) ?? 0) > afterSeq)
+      .sort((a, b) => (this.itemSeq.get(a.id) ?? 0) - (this.itemSeq.get(b.id) ?? 0));
+  }
+
   /**
    * Mark an item as completed and remove from in-memory queue if still present.
    */
   complete(itemId: string): void {
     if (itemId === this._processingHeartbeatId) this._processingHeartbeatId = undefined;
     const idx = this.queue.findIndex(i => i.id === itemId);
-    if (idx !== -1) {
-      const [item] = this.queue.splice(idx, 1);
-      item.status = 'completed';
-    }
+    const inQueue = idx !== -1 ? this.queue[idx]! : undefined;
+    // 行不在内存时**先读真实状态**，不假定 queued：矩阵要拿真 `from` 才能拦下
+    // 「一个已收口/已归集的终态行被 complete() 覆盖」这类第二次写坏。
+    const from: MailboxItemStatus | undefined = inQueue?.status ?? this.persistence?.getStatus?.(itemId);
     const now = new Date().toISOString();
-    this.persistence?.updateStatus(itemId, 'completed', { completedAt: now });
+    const applied = this.updateSignalStatus(
+      inQueue ?? { id: itemId, status: from },
+      'completed',
+      { extra: { completedAt: now }, why: 'turn-complete', from },
+    );
+    if (idx !== -1) this.queue.splice(idx, 1);
     this.releaseClaim(itemId);
+    if (!applied) {
+      // 拒绝是可观测事件，不是静默 no-op：调用方（attention）会因此看到一个未收口的行。
+      log.error('complete() refused by the transition matrix — row kept in its terminal state', {
+        agentId: this.agentId, itemId, from: from ?? null,
+      });
+    }
   }
 
   /**
@@ -1129,10 +1915,12 @@ export class AgentMailbox {
     const idx = this.queue.findIndex(i => i.id === itemId);
     if (idx === -1) return undefined;
 
-    const [item] = this.queue.splice(idx, 1);
-    item.status = 'deferred';
-    item.deferredUntil = until;
-    this.persistence?.updateStatus(item.id, 'deferred', { deferredUntil: until });
+    const item = this.queue[idx]!;
+    const applied = this.updateSignalStatus(item, 'deferred', {
+      extra: { deferredUntil: until }, why: 'defer',
+    });
+    if (!applied) return undefined;
+    this.queue.splice(idx, 1);
     return item;
   }
 
@@ -1143,10 +1931,16 @@ export class AgentMailbox {
    * into the in-memory queue (resurfaceDue handles that on the next idle cycle).
    */
   deferDequeued(item: MailboxItem, until?: string): void {
-    item.status = 'deferred';
-    item.deferredUntil = until;
+    const applied = this.updateSignalStatus(item, 'deferred', {
+      extra: { deferredUntil: until }, why: 'defer-dequeued', from: item.status,
+    });
+    if (!applied) {
+      log.error('deferDequeued refused by the transition matrix', {
+        agentId: this.agentId, itemId: item.id, from: item.status,
+      });
+      return;
+    }
     item.startedAt = undefined;
-    this.persistence?.updateStatus(item.id, 'deferred', { deferredUntil: until });
     this.releaseClaim(item.id);
   }
 
@@ -1157,39 +1951,70 @@ export class AgentMailbox {
     const idx = this.queue.findIndex(i => i.id === itemId);
     if (idx === -1) return undefined;
 
-    const [item] = this.queue.splice(idx, 1);
-    item.status = 'merged';
-    item.mergedInto = intoItemId;
-    this.persistence?.updateStatus(item.id, 'merged', { mergedInto: intoItemId });
+    const item = this.queue[idx]!;
+    const applied = this.updateSignalStatus(item, 'merged', {
+      extra: { mergedInto: intoItemId }, why: 'merge',
+    });
+    if (!applied) return undefined;
+    this.queue.splice(idx, 1);
     this.releaseClaim(item.id);
     return item;
   }
 
   /**
-   * Drop an item from the queue.
+   * Drop an item from the queue（第六刀 C3：**不再有 `dropped` 终态**）。
+   *
+   * Agent/操作员判定「这条信号不该处理了」是一个**决定**，不是事故：它现在写为
+   * `bounced(stale_signal)` 并归集到 catch-all 概览（`bounce_target`），所以
+   * 「谁在哪一刻决定丢弃什么」在概览里与其它退信同构，而不是一个没有回声的终态。
+   *
    * If the item is not in the in-memory queue (ghost / already dequeued), still
-   * mark it dropped in persistence so agent tools can clear orphans idempotently.
+   * write the bounce in persistence so agent tools can clear orphans idempotently.
+   *
+   * `dropReason`（第六刀 C5）：调用方若知道**更真实的**原因（例如入参校验失败的
+   * `payload_invalid`），必须显式传入；默认值 `stale_signal` 只覆盖「主动决定丢弃」
+   * 这一族（陈旧过期、被新状态取代、人/Agent 判断不必处理）。默认值不是万能桶：
+   * 处理中途因报文不合格而终结的路径必须传原因，否则旧语义被悄悄扩大。
    */
-  drop(itemId: string, reason?: string): MailboxItem | undefined {
+  drop(itemId: string, reason?: string, dropReason: ActiveBounceReason = 'stale_signal'): MailboxItem | undefined {
     const why = reason ?? 'unspecified';
     const idx = this.queue.findIndex(i => i.id === itemId);
     if (idx === -1) {
-      this.persistence?.updateStatus(itemId, 'dropped');
+      // 行不在内存：先读它的真实状态，让矩阵裁决（而不是假定 queued 盲写）。
+      // 不读状态的话，一个已收口（completed）的行会被幽灵 drop 重写成退信行 ——
+      // 同一事实被第二次写坏，正是矩阵要禁止的那类迁移。
+      const current = this.persistence?.getStatus?.(itemId);
+      if (current === 'completed' || current === 'merged') {
+        log.warn('Ghost drop refused — row is already settled', {
+          agentId: this.agentId, itemId, status: current,
+        });
+        return undefined;
+      }
+      const ghost: MailboxItem = {
+        id: itemId,
+        agentId: this.agentId,
+        sourceType: 'system_event',
+        priority: 4,
+        status: current ?? 'queued',
+        payload: { summary: `Ghost bounce: ${why}`, content: why },
+        metadata: {},
+        queuedAt: new Date().toISOString(),
+      };
+      this.bounceSignal(ghost, dropReason, why);
       this.releaseClaim(itemId);
-      // Dropping an id that is no longer in the in-memory queue still flips a
-      // persisted row — report it rather than letting it vanish silently.
-      log.info('Mailbox item dropped (not in queue)', { agentId: this.agentId, itemId, reason: why });
+      log.info('Mailbox ghost item bounced (not in queue)', {
+        agentId: this.agentId, itemId, reason: why, fromStatus: current ?? 'unknown',
+      });
       this.eventBus.emit('mailbox:dropped', { agentId: this.agentId, itemId, sourceType: undefined, reason: why });
       return undefined;
     }
 
     const [item] = this.queue.splice(idx, 1);
-    item.status = 'dropped';
-    this.persistence?.updateStatus(item.id, 'dropped');
+    this.bounceSignal(item, dropReason, why);
     this.releaseClaim(item.id);
     // A drop is a *decision*, not an accident: make who/why/what observable so a
     // disappearing message can be traced back instead of just not arriving.
-    log.info('Mailbox item dropped', {
+    log.info('Mailbox item bounced (drop decision)', {
       agentId: this.agentId, itemId: item.id, type: item.sourceType, reason: why,
     });
     this.eventBus.emit('mailbox:dropped', {
@@ -1216,7 +2041,7 @@ export class AgentMailbox {
     }
     for (const idx of toRemove) {
       const [item] = this.queue.splice(idx, 1);
-      this.persistence?.updateStatus(item.id, 'dropped');
+      this.bounceSignal(item, 'stale_signal', `superseded-status-update:${taskId}`);
     }
     return toRemove.length;
   }
@@ -1228,12 +2053,21 @@ export class AgentMailbox {
    */
   requeue(item: MailboxItem): void {
     if (item.id === this._processingHeartbeatId) this._processingHeartbeatId = undefined;
-    item.retryCount = (item.retryCount ?? 0) + 1;
-    item.status = 'queued';
+    const retryCount = (item.retryCount ?? 0) + 1;
+    const applied = this.updateSignalStatus(item, 'queued', {
+      extra: { retryCount } as Partial<MailboxItem>, why: 'requeue-retry', from: item.status,
+    });
+    if (!applied) {
+      // 已收口/已归集的行不得被「重试」复活：矩阵拒绝，且不插入队列。
+      log.error('requeue refused by the transition matrix — terminal row not revived', {
+        agentId: this.agentId, itemId: item.id, from: item.status, type: item.sourceType,
+      });
+      return;
+    }
+    item.retryCount = retryCount;
     item.startedAt = undefined;
     item.completedAt = undefined;
     this.insertSorted(item);
-    this.persistence?.updateStatus(item.id, 'queued', { retryCount: item.retryCount } as Partial<MailboxItem>);
     this.releaseClaim(item.id);
     log.info('Mailbox item requeued for retry', {
       agentId: this.agentId,
@@ -1258,11 +2092,14 @@ export class AgentMailbox {
    */
   putBack(item: MailboxItem): void {
     const queuedAt = new Date().toISOString();
-    item.status = 'queued';
-    item.startedAt = undefined;
-    item.claimedBy = undefined;
-    item.leaseUntil = undefined;
-    item.queuedAt = queuedAt;
+    // 矩阵闸门：只有“未收口”的行才能因回队而重新排队；completed/merged 不在出口集里。
+    if (!canTransitionSignal(item.status, 'queued')) {
+      log.error('putBack refused by the transition matrix — terminal row not re-queued', {
+        agentId: this.agentId, itemId: item.id, from: item.status,
+      });
+      return;
+    }
+    this.projectRequeued(item, queuedAt);
     this.insertSorted(item);
     this.requeuePersisted(item.id, queuedAt);
   }
@@ -1274,13 +2111,33 @@ export class AgentMailbox {
    * 经 `enqueue(..., { reuseItemId: item.id })` 声明「我正持有这一条」，使判定走
    * 「复用原行回队」而不是「同键 → 幂等抑制」（后者会让该行永远停在 `processing`）。
    *
+   * 身份（C9 相邻路径）：**复用既有行 = 继承该行的 `work_unit_ref`，不在本调用点重新表态**。
+   * C10-0B：回队也只交回调用方手里那一份 ref（有就 `entity`，没有就不表态）；
+   * 非内部来源缺 ref 时守卫照常拒绝 —— 缺身份的回队是缺陷，不是豁免理由。
+   *
+   * 机制证据（真机探针，docs/records/cut9-adjacent-identity-paths-2026-11-15.md）：
+   * `requeueItem()` 的 UPDATE 只改 `status / queued_at / started_at / completed_at /
+   * claimed_by / lease_until / drop_reason / bounce_target`，**不碰 `work_unit_ref`**
+   * ⇒ 回队后行仍带着它原本的身份（`task_<id>_r1`），这里若再算一个 ref 就是第二个写者。
+   *
+   * 因此本方法只做两件事：
+   * 1. 把调用方手里**已经持有**的 ref 交回去（`item.workUnitRef`），否则回队后的内存项会
+   *    丢掉原投递带的身份（`enqueue` 用 `options.workUnitRef ?? null` 重建 item）；
+   * 2. 没有 ref 时不表态（`undefined`）：非内部来源由守卫拒绝（fail closed），
+   *    内部来源由闭集豁免。C10-0B 之前这里显式声明“身份迟到”，那等于允许一条
+   *    迟到的回队 —— 迟到 = 由第二个写者补 DB 列 = 台账与库两套真相。
+   *
    * @returns 回队后的 item（`status === 'queued'`）；若既有行已收口则返回被抑制的 item。
    */
   reEnqueueOnShutdown(item: MailboxItem): MailboxItem {
     return this.enqueue(item.sourceType, item.payload, {
       priority: item.priority,
       metadata: item.metadata,
+      // 轮次是结构字段（幂等键 / 单播路由的输入），回队不得丢。
+      round: item.round,
       reuseItemId: item.id,
+      workUnitRef: item.workUnitRef ?? null,
+      refOrigin: item.workUnitRef ? 'entity' : undefined,
     });
   }
 
@@ -1310,9 +2167,29 @@ export class AgentMailbox {
     const p = this.persistence;
     if (!p) return false;
     try {
-      if (p.requeueItem) return p.requeueItem(itemId, { queuedAt }) !== false;
-      p.updateStatus?.(itemId, 'queued');
-      return true;
+      if (p.requeueItem) {
+        // 原子端口也过矩阵：`requeueItem` 的 SQL 本身就是 `X → queued` 这条边，
+        // 不让它在矩阵之外自定许可集合（否则“矩阵是唯一判据”只对内存路径成立）。
+        // `getStatus` 归一历史 `dropped → bounced`；取值域外的历史 `failed` 交给
+        // 端口 SQL 自律（它的 WHERE 已显式列了合法集合）。
+        const raw = p.getStatus?.(itemId);
+        const from = raw === undefined ? undefined : normalizeSignalStatus(raw);
+        if (from !== undefined && isKnownSignalStatus(from) && !canTransitionSignal(from, 'queued')) {
+          log.error('requeue refused by the transition matrix — terminal row not revived', {
+            agentId: this.agentId, itemId, from,
+          });
+          return false;
+        }
+        return p.requeueItem(itemId, { queuedAt }) !== false;
+      }
+      // 旧持久层降级路径：仍然走唯一执行点（拿真实 from 让矩阵裁决），
+      // 而不是直接 `p.updateStatus(id,'queued')` 盲写——那是一个已收口行被
+      // “补偿重投”复活的入口，也是把 14 处旁路养大的同一类写法。
+      return this.updateSignalStatus(
+        { id: itemId, status: p.getStatus?.(itemId) },
+        'queued',
+        { why: 'requeue-persisted-fallback' },
+      );
     } catch (err) {
       log.warn('Mailbox requeue of persisted row threw', {
         agentId: this.agentId, itemId, error: String(err),
@@ -1414,7 +2291,47 @@ export class AgentMailbox {
     if (pending) {
       try { pending.resolve('[duplicate-delivery-suppressed]'); } catch { /* caller gone */ }
     }
-    item.status = 'dropped';
+    this.projectBounced(item, 'duplicate_message_id');
+    return item;
+  }
+
+  /**
+   * C2 / V5：同一条 `messageId` 重复投递 → 写一条结构化退信行（`bounced`）。
+   *
+   * 三条纪律：
+   * 1. **不静默**：旧实现只 `log.warn` 就返回，人 / 概览都看不到这次投递失败了；
+   * 2. **不改既有行**：既有 queued/processing 行是另一条信号的状态，改它就是第二写者；
+   * 3. **可建模**：退信行带 `drop_reason='duplicate_message_id'`，`bounce_target` 留空
+   *    （catch-all 归集是 C3 的写者）。
+   */
+  private bounceDuplicateMessage(
+    item: MailboxItem,
+    existing: MailboxExistingRow,
+  ): MailboxItem {
+    log.warn('Duplicate mailbox delivery bounced — same messageId already queued', {
+      event: MAILBOX_OBSERVABILITY_EVENTS.duplicateDeliveryDropped,
+      agentId: this.agentId,
+      itemId: item.id,
+      type: item.sourceType,
+      messageId: item.envelope?.messageId,
+      existingId: existing.id,
+      existingStatus: existing.status,
+      dropReason: 'duplicate_message_id',
+      count: 1,
+    });
+    this.persistence?.saveBounced?.(item, 'duplicate_message_id');
+    this.eventBus.emit('mailbox:duplicate-rejected', {
+      agentId: this.agentId,
+      itemId: item.id,
+      sourceType: item.sourceType,
+      dedupKey: item.envelope?.messageId,
+    });
+    // 投递方可能在 await responsePromise：被退信就必须显式了结，否则调用方永久挂起。
+    const pending = item.runtime?.responsePromise;
+    if (pending) {
+      try { pending.resolve('[duplicate-message-bounced]'); } catch { /* caller gone */ }
+    }
+    this.projectBounced(item, 'duplicate_message_id');
     return item;
   }
 
@@ -1428,11 +2345,19 @@ export class AgentMailbox {
     const candidate = this.queue[idx]!;
 
     if (!this.persistence?.claimItem) {
-      const [item] = this.queue.splice(idx, 1);
-      item!.status = 'processing';
-      item!.startedAt = new Date().toISOString();
-      this.persistence?.updateStatus(item!.id, 'processing', { startedAt: item!.startedAt });
-      return item;
+      const candidate = this.queue[idx]!;
+      const startedAt = new Date().toISOString();
+      const applied = this.updateSignalStatus(candidate, 'processing', {
+        extra: { startedAt }, why: 'dequeue-by-id-local-claim',
+      });
+      this.queue.splice(idx, 1);
+      if (!applied) {
+        log.error('dequeueById: transition refused — candidate dropped to avoid a spin', {
+          agentId: this.agentId, itemId: id, from: candidate.status,
+        });
+        return undefined;
+      }
+      return candidate;
     }
 
     if (!this.tryClaim(candidate)) {
@@ -1445,7 +2370,7 @@ export class AgentMailbox {
     }
 
     const [item] = this.queue.splice(idx, 1);
-    item!.status = 'processing';
+    this.projectClaimed(item!, item!.startedAt ?? new Date().toISOString());
     return item;
   }
 
@@ -1460,8 +2385,9 @@ export class AgentMailbox {
     item.priority = newPriority as MailboxPriority;
     this.insertSorted(item);
     // 注意：不能依赖 save()——save 现为幂等插入语义（ON CONFLICT DO NOTHING），
-    // 同一 id 的二次 save 不落库且返回 false，改优先级会被静默丢弃。改走 updateStatus。
-    this.persistence?.updateStatus(item.id, item.status, { priority: item.priority });
+    // 同一 id 的二次 save 不落库且返回 false，改优先级会被静默丢弃。
+    // 这是**同状态字段写**（不是迁移）：走具名字段口，守卫据此区分二者。
+    this.updateFields(item, { priority: item.priority });
     return true;
   }
 
@@ -1469,10 +2395,17 @@ export class AgentMailbox {
    * Re-enqueue a deferred item back into the active queue.
    */
   resurface(item: MailboxItem): void {
-    item.status = 'queued';
+    const applied = this.updateSignalStatus(item, 'queued', {
+      why: 'resurface-due', from: item.status,
+    });
+    if (!applied) {
+      log.error('resurface refused by the transition matrix — row not re-queued', {
+        agentId: this.agentId, itemId: item.id, from: item.status,
+      });
+      return;
+    }
     item.deferredUntil = undefined;
     this.insertSorted(item);
-    this.persistence?.updateStatus(item.id, 'queued');
     this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item });
     this.wakeIdleLoop();
   }
@@ -1562,11 +2495,9 @@ export class AgentMailbox {
     const droppedTypes = new Set<string>();
     for (const idx of toRemove) {
       const [item] = this.queue.splice(idx, 1);
-      item.status = 'dropped';
-      // The persisted row is retained (status flipped, never deleted), so this is an
-      // *archive* rather than a destructive drop — but it must still be reportable.
+      // C3：陈旧信息项过期 = “没投出去”（stale_signal），在概览里恰好可见一次。
       droppedTypes.add(item.sourceType);
-      this.persistence?.updateStatus(item.id, 'dropped');
+      this.bounceSignal(item, 'stale_signal', 'triage-stale-purge');
     }
 
     if (toRemove.length > 0) {
@@ -1589,7 +2520,9 @@ export class AgentMailbox {
     // callback_result carries a reply the user can see in the Team Chat bubble.
     if (item.sourceType === 'callback_result') return true;
     const extra = item.payload?.extra;
-    if (extra?.actionRequired) return true;
+    // 结构字段优先；`directMention` 本卡不动（§2.1 只授权 triggerExecution /
+    // actionRequired / round 三个字段上提，其余标记留在载荷里，口径已写入文档）。
+    if (item.envelope?.intent === 'action_required') return true;
     if (extra?.directMention) return true;
     return false;
   }
@@ -1621,9 +2554,9 @@ export class AgentMailbox {
   cancelWait(): void {
     this.cancelPending = true;
     if (this.idleWaiters.size > 0) {
-      const waiters = [...this.idleWaiters];
+      const waiters = [...this.idleWaiters.values()];
       this.idleWaiters.clear();
-      for (const resolve of waiters) resolve();
+      for (const w of waiters) w.wake();
     }
   }
 
@@ -1631,10 +2564,16 @@ export class AgentMailbox {
    * If a queued (not yet processing) item exists for the same entity and a
    * dedup-eligible type, append the new content into it and return the
    * existing item.  Returns undefined when no merge candidate is found.
+   *
+   * `workUnitRef` 是**入参**而不是从队列里反查：身份只存在于生产方交给我们的那一份
+   * （C8-A）。频道类合并因此按**实体**比，而不是按“这次从哪个频道到的”比 ——
+   * 同一频道里两件不同的事不能被并成一条，否则第二件事的执行理由会消失。
+   * 旧行（无 WU）仍退化到 `channelKey`，行为与之前一致。
    */
   private tryMergeIntoExisting(
     sourceType: MailboxItemType,
     payload: MailboxPayload,
+    workUnitRef: string | null = null,
   ): MailboxItem | undefined {
     // Never merge strict-state items (execution trigger / review / action-required updates)
     // — they must remain standalone。审计 P1-2。
@@ -1663,11 +2602,13 @@ export class AgentMailbox {
       }
     } else if (AgentMailbox.CHANNEL_DEDUP_TYPES.has(sourceType)) {
       const channelKey = payload.extra?.channelKey as string | undefined;
-      if (channelKey) {
+      // C8-A：合并键 = 实体（WU ref），旧行才退到频道。
+      const entityKey = workUnitRef ?? channelKey;
+      if (entityKey) {
         existing = this.queue.find(
           i => i.status === 'queued'
             && AgentMailbox.CHANNEL_DEDUP_TYPES.has(i.sourceType)
-            && (i.payload.extra?.channelKey as string | undefined) === channelKey,
+            && (i.workUnitRef ?? (i.payload.extra?.channelKey as string | undefined)) === entityKey,
         );
       }
     }
@@ -1688,7 +2629,11 @@ export class AgentMailbox {
       existing.payload.content += `\n\n---\n\n${payload.content}`;
     }
     bumpMergeCount(existing);
-    this.persistence?.updateStatus(existing.id, 'queued', existing);
+    // C8-B：合并也是「来了新事实」—— 递增序号，否则 delta 会漏掉这条。
+    // 代价是合并后的整条内容会被再报一次；宁可重报，不可漏报撤销。
+    this.itemSeq.set(existing.id, ++this.seqCounter);
+    // 同状态字段写（dedup 合并只是往既有 queued 行里追加内容）。
+    this.updateFields(existing, this.persistableFields(existing));
     log.debug('Mailbox enqueue-time dedup: merged into existing item', {
       agentId: this.agentId,
       existingId: existing.id,
@@ -1703,7 +2648,24 @@ export class AgentMailbox {
    * recent message is processed before older ones — a user's latest
    * instruction may supersede earlier ones.
    */
+  /**
+   * C8-B：序号表只服务「队列里还在的项」。队列长期运行会累积已出队的 id，
+   * 超过阈值时按「仍在队列中」重建一次（不影响单调性：保留的项序号不变）。
+   */
+  private pruneSeqIfNeeded(): void {
+    if (this.itemSeq.size <= 4096) return;
+    const live = new Set(this.queue.map(i => i.id));
+    for (const id of this.itemSeq.keys()) {
+      if (!live.has(id)) this.itemSeq.delete(id);
+    }
+  }
+
   private insertSorted(item: MailboxItem): void {
+    // C8-B：序号只在唯一插入点分配（`Date.now()` 已在上方被否掉，理由见 `itemSeq`）。
+    if (!this.itemSeq.has(item.id)) {
+      this.itemSeq.set(item.id, ++this.seqCounter);
+      this.pruneSeqIfNeeded();
+    }
     let insertIdx = this.queue.length;
     for (let i = 0; i < this.queue.length; i++) {
       if (this.queue[i].priority >= item.priority) {

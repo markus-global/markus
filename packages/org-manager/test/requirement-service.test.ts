@@ -90,6 +90,8 @@ describe('RequirementService', () => {
         entityId: req.id,
         fromStatus: 'pending',
         toStatus: 'in_progress',
+        // No canned English annotation: the transition + actor already say "approved".
+        reason: null,
       }));
     });
 
@@ -116,6 +118,11 @@ describe('RequirementService', () => {
       expect(resubmitted.title).toBe('Better title');
       expect(resubmitted.rejectedReason).toBeUndefined();
       expect(repo.updateStatus).toHaveBeenCalledWith(req.id, 'pending');
+      expect(statusTransitionRepo.record).toHaveBeenCalledWith(expect.objectContaining({
+        fromStatus: 'rejected',
+        toStatus: 'pending',
+        reason: null,
+      }));
     });
 
     it('throws when resubmitting non-rejected requirement', () => {
@@ -280,6 +287,41 @@ describe('RequirementService', () => {
       }));
       service.rejectRequirement(rejected.id, 'user-1', 'Too vague');
       expect(enqueue).toHaveBeenCalled();
+    });
+
+    it('通知带需求实体身份——不需要 agent 回合（Owner 2026-11-19 实测报错的根因）', () => {
+      // 事故：人审批/驳回需求时 agent 没有回合，`turnWorkUnitRef?.() ?? null`
+      // 落 NULL → 守卫把合法操作拒掉（前端报错）。身份是**需求实体**，不是回合。
+      const enqueue = vi.fn();
+      service.setAgentManager({
+        hasAgent: vi.fn(() => true),
+        getAgent: vi.fn(() => ({ enqueueToMailbox: enqueue, turnWorkUnitRef: () => null })),
+      } as never);
+      service.setHITLService({
+        listApprovals: vi.fn(() => []),
+        respondToApproval: vi.fn(),
+        notify: vi.fn(),
+        requestApprovalAndWait: vi.fn().mockResolvedValue({ approved: true, respondedBy: 'user-1' }),
+      } as never);
+
+      const req = service.createRequirement(baseRequest({ source: 'agent', createdBy: 'agent-1' }));
+      service.approveRequirement(req.id, 'user-1');
+      expect(enqueue).toHaveBeenCalledWith(
+        'requirement_update',
+        expect.objectContaining({ requirementId: req.id }),
+        expect.objectContaining({ workUnitRef: `requirement:${req.id}` }),
+      );
+
+      enqueue.mockClear();
+      const rejected = service.createRequirement(baseRequest({
+        source: 'agent', createdBy: 'agent-1', title: 'Another proposal',
+      }));
+      service.rejectRequirement(rejected.id, 'user-1', 'Too vague');
+      expect(enqueue).toHaveBeenCalledWith(
+        'requirement_update',
+        expect.objectContaining({ requirementId: rejected.id }),
+        expect.objectContaining({ workUnitRef: `requirement:${rejected.id}` }),
+      );
     });
 
     it('不发自我通知：actor 就是创建者 agent 时不投递（2026-11-14 事故）', () => {

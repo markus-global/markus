@@ -1,13 +1,11 @@
 /**
- * Scenario Capability Packs — Context Surface tool/prompt budgets.
+ * Scenario Capability Packs — Context Surface tool selection.
  * Spec: docs/architecture/agent-runtime.md §2–§5
+ *
+ * No tool-definition budget eviction exists (Owner 2026-11-20, PR #471): the
+ * tool face is a FIXED segment — context pressure compresses HISTORY, never
+ * the face. External skill/MCP tools enter only via discover_tools activation.
  */
-import {
-  TOOL_DEF_BUDGET_REFLEX,
-  TOOL_DEF_BUDGET_CONVERSE,
-  TOOL_DEF_BUDGET_EXECUTE,
-  TOOL_DEF_BUDGET_GOVERN,
-} from '@markus/shared';
 
 export type CapabilityPack = 'reflex' | 'converse' | 'execute' | 'govern';
 export type PromptProfile = CapabilityPack;
@@ -49,7 +47,7 @@ export const CONVERSE_FORBIDDEN_DEFAULT = new Set([
  * an unrelated schema.
  *
  * **SINGLE SOURCE** — the lifecycle tools are declared exactly once, here:
- *   • {@link TOOL_DEF_PROTECTED} spreads this set → eviction-immune (tier 0).
+ *   • {@link TOOL_DEF_PROTECTED} spreads this set → always-live guard.
  *   • {@link EXECUTE_SESSION_ONLY_TOOLS} aliases it → session-gated.
  *
  * **Why they must be protected (2026-10-13 incident).** The task-execution
@@ -92,12 +90,50 @@ export const TOOL_DEF_PROTECTED = new Set([
   // task-execution state machine instead of the DM/comment loop. See
   // WORK_ENTITY_LIFECYCLE_TOOLS.
   ...WORK_ENTITY_LIFECYCLE_TOOLS,
+  // 第九刀 C9-A：facts 的三个入口。`task_submit_review` 会**要求**先断言
+  // `task.completion_evidence`（C9-E 的强制钩子），所以「被运行时要求调用的工具」
+  // 与上面同一类：被预算淘汰 = 模型被要求调一个它没有的工具 → 回合空转重试。
+  // `fact_query` 同轮保护：断言前要先看是否已有 active 事实，否则必然撞 must_supersede。
+  'fact_assert',
+  'fact_supersede',
+  'fact_query',
+  // C9-E：验证同样是被运行时要求的动作（拿不到它就无法把一条流推进到 done），
+  // 且它写入的是「一个只写一列」的路径 —— 被预算淘汰会和上面完全相同地卡住评审人。
+  'fact_verify',
+  // Forever Loop：Loop 会话的回合**被提示词强制要求以 `rest` 收尾**
+  // 与 `task_submit_review` / `end_turn` 同一危
+  // 害类：被预算挤掉 = 模型被要求调一个它没有的工具 → 嘘回提醒轮�� 3 次都是空
+  // 转，最后每轮都靠平台兜底。schema 很小，保护成本几乎为零。
+  'rest',
 ]);
+
+/**
+ * Tools whose semantics belong to the decision loop and nowhere else.
+ *
+ * `rest` means "I am ending my turn and waiting for an external event". That is a
+ * loop statement: a chat turn owes the human a reply and a task turn owes the task
+ * a result — neither may park for eight hours instead. Registering it in every
+ * scenario let any turn declare a wait, while only loop sessions were held to the
+ * "must rest" contract: one tool, two different meanings.
+ *
+ * Eviction protection (TOOL_DEF_PROTECTED) and scenario admission are separate
+ * axes: protected means "never dropped for budget", not "present everywhere".
+ */
+export const LOOP_ONLY_TOOLS: ReadonlySet<string> = new Set(['rest']);
+
+export function isLoopOnlyTool(name: string): boolean {
+  return LOOP_ONLY_TOOLS.has(name);
+}
+
+/** Loop-only tools may be LIVE solely in the decision-loop scenario. */
+export function allowsLoopOnlyTools(scenario?: string): boolean {
+  return scenario === 'loop';
+}
 
 /**
  * Tools whose schemas are unconditionally injected by ToolSelector.pushUnique
  * (schedule_wakeup / cancel_wakeup / set_heartbeat_interval / recall_activity /
- * complete_deliberation / notebook_upsert / notebook_clear). discover_tools must
+ * notebook_upsert / notebook_clear). discover_tools must
  * treat them as activate-able (sticky activated → protected from eviction), or
  * they dead-lock once budget pressure moves them into the Deferred catalog.
  *
@@ -108,7 +144,6 @@ export const SCHEMA_INJECTED_TOOLS = new Set([
   'cancel_wakeup',
   'set_heartbeat_interval',
   'recall_activity',
-  'complete_deliberation',
   'notebook_upsert',
   'notebook_clear',
   // Right-panel control (Team Chat). Same hazard as the group above: pushed via
@@ -157,58 +192,167 @@ export const TOOL_DEF_CORE_KEEP = new Set([
   'kb_list',
 ]);
 
+/**
+ * Action tools — the tools an agent needs in order to ACT on a work item: create
+ * it, move it, close it, answer a human, read its own ledger / queue.
+ *
+ * Why they need their own whitelist (C8-D, 2026-11-14). Tool-definition eviction
+ * ranks by eviction tier and then by SCHEMA SIZE. Action tools are ordinary
+ * builtins (tier 2), so under budget pressure they are perfectly legal victims —
+ * an agent then reaches a turn in which it cannot submit, cannot update, cannot
+ * see its queue, and is told nothing about it. "Agent knows what it lacks" is the
+ * whole point: these tools stay LIVE, and anything that does leave the schema is
+ * announced with a way back.
+ *
+ * SOURCE OF TRUTH — the ids below were resolved against the LIVE tool face on
+ * 2026-11-14 (measurement, not prose): the factories `createAgentTaskTools` /
+ * `createMailboxTools`, and ToolSelector's own `pushUnique` injections. The face
+ * is "names a tool call can actually hit", NOT "names with a registerTool
+ * handler": `notify_user` / `request_user_input` / `end_turn` have a dispatch
+ * branch and a pushed schema but no handler. Treating handler-lessness as
+ * unreachability splits one predicate into two — the first draft of this list
+ * kept `notify_user` and dropped `request_user_input` although the two are
+ * identical in both respects.
+ *
+ * The cardinal case is `request_user_input`: when the surface is compressed the
+ * agent must still be able to say "I am blocked, I need one line of
+ * authorisation". A face that cannot ask a human IS the failure mode this
+ * whitelist exists to prevent, so the HITL tool is a first-class member.
+ *
+ * {@link assertActionToolReachability} checks these against the assembled face
+ * (handlers ∪ injected schemas ∪ protected) and throws rather than filtering.
+ *
+ * Groups exist so a deployment can state, in ONE explicit word, which capability
+ * it does not provide (e.g. an agent with no task service has no `task` group).
+ * That is a declaration, not a filter: the default is strict.
+ */
+export const ACTION_TOOL_GROUPS = {
+  /** Board actions — only present when a task service is wired. */
+  task: ['task_create', 'task_update', 'task_submit_review'],
+  /** Self-inspection + queue: always registered (unwired ports answer honestly). */
+  ledger: ['work_status', 'check_mailbox'],
+  /**
+   * Human channel. Both are schema-injected (pushUnique) and always live,
+   * with no registerTool handler. `request_user_input` is the BLOCKING one:
+   * without it a compressed face leaves the agent unable to ask for
+   * authorisation — the defect this whitelist exists to prevent.
+   */
+  human: ['notify_user', 'request_user_input'],
+} as const;
+
+export type ActionCapabilityGroup = keyof typeof ACTION_TOOL_GROUPS;
+export type ActionToolId =
+  | (typeof ACTION_TOOL_GROUPS)[ActionCapabilityGroup][number];
+
+/** Flat whitelist — derived from {@link ACTION_TOOL_GROUPS}, never re-typed. */
+export const ACTION_TOOL_IDS: readonly ActionToolId[] = [
+  ...ACTION_TOOL_GROUPS.task,
+  ...ACTION_TOOL_GROUPS.ledger,
+  ...ACTION_TOOL_GROUPS.human,
+];
+
+/**
+ * Tool calls that COUNT AS EVIDENCE OF HAVING ACTED on a requirement card.
+ *
+ * **A different predicate from {@link ACTION_TOOL_IDS}, sharing one source for the
+ * names they have in common.** The two answer different questions:
+ *
+ *   • `ACTION_TOOL_IDS` — "must this tool stay reachable under budget pressure?"
+ *     (a property of the tool FACE; enforced at assembly + eviction)
+ *   • this set         — "if the model called this, did the turn actually DO
+ *     something?" (a property of ONE call; used by the requirement_action
+ *     safeguard that re-prompts a turn which ended with no action)
+ *
+ * Merging them would be wrong in both directions: `task_update` is reachable but
+ * not evidence of acting on a requirement, while a requirement state-machine
+ * write is evidence but is scenario-gated, not part of the always-reachable face.
+ * Co-locating them keeps the overlap DERIVED rather than re-typed — this replaces
+ * the free-floating `REQ_ACTION_TOOLS` literal that used to live inside the tool
+ * loop in `agent.ts` (C8-D: one fact, one writer).
+ */
+export const REQUIREMENT_ACTION_EVIDENCE_TOOLS: readonly string[] = [
+  // Human channel: reaching a person IS acting — derived from the single source.
+  ...ACTION_TOOL_GROUPS.human,
+  // `task_create` (task group's first id): opening the card is acting. The rest
+  // of that group (update / submit) cannot be called in requirement_action.
+  ACTION_TOOL_GROUPS.task[0],
+  // Requirement state machine + review comment: evidence, but scenario-gated
+  // rather than always-reachable, so they are named here only.
+  'requirement_update_status',
+  'requirement_comment',
+  // Deprecated alias of request_user_input — still dispatched, so a call to it
+  // must count, otherwise the safeguard re-prompts a turn that did act.
+  'request_user_approval',
+  // Ending the turn is a recorded disposition, not a lack of action. Omitting
+  // it made "nothing needs to change" impossible to express: the model called
+  // end_turn, the counter stayed 0, and the safeguard pushed the turn back into
+  // another round (2026-11-14: 33 and 166 rounds, all finishReason=tool_use).
+  'end_turn',
+];
+
+/**
+ * Single switch for the whole C8-D contract. `MARKUS_ACTION_TOOL_GUARD=0` (or
+ * `false`) restores the pre-C8-D behaviour: the action whitelist neither forces
+ * selection nor protects from eviction, and eviction may drop any tool.
+ */
+export function actionToolGuardEnabled(): boolean {
+  const v = process.env['MARKUS_ACTION_TOOL_GUARD'];
+  return v !== '0' && v !== 'false';
+}
+
+/**
+ * Every name the model can actually call: registered handlers PLUS the schemas
+ * ToolSelector injects itself (pushUnique) and the always-live set. The
+ * registry alone under-reports the face — `notify_user` has a dispatch branch and
+ * a schema but no `registerTool` handler.
+ */
+export function toolFaceNames(registered: Iterable<string>): Set<string> {
+  const face = new Set<string>(registered);
+  for (const n of TOOL_DEF_PROTECTED) face.add(n);
+  for (const n of SCHEMA_INJECTED_TOOLS) face.add(n);
+  return face;
+}
+
+/**
+ * Fail-fast reachability assertion (C8-D). Throws — never filters — when an
+ * action id does not resolve on the live face: a whitelist entry that silently
+ * disappears turns "action tools are always reachable" into an unfalsifiable
+ * promise, which is exactly how a ghost name (`request_user_input`) nearly got
+ * shipped into it.
+ *
+ * @param notWired capability groups this deployment explicitly does not provide
+ *   (e.g. `['task']` when no task service is wired). Anything not declared is
+ *   expected to be reachable.
+ */
+export function assertActionToolReachability(
+  registry: Iterable<string>,
+  opts: { notWired?: readonly ActionCapabilityGroup[] } = {},
+): void {
+  const present = new Set(registry);
+  const declared = new Set<ActionCapabilityGroup>(opts.notWired ?? []);
+  const missing: string[] = [];
+  for (const [group, ids] of Object.entries(ACTION_TOOL_GROUPS) as Array<
+    [ActionCapabilityGroup, readonly string[]]
+  >) {
+    if (declared.has(group)) continue;
+    for (const id of ids) if (!present.has(id)) missing.push(`${id} (${group})`);
+  }
+  if (missing.length) {
+    throw new Error(
+      `Action tool face is incomplete: ${missing.join(', ')}. `
+      + 'These are always-reachable action tools (C8-D) — a tool the agent is expected to '
+      + 'call must exist on the live face. Fix the wiring, or declare the capability as '
+      + 'not provided via `notWired` so the degradation is explicit instead of silent.',
+    );
+  }
+}
+
 /** MCP / skill-namespaced tools — evict these before core Markus tools. */
 export function isSkillOrMcpToolName(name: string): boolean {
   return name.includes('__')
     || name.startsWith('feishu_')
     || name.startsWith('chrome-devtools')
     || name.startsWith('chrome_');
-}
-
-/**
- * Situational builtins — safe to defer behind `discover_tools`, and evicted
- * *before* other builtins so they stop crowding out the tools an agent needs
- * every turn.
- *
- * Rationale (2026-10-03): the old evictor had a single "non-core" bucket that
- * mixed genuine extras (packaging, hub, team administration) with ordinary
- * working tools. Under budget pressure it evicted everything in that bucket,
- * so which tools survived came down to schema size. Splitting the extras out
- * makes the ladder intentional: extras go first, then ordinary builtins, then
- * core, and prompt-required signals are never touched.
- */
-export const TOOL_DEF_EVICT_FIRST = new Set([
-  // packaging / hub / generation
-  'package_install', 'package_list', 'hub_search', 'hub_install', 'office_generate',
-  // misc situational
-  'decide', 'recall_context',
-  // team / org administration
-  'agent_broadcast_status', 'agent_delegate_task', 'agent_send_group_message',
-  'agent_create_group_chat', 'agent_list_group_chats', 'delegate_message',
-  'agent_start', 'agent_stop', 'team_status', 'team_list',
-]);
-
-/**
- * Eviction priority. **Higher = evicted sooner.**
- *
- *   0  never evicted   (TOOL_DEF_PROTECTED — HITL + turn-termination)
- *   1  core Markus     (shell/file/task/memory/knowledge — evicted last)
- *   2  ordinary builtin
- *   3  situational + skill/MCP (evicted first)
- *
- * Within one tier the largest schema is still chosen first, but tier ordering
- * is now the primary key — so size can no longer decide whether something an
- * agent fundamentally needs survives.
- */
-export function toolEvictionTier(
-  name: string,
-  protectedNames: Set<string> = TOOL_DEF_PROTECTED,
-  coreKeep: Set<string> = TOOL_DEF_CORE_KEEP,
-): number {
-  if (protectedNames.has(name)) return 0;
-  if (TOOL_DEF_EVICT_FIRST.has(name) || isSkillOrMcpToolName(name)) return 3;
-  if (coreKeep.has(name)) return 1;
-  return 2;
 }
 
 /**
@@ -221,8 +365,8 @@ export function toolEvictionTier(
  * caused "No active task" when `task_submit_review` leaked without ALS.
  *
  * Same members as {@link WORK_ENTITY_LIFECYCLE_TOOLS} (declared once there) —
- * this alias keeps the two concerns (session-gating here, eviction- immunity
- * there) reading from a single source.
+ * this alias keeps the two concerns (session-gating here, reachability
+ * guards there) reading from a single source.
  */
 export const EXECUTE_SESSION_ONLY_TOOLS = WORK_ENTITY_LIFECYCLE_TOOLS;
 
@@ -241,8 +385,7 @@ export function isEntityBoundScenario(scenario?: string): boolean {
     || scenario === 'review'
     || scenario === 'comment_response'
     || scenario === 'requirement_action'
-    || scenario === 'workflow_action'
-    || scenario === 'deliberation';
+    || scenario === 'workflow_action';
 }
 
 /** Whether work-context-bound tools may appear LIVE for this pack/scenario. */
@@ -268,7 +411,6 @@ export function scenarioToPack(scenario: string | undefined): CapabilityPack {
     case 'task_execution':
       return 'execute';
     case 'review':
-    case 'deliberation':
       return 'govern';
     case 'chat':
     case 'a2a':
@@ -278,19 +420,6 @@ export function scenarioToPack(scenario: string | undefined): CapabilityPack {
     case 'workflow_action':
     default:
       return 'converse';
-  }
-}
-
-export function packToolDefBudget(pack: CapabilityPack): number {
-  switch (pack) {
-    case 'reflex':
-      return TOOL_DEF_BUDGET_REFLEX;
-    case 'converse':
-      return TOOL_DEF_BUDGET_CONVERSE;
-    case 'execute':
-      return TOOL_DEF_BUDGET_EXECUTE;
-    case 'govern':
-      return TOOL_DEF_BUDGET_GOVERN;
   }
 }
 
@@ -414,101 +543,4 @@ export const SCENARIO_ALLOWED_TOOLS: Readonly<Record<string, readonly string[]>>
   workflow_action: WORKFLOW_ACTION_ALLOWED_TOOLS,
 };
 
-export type ToolDefLike = {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-};
 
-/** Rough token estimate for tool JSON (chars / 3.5). */
-export function estimateToolDefTokens(tools: ToolDefLike[]): number {
-  if (!tools.length) return 0;
-  return Math.ceil(JSON.stringify(tools).length / 3.5);
-}
-
-/**
- * Evict tools until under budget.
- *
- * Primary key is {@link toolEvictionTier} — higher tier is evicted first:
- * situational + skill/MCP (3) → ordinary builtins (2) → core (1) → never (0).
- * Within a tier the largest schema goes first.
- *
- * This replaces the old three-predicate ladder, whose middle bucket mixed
- * genuine extras with ordinary working tools — so under pressure *schema size*
- * decided what survived, and prompt-referenced signals could be dropped.
- */
-export function evictToolsToBudget(
-  tools: ToolDefLike[],
-  budget: number,
-  protectedNames: Set<string> = TOOL_DEF_PROTECTED,
-  coreKeep: Set<string> = TOOL_DEF_CORE_KEEP,
-): { tools: ToolDefLike[]; evicted: Array<{ name: string; description: string }> } {
-  const current = [...tools];
-  const evicted: Array<{ name: string; description: string }> = [];
-
-  const sizeOf = (t: ToolDefLike) => JSON.stringify(t).length;
-
-  /** Largest tool in the highest evictable tier currently present. */
-  const pickVictim = (): number => {
-    let victimIdx = -1;
-    let bestTier = 0;
-    let victimSize = -1;
-    for (let i = 0; i < current.length; i++) {
-      const t = current[i]!;
-      const tier = toolEvictionTier(t.name, protectedNames, coreKeep);
-      if (tier === 0) continue; // protected — never a victim
-      const sz = sizeOf(t);
-      if (tier > bestTier || (tier === bestTier && sz > victimSize)) {
-        bestTier = tier;
-        victimSize = sz;
-        victimIdx = i;
-      }
-    }
-    return victimIdx;
-  };
-
-  while (estimateToolDefTokens(current) > budget && current.length > 0) {
-    const victimIdx = pickVictim();
-    if (victimIdx < 0) break; // only protected left
-    const [victim] = current.splice(victimIdx, 1);
-    if (victim) {
-      evicted.push({
-        name: victim.name,
-        description: (victim.description || '').slice(0, 60),
-      });
-    }
-  }
-
-  return { tools: current, evicted };
-}
-
-/**
- * Format evicted tools as a short Tier-3 catalog (Afford.S2).
- * Name-only preferred; optional ≤40 char blurb. Hard-capped by DEFERRED_CATALOG_MAX_CHARS.
- */
-export function formatEvictedToolCatalog(
-  evicted: Array<{ name: string; description: string }>,
-  maxChars?: number,
-): string {
-  const cap = maxChars ?? 1_500;
-  if (!evicted.length) return '';
-  const header = [
-    '\n## Deferred Tools (schemas omitted for budget)',
-    'Core platform tools (shell/files/tasks/memory) stay LIVE above. These entries are optional extras — call `discover_tools({ name: ["tool-or-skill"] })` only when you need one.',
-  ].join('\n');
-  const lines: string[] = [];
-  let used = header.length;
-  for (const e of evicted) {
-    const blurb = (e.description || '').trim().slice(0, 40);
-    const line = blurb ? `- \`${e.name}\`: ${blurb}` : `- \`${e.name}\``;
-    if (used + 1 + line.length > cap) break;
-    lines.push(line);
-    used += 1 + line.length;
-  }
-  if (!lines.length) {
-    // At least list names comma-separated under the header budget
-    const names = evicted.map((e) => e.name).join(', ');
-    return `${header}\n${names}`.slice(0, cap);
-  }
-  return [header, ...lines].join('\n');
-}
