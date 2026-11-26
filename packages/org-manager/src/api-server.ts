@@ -6949,7 +6949,10 @@ export class APIServer {
           const entKind = entKindRaw ?? '';
           const entId = entIdParts.join(':');
           // 1) 已回填的行：走 idx_mailbox_entity（快路径，不再扫全量）
-          const indexed = (entKind && entId
+          // 「无归属」桶的实体键是 `none:` —— 它的 id **就是**空串，空串是合法键，
+          // 不是「缺参数」。此前这里写成 `entKind && entId`，于是「历史记录」永远
+          // 走空数组，左侧显示几百条、右侧一条不显示。
+          const indexed = (entKind && (entId || entKind === 'none')
             ? this.storage.mailboxRepo.getByEntityKey(agentId, entKind, entId, MAX_ITEMS)
             : []) as unknown as Array<Record<string, unknown>>;
           // 2) 旧行（entity_* 为 NULL）：用**同一个**解析器兜底 —— 旧库照旧可读，
@@ -6960,11 +6963,16 @@ export class APIServer {
             return (ent ? `${ent.kind}:${ent.id}` : 'none:') === entityKey;
           });
           // 顺手把命中行的解析结果回填，下次就走索引
+          // 顺手把命中行的解析结果回填，下次就走索引。
+          // 「判定为无归属」也落库（`kind='none'` + 空 id 哨兵）—— 否则右栏这条通路
+          // 会把它们一遍遍重新解析，且与 groups 通路的回填口径不一致。
           try {
-            this.storage.mailboxRepo.setEntityKeys(legacyMatched.map(row => {
-              const ent = resolveEntity(row as never);
-              return { id: String(row['id']), kind: ent?.kind ?? '', entityId: ent?.id ?? '' };
-            }).filter(x => x.kind && x.entityId));
+            this.storage.mailboxRepo.setEntityKeys(
+              legacyMatched.map(row => {
+                const ent = resolveEntity(row as never);
+                return { id: String(row['id']), kind: ent ? ent.kind : 'none', entityId: ent ? ent.id : '' };
+              }),
+            );
           } catch { /* 回填失败不影响本次返回 */ }
           const matched0 = [...indexed, ...legacyMatched]
             .sort((a, b) => (String(b['queuedAt'] ?? '') > String(a['queuedAt'] ?? '') ? 1 : -1));
