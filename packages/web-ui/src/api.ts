@@ -25,6 +25,7 @@ import {
   type RemoteSetupTargets,
   type RemoteStatusV2,
 } from './lib/remoteAccess.ts';
+import type { ExternalIngressPolicy, ExternalSourcesResponse } from './lib/externalSources.ts';
 
 export type { RemoteStatusV2 } from './lib/remoteAccess.ts';
 
@@ -1535,6 +1536,32 @@ export const factsAudit = {
 };
 
 export const api = {
+  /**
+   * C10-F — external signals (webhook / RSS). The org-level ingress policy and
+   * the per-agent source list are one surface: a toggle without the list hides
+   * the doors it governs, and a list without the policy hides why they are shut.
+   */
+  externalSignals: {
+    getIngress: (orgId: string) =>
+      request<{ policy: ExternalIngressPolicy }>(`/orgs/${encodeURIComponent(orgId)}/external-ingress`),
+    setIngress: (orgId: string, policy: ExternalIngressPolicy) =>
+      request<{ ok: boolean; from: ExternalIngressPolicy; to: ExternalIngressPolicy }>(
+        `/orgs/${encodeURIComponent(orgId)}/external-ingress`,
+        { method: 'POST', body: JSON.stringify({ policy }) },
+      ),
+    list: (agentId: string) =>
+      request<ExternalSourcesResponse>(`/external-sources?agentId=${encodeURIComponent(agentId)}`),
+    setEnabled: (agentId: string, sourceId: string, enabled: boolean) =>
+      request<{ status: string; enabled?: boolean; hint?: string }>(
+        `/external-sources/${encodeURIComponent(sourceId)}/toggle`,
+        { method: 'POST', body: JSON.stringify({ agentId, enabled }) },
+      ),
+    rotateSecret: (agentId: string, sourceId: string) =>
+      request<{ status: string; secret?: string; hint?: string }>(
+        `/external-sources/${encodeURIComponent(sourceId)}/token`,
+        { method: 'POST', body: JSON.stringify({ agentId }) },
+      ),
+  },
   agents: {
     /** `lean` skips the per-agent runtime derivation — use for pickers/searchers. */
     list: (opts?: { lean?: boolean }) => request<{ agents: AgentInfo[] }>(`/agents${opts?.lean ? '?lean=1' : ''}`).then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),

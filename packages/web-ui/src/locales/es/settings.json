@@ -9,7 +9,8 @@
     "search": "Proveedores de búsqueda web y claves API",
     "integrations": "Conecta plataformas de mensajería externas",
     "network": "Ámbito de acceso, proxy y enrutamiento de salida",
-    "account": "Tu cuenta, organización y licencia"
+    "account": "Tu cuenta, organización y licencia",
+    "external-sources": "Quién puede llegar a tus agentes desde fuera, y qué puede hacer una señal externa"
   },
   "nav": {
     "appearance": "General",
@@ -1541,5 +1542,47 @@
     "subject": "Catálogo de modelos",
     "noModels": "Este proveedor no tiene modelos",
     "retryHint": "Vuelve a seleccionar el proveedor más tarde para reintentar"
+  },
+  "externalSignals": {
+    "title": "Señales externas",
+    "intro": "Decide si esta organización acepta entrada desde fuera — webhooks, fuentes RSS, otros sistemas — y qué puede hacer una señal aceptada. El interruptor y la lista de fuentes están en la misma pantalla a propósito: una puerta que nadie ve no está gestionada.",
+    "policy": {
+      "off": {
+        "label": "Apagado — rechazar todo",
+        "detail": "Las peticiones entrantes se rechazan en la puerta. No se guarda nada y no se despierta a ningún agente."
+      },
+      "observe": {
+        "label": "Observar — solo registrar",
+        "detail": "Las señales se aceptan y se registran, pero no generan un turno: el agente las ve la próxima vez que se ejecuta."
+      },
+      "accept": {
+        "label": "Aceptar — la señal genera un turno",
+        "detail": "Una señal aceptada genera un turno al agente receptor, que puede reaccionar de inmediato. Es el estado más permisivo."
+      },
+      "current": "actual"
+    },
+    "saving": "guardando…",
+    "agentCaveat": "Los agentes pueden registrar fuentes propias (es su herramienta), pero solo un propietario o administrador puede cambiar este interruptor.",
+    "sourcesTitle": "Fuentes por agente",
+    "sourcesIntro": "Todas las rutas entrantes registradas por un agente, con la dirección a la que entregan. Pausa una fuente sin tocar el interruptor.",
+    "agentFilter": "Agente",
+    "agentFilterHint": "Elige un agente para ver las rutas entrantes registradas.",
+    "noTunnel": "No hay túnel configurado: las URL de abajo son rutas locales. Activa el acceso remoto (Ajustes → Cuenta → Acceso remoto) antes de que un sistema externo intente entregar.",
+    "empty": "Este agente aún no tiene fuentes externas. Puede crear una en el chat (webhook o RSS) y aparecerá aquí.",
+    "state": {
+      "delivering": "entregando",
+      "paused": "en pausa",
+      "blocked_by_policy": "bloqueada por el interruptor"
+    },
+    "toggleSource": "Pausar o reanudar esta fuente",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "copyFailed": "No se pudo copiar: selecciona el texto manualmente.",
+    "secretSet": "Secreto compartido {{preview}}",
+    "secretMissing": "Sin secreto compartido: esta fuente rechaza la entrada hasta tener uno.",
+    "rotate": "Rotar secreto",
+    "secretOnce": "Nuevo secreto: cópialo ahora, no se mostrará otra vez.",
+    "lastEvent": "Último evento: {{at}}",
+    "noEventYet": "Todavía no se ha recibido ningún evento."
   }
 }

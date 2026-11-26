@@ -25,6 +25,7 @@ import { PerAgentModelSection } from '../components/PerAgentModelSection.tsx';
 import { useProviderCatalog } from '../constants/providers.ts';
 import { InstancesSection } from '../components/integrations/InstancesSection.tsx';
 import { RemoteAccessSection } from '../components/RemoteAccessSection.tsx';
+import { ExternalSourcesSection } from '../components/ExternalSourcesSection.tsx';
 import { FilterableSelect } from '../components/FilterableSelect.tsx';
 // import { CodingToolsSettings } from './CodingToolsSettings.tsx'; // TEMP-HIDDEN (2026-08)
 import { WebSearchSettings } from './WebSearchSettings.tsx';
@@ -62,7 +63,7 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'external-sources' | 'license';
 
 interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
 
@@ -75,6 +76,10 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
   // { id: 'coding-tools', labelKey: 'nav.codingTools', adminOnly: true },
   { id: 'search', labelKey: 'nav.search', adminOnly: true },
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
+  // C10-F: whether the platform accepts input from outside at all, and what an
+  // accepted signal may do. Admin-only like the other connection surfaces — it
+  // is an access decision, not a preference.
+  { id: 'external-sources', labelKey: 'nav.externalSignals', adminOnly: true },
   { id: 'network', labelKey: 'nav.network', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
   { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
@@ -86,7 +91,7 @@ export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] 
   // 「AI」组包含模型与执行策略：两者回答同一个问题——Agent 用什么脑子、按什么规矩动手。
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
-  { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
+  { labelKey: 'nav.group.connections', tabs: ['integrations', 'external-sources', 'network'] },
   { labelKey: 'nav.group.account', tabs: ['account'] },
   // 数据与审计放最后：这两个页面回答"平台存了什么、凭什么这么判断"，
   // 属于诊断/取证，不该夹在日常偏好设置中间（Owner 2026-11-15）。
@@ -3172,6 +3177,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {resolvedTab === 'account' && <AccountSection authUser={authUser} />}
 
         {resolvedTab === 'integrations' && <InstancesSection />}
+
+        {resolvedTab === 'external-sources' && <ExternalSourcesSection />}
 
         {/* TEMPORARILY HIDDEN — coding tools integration disabled (2026-08). Re-enable to show config page.
         {resolvedTab === 'coding-tools' && <CodingToolsSettings />}

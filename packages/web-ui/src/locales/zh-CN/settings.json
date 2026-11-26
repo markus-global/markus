@@ -9,7 +9,8 @@
     "search": "网络搜索服务商与 API 密钥",
     "integrations": "连接外部 IM 消息平台",
     "network": "访问范围、代理与出站路由",
-    "account": "账户、组织与许可证"
+    "account": "账户、组织与许可证",
+    "external-sources": "谁可以从外部触达你的 Agent，以及外部信号能做什么"
   },
   "nav": {
     "appearance": "通用",
@@ -1540,5 +1541,47 @@
     "subject": "模型目录",
     "noModels": "该 provider 没有模型",
     "retryHint": "稍后重新选择 provider 重试"
+  },
+  "externalSignals": {
+    "title": "外部信号",
+    "intro": "决定这个组织是否接受来自外部的输入——webhook、RSS、其他系统——以及被接受的信号能做什么。开关和源清单放在同一屏是有意的：看不见的门不算被管理。",
+    "policy": {
+      "off": {
+        "label": "关 — 一律拒收",
+        "detail": "入站请求在门口被拒。不落库，不唤醒任何 Agent。"
+      },
+      "observe": {
+        "label": "只观察 — 只记录",
+        "detail": "信号被接收并记录，但不欠回合：Agent 下次运行时才看见。不会有任何自主反应。"
+      },
+      "accept": {
+        "label": "接收 — 信号欠一个回合",
+        "detail": "被接受的信号会给接收方 Agent 欠一个回合，它可以立刻反应。这是最宽松的状态。"
+      },
+      "current": "当前"
+    },
+    "saving": "保存中…",
+    "agentCaveat": "Agent 可以给自己注册源（那是它自己的工具），但只有所有者或管理员能改这个开关——Agent 打不开组织的门。",
+    "sourcesTitle": "按 Agent 查看源",
+    "sourcesIntro": "该 Agent 已注册的全部入站路径，以及它把信号投递到哪个地址。可以单独暂停某个源，不必动总开关。",
+    "agentFilter": "Agent",
+    "agentFilterHint": "选择一个 Agent，查看为它注册的入站路径。",
+    "noTunnel": "当前没有配置隧道，下面的 URL 只是本机路径。在外部系统投递之前，先到「设置 → 账户 → 远程访问」开启隧道。",
+    "empty": "这个 Agent 还没有外部源。它可以在对话里自己创建一个（webhook 或 RSS），创建后会出现在这里。",
+    "state": {
+      "delivering": "投递中",
+      "paused": "已暂停",
+      "blocked_by_policy": "被总开关拦住"
+    },
+    "toggleSource": "暂停或恢复这个源",
+    "copy": "复制",
+    "copied": "已复制",
+    "copyFailed": "复制失败——请手动选中文本。",
+    "secretSet": "共享密钥 {{preview}}",
+    "secretMissing": "没有共享密钥——这个源在拿到密钥之前会拒收输入。",
+    "rotate": "轮换密钥",
+    "secretOnce": "新密钥——现在就复制，之后不再显示。",
+    "lastEvent": "最近一次事件：{{at}}",
+    "noEventYet": "还没有收到任何事件。"
   }
 }
