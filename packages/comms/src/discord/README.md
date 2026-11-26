@@ -1,9 +1,16 @@
-# Discord adapter (stage 1)
+# Discord adapter
 
 `DiscordAdapter` implements `CommAdapter`, using a separate `DiscordClient` for
 Discord Gateway WebSocket events and REST requests. Both are exported from
-`@markus/comms`. This stage does not register Discord in the Markus runtime or
-provide configuration or settings UI.
+`@markus/comms`.
+
+Discord is wired into the runtime through its platform manifest
+(`packages/comms/src/platforms/registry.ts`, `id: 'discord'`), which owns the
+configuration surface: bot token, notification channel, agent binding, and
+optional API/Gateway overrides. This file records the transport contract; the
+manifest records what is configurable. (An earlier revision of this file said the
+adapter was not registered in the runtime — that stopped being true when the
+adapters moved to manifest-driven registration.)
 
 The client uses Node 22's native `fetch` and `WebSocket`, so no Discord SDK or
 additional dependency is bundled. Tests substitute the REST and Gateway
