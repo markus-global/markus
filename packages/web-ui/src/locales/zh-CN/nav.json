@@ -36,5 +36,6 @@
     "teams": "团队",
     "skills": "技能",
     "installed": "已安装"
-  }
+  },
+  "externalSignals": "外部信号"
 }

@@ -9,7 +9,8 @@
     "search": "Web search providers and API keys",
     "integrations": "Connect external messaging platforms",
     "network": "Access scope, proxy and egress routing",
-    "account": "Your account, organization and license"
+    "account": "Your account, organization and license",
+    "external-sources": "Who may reach your agents from outside, and what an outside signal may do"
   },
   "nav": {
     "appearance": "General",
@@ -1541,5 +1542,47 @@
     "subject": "Model catalog",
     "noModels": "This provider has no models",
     "retryHint": "Select the provider again later to retry"
+  },
+  "externalSignals": {
+    "title": "External signals",
+    "intro": "Decide whether this organization accepts input from outside — webhooks, RSS feeds, other systems — and what an accepted signal is allowed to do. The switch and the source list are one screen on purpose: a door nobody can see is not a managed door.",
+    "policy": {
+      "off": {
+        "label": "Off — refuse everything",
+        "detail": "Inbound requests are rejected at the door. Nothing is stored, and no agent is woken."
+      },
+      "observe": {
+        "label": "Observe — record only",
+        "detail": "Signals are accepted and recorded, but do not owe a turn: an agent sees them the next time it runs. Nothing reacts on its own."
+      },
+      "accept": {
+        "label": "Accept — signals owe a turn",
+        "detail": "An accepted signal owes the receiving agent a turn, so it can react right away. Most permissive state."
+      },
+      "current": "current"
+    },
+    "saving": "saving…",
+    "agentCaveat": "Agents may register sources for themselves (it is their own tool), but only an owner or admin can change this switch — an agent cannot open the organization’s door.",
+    "sourcesTitle": "Sources per agent",
+    "sourcesIntro": "Every inbound path an agent has registered, with the address it delivers to. Pause one source without touching the switch.",
+    "agentFilter": "Agent",
+    "agentFilterHint": "Pick an agent to see the inbound paths registered for it.",
+    "noTunnel": "No tunnel is configured, so the URLs below are local-only paths. Start remote access (Settings → Account → Remote access) before an outside system tries to deliver.",
+    "empty": "This agent has no external sources yet. It can create one itself in chat (webhook or RSS) and it will appear here.",
+    "state": {
+      "delivering": "delivering",
+      "paused": "paused",
+      "blocked_by_policy": "blocked by switch"
+    },
+    "toggleSource": "Pause or resume this source",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Could not copy — select the text manually.",
+    "secretSet": "Shared secret {{preview}}",
+    "secretMissing": "No shared secret — this source rejects input until it has one.",
+    "rotate": "Rotate secret",
+    "secretOnce": "New secret — copy it now, it is not shown again.",
+    "lastEvent": "Last event: {{at}}",
+    "noEventYet": "No event received yet."
   }
 }

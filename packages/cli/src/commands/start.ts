@@ -2379,11 +2379,21 @@ async function startServerCore(
       mailboxOf: (agentId) => {
         try { return agentManager.getAgent(agentId)?.getMailbox(); } catch { return undefined; }
       },
+      // C10-F：组织级入站策略的现读口（org-manager 只做决策，不自己持库）。
+      // 缺行 / 缺列 ⇒ 'off'：失败关闭，与列默认值一致。
+      ingressPolicy: (orgId) => {
+        const row = storage.orgRepo.findOrgById(orgId) as { externalIngress?: string } | undefined;
+        const policy = row?.externalIngress;
+        return policy === 'accept' || policy === 'observe' ? policy : 'off';
+      },
     });
     // 工具端口：归属裁决在 service（org-manager 唯一写者），core 工具面只翻译表面语义。
     agentManager.setExternalSourcePort({
       register: (input) => externalSourceService.registerSource(input),
-      list: (input) => externalSourceService.listSources(input.orgId, input.agentId),
+      list: (input) => ({
+        policy: externalSourceService.policyOf(input.orgId),
+        sources: externalSourceService.listSources(input.orgId, input.agentId),
+      }),
       toggle: (input) => externalSourceService.setSourceEnabled(input),
     });
     apiServer.setExternalSourceService(externalSourceService);

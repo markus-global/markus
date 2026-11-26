@@ -22,6 +22,7 @@ import {
   mayExternalSignalDemandAction,
   isBounceSignalStatus,
   parseAddress,
+  type ExternalIngressPolicy,
   type MailboxIntent,
 } from '@markus/shared';
 import { rssAdapter, webhookAdapter, type ExternalEvent } from '@markus/comms';
@@ -32,6 +33,7 @@ export type IngestOutcome =
   | { status: 'ingested'; itemId: string; workUnitRef: string }
   | { status: 'bounced'; itemId: string | null; dropReason: string }
   | { status: 'disabled' }
+  | { status: 'refused'; reason: 'org_ingress_off'; policy: ExternalIngressPolicy }
   | { status: 'unknown_source' };
 
 export interface ExternalSourceServiceDeps {
@@ -43,6 +45,11 @@ export interface ExternalSourceServiceDeps {
   mailboxOf(agentId: string): AgentMailbox | undefined;
   /** RSS 抓取注入点（测试给夹具；生产走全局 fetch —— cli 已装 egress 代理）。 */
   fetchText?(url: string): Promise<string>;
+  /**
+   * C10-F：组织级入站策略读口（唯一读者 = ingest 下方）。现读 DB —— 与源开关
+   * 同纪律：第二写者直接改列也立刻生效，重启后保持。缺省 'off'（失败关闭）。
+   */
+  ingressPolicy?(orgId: string): ExternalIngressPolicy;
   now?(): Date;
 }
 
@@ -126,6 +133,12 @@ export class ExternalSourceService {
     if (!source) return { status: 'unknown_source' };
     if (!source.enabled) return { status: 'disabled' };
 
+    // C10-F：组织级入站策略 —— **唯一读者就在这里**。三条外部入口（公开 webhook /
+    // RSS 轮询 / 运营投递）全部经过本方法，所以没有任何适配器能持有一份自己的副本。
+    // 现读 DB（不缓存 = 无第二写者）；未接线 ⇒ 'off'（失败关闭，不是「等于放行」）。
+    const policy: ExternalIngressPolicy = this.deps.ingressPolicy?.(source.orgId) ?? 'off';
+    if (policy === 'off') return { status: 'refused', reason: 'org_ingress_off', policy };
+
     // 目标地址：运营路径可覆写，否则就是源自己的地址。下游只有**一条**路由规则
     // （跟目标地址的绑定走），不因为多了一个入口而多一个路由写者。
     const destAddress = opts?.targetAddress ?? source.address;
@@ -151,7 +164,12 @@ export class ExternalSourceService {
     const intent: MailboxIntent =
       requested === 'trigger_execution' && mayExternalSignalDemandAction(fromVerified)
         ? 'trigger_execution'
-        : 'action_required';
+        : policy === 'accept'
+          ? 'action_required'
+          : // 'observe'：收下、留痕，但**不欠回合**（deliver 不唤醒 agent）。
+            // 这仍是平台的判决，不是发送者的权威 —— 只是判决依据从「通道」变成了
+            // 「组织策略」。
+            'deliver';
 
     // 路由跟绑定走；无绑定 → 源主 mailbox 收解析器的 no_active_target 退信回声。
     const binding = this.deps.findActive(destAddress);
@@ -304,10 +322,74 @@ export class ExternalSourceService {
   }
 
   /** 只列自己的源（orgId + agentId 双限定，唯一写者读口）。 */
-  listSources(orgId: string, agentId: string): Array<{ id: string; kind: string; address: string; enabled: boolean }> {
-    return this.deps.sources.listByAgent(orgId, agentId).map(s => ({
-      id: s.id, kind: s.kind, address: s.address, enabled: s.enabled,
-    }));
+  listSources(
+    orgId: string,
+    agentId: string,
+  ): Array<{
+    id: string; kind: string; address: string; enabled: boolean;
+    /** 完整入站路径（相对）；RSS 源为 null。前端拼公网基址，不在服务层猜域名。 */
+    urlPath: string | null;
+    /** 共享密钥的状态与尾四位（永不返回完整密钥——它只在注册/轮换时一次性下发）。 */
+    hasSecret: boolean; secretPreview: string | null;
+    /** RSS 的抓取地址；webhook 源为 null。 */
+    feedUrl: string | null;
+    lastEventAt: string | null; lastError: string | null;
+  }> {
+    return this.deps.sources.listByAgent(orgId, agentId).map(s => {
+      const config = safeJson(s.config);
+      const token = typeof config['token'] === 'string' && (config['token'] as string).length > 0
+        ? (config['token'] as string)
+        : null;
+      return {
+        id: s.id,
+        kind: s.kind,
+        address: s.address,
+        enabled: s.enabled,
+        urlPath: s.kind === 'webhook' ? `/api/webhooks/${s.id}` : null,
+        hasSecret: token !== null,
+        secretPreview: token ? `••••${token.slice(-4)}` : null,
+        feedUrl: typeof config['feedUrl'] === 'string' ? (config['feedUrl'] as string) : null,
+        lastEventAt: s.lastEventAt,
+        lastError: s.lastError,
+      };
+    });
+  }
+
+  /** 组织级策略读口（前端与工具面读同一份；写入走 OrganizationService）。 */
+  policyOf(orgId: string): ExternalIngressPolicy {
+    return this.deps.ingressPolicy?.(orgId) ?? 'off';
+  }
+
+  /**
+   * C10-F：轮换 webhook 共享密钥（所有权裁决同上）。
+   *
+   * 为什么需要它：密钥是注册时一次性下发的，丢了今天只能删源重建 —— 而重建要求
+   * 地址仍 active 绑给自己，于是「丢了密钥」在无人认领的地址上是个死局。轮换把死局
+   * 变成一步操作，并且**不重跑注册闸门**（归属只裁一次，不因密钥变动再判一次）。
+   */
+  rotateSecret(input: {
+    orgId: string; agentId: string; sourceId: string;
+  }): { status: string; secret?: string; reason?: string; hint?: string } {
+    const source = this.deps.sources.get(input.sourceId);
+    if (!source || source.orgId !== input.orgId || source.agentId !== input.agentId) {
+      return {
+        status: 'forbidden', reason: 'not_your_source',
+        hint: 'You can only rotate the secret of your own sources (see external_source_list).',
+      };
+    }
+    if (source.kind !== 'webhook') {
+      return {
+        status: 'bounced', reason: 'not_a_webhook_source',
+        hint: 'Only webhook sources hold a shared secret; RSS sources poll a public feed URL.',
+      };
+    }
+    const next = { ...safeJson(source.config), token: mintWebhookSecret() };
+    this.deps.sources.setConfig(source.id, next);
+    return {
+      status: 'rotated',
+      secret: next['token'] as string,
+      hint: 'Store this secret now — it is shown once. The previous secret stopped working immediately.',
+    };
   }
 
   /**
@@ -357,6 +439,16 @@ export class ExternalSourceService {
     const event = webhookAdapter.translate(body);
     if (!event || Array.isArray(event)) return { http: 200, body: { status: 'bounced', dropReason: 'payload_invalid' } };
     const out = this.ingest(sourceId, event);
+    // 策略拒收是 403（不是 200 + 内部状态）：外部系统看到的是一个明确的「这次没被接受」。
+    if (out.status === 'refused') {
+      return {
+        http: 403,
+        body: {
+          status: 'refused', reason: out.reason,
+          hint: 'External ingress is off for this organization. Enable it in Settings → Connections → External signals (off / observe / accept).',
+        },
+      };
+    }
     return { http: 200, body: out as unknown as Record<string, unknown> };
   }
 
@@ -392,8 +484,8 @@ export class ExternalSourceService {
         newSeen.push(ev.messageId);
       } else if (out.status === 'bounced' && out.dropReason === 'duplicate_message_id') {
         newSeen.push(ev.messageId); // 已投过（mailbox 幂等裁决）—— 记入水位，不再重投
-      } else if (out.status === 'disabled' || out.status === 'unknown_source') {
-        break; // 源在轮询中途被关 / 被删：立刻停（现读 DB 的下一轮自然不再扫）
+      } else if (out.status === 'disabled' || out.status === 'unknown_source' || out.status === 'refused') {
+        break; // 源被关 / 被删 / 组织策略关闭：立即停（下一轮不再扫，也不空转）
       }
     }
     const merged = [...newSeen, ...(cursor.seenIds ?? [])].slice(0, RSS_SEEN_LIMIT);

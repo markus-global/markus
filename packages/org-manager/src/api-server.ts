@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus } from '@markus/shared';
+import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus, isExternalIngressPolicy } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -4665,7 +4665,12 @@ export class APIServer {
       if (req.method === 'GET') {
         const agentId = url.searchParams.get('agentId') ?? url.searchParams.get('agent_id') ?? '';
         if (!agentId) { this.json(res, 400, { error: 'agentId is required' }); return; }
-        this.json(res, 200, { sources: svc.listSources(authUser.orgId, agentId) });
+        // C10-F：策略与源列表同一次读返回 —— 界面必须能同时看到「总闸」和「它所管的源」，
+        // 否则会出现「看似开着、实际被总闸拦住」的误读。
+        this.json(res, 200, {
+          policy: svc.policyOf(authUser.orgId),
+          sources: svc.listSources(authUser.orgId, agentId),
+        });
         return;
       }
       if (req.method === 'POST') {
@@ -4706,8 +4711,22 @@ export class APIServer {
       return;
     }
 
-    // B（Owner 2026-11-25）：鉴权运营投递入口。成员门槛由上面的 /api/external-sources
-    // 前缀闸门覆盖；orgId 取会话身份，归属裁决仍只在 service（唯一写者）。
+    // C10-F：轮换 webhook 共享密钥。与 toggle 同门槛（每个成员管自己的源），归属裁决在 service。
+    // 密钥只在本次响应里出现一次；列表接口只回尾四位。
+    if (path.match(/^\/api\/external-sources\/[^/]+\/token$/) && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req, res);
+      if (!authUser) return;
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      const body = await this.readBody(req);
+      const agentId = typeof body['agentId'] === 'string' ? body['agentId'] : '';
+      if (!agentId) { this.json(res, 400, { error: 'agentId is required' }); return; }
+      const out = svc.rotateSecret({ orgId: authUser.orgId, agentId, sourceId: path.split('/')[3]! });
+      this.json(res, out.status === 'forbidden' ? 403 : out.status === 'rotated' ? 200 : 400, out);
+      return;
+    }
+
+    // B（Owner 2026-11-25）：鉴权运营投递入口。成员门槛由上面的 /api/external-sources    // 前缀闸门覆盖；orgId 取会话身份，归属裁决仍只在 service（唯一写者）。
     // 与公开 webhook 入口的区别：这里可以指定**目标地址**（无人认领的地址也有入站口），
     // 而公开入口结构上拿不到这个能力 —— 外部方不能重定向。
     if (path.match(/^\/api\/external-sources\/[^/]+\/deliver$/) && req.method === 'POST') {
@@ -6641,6 +6660,43 @@ export class APIServer {
         this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
       }
       return;
+    }
+
+    // C10-F: external_ingress — the org-level inbound switch. Read is a member
+    // action (everyone needs to know whether the door is open); write is
+    // owner/admin and human-only, mirrored structurally in
+    // OrganizationService.setExternalIngress (users-table actor + audit row).
+    const externalIngressMatch = path.match(/^\/api\/orgs\/([^/]+)\/external-ingress$/);
+    if (externalIngressMatch) {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const orgId = externalIngressMatch[1]!;
+      if (req.method === 'GET') {
+        const org = this.orgService.getOrganization(orgId);
+        if (!org) { this.json(res, 404, { error: 'organization not found' }); return; }
+        const policy = (org as { externalIngress?: string }).externalIngress ?? 'off';
+        this.json(res, 200, { policy });
+        return;
+      }
+      if (req.method === 'POST') {
+        if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+          this.json(res, 403, { error: 'external_ingress change requires owner or admin', code: 'FORBIDDEN' });
+          return;
+        }
+        const body = await this.readBody(req);
+        const policy = body['policy'];
+        if (!isExternalIngressPolicy(policy)) {
+          this.json(res, 400, { error: "policy must be 'off', 'observe' or 'accept'" });
+          return;
+        }
+        try {
+          const result = await this.orgService.setExternalIngress(orgId, policy, authUser.userId);
+          this.json(res, 200, { ok: true, ...result });
+        } catch (err) {
+          this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
     }
 
     // Team export — read all team directory files

@@ -126,6 +126,12 @@ CREATE TABLE IF NOT EXISTS organizations (
   -- 不驱动自主动作。升 auto 的唯一写者 = OrganizationService.setCrossOrgPolicy
   -- （一次人批 + 一条 audit 行）；本列不在创建时手写。
   cross_org_policy TEXT NOT NULL DEFAULT 'observe',
+  -- C10-F: the org-level external ingress policy. 'off' (default) refuses
+  -- inbound at the single ingest point, 'observe' records without owing a turn,
+  -- 'accept' owes a turn. Default is the safe state, because for an open-source
+  -- product the default IS the configuration most installs run. The single
+  -- writer is OrganizationService.setExternalIngress (human + audit row).
+  external_ingress TEXT NOT NULL DEFAULT 'off',
   -- C10-D：组织的全局身份（markus.global 侧 org id）。NULL = 从未连接过 hub，
   -- 此时 org_slug 只是本地占位事实。唯一写者 = SqliteOrgRepo.bindHubOrg，
   -- 由登录时的对齐调用（幂等：同一 hub org 重复登录不产生第二次写入）。
@@ -1007,6 +1013,11 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // ALTER time — compatible read, no data rewrite. Elevation to 'auto' goes
     // through OrganizationService (human approval + audit row), never raw SQL.
     { table: 'organizations', column: 'cross_org_policy', sql: "ALTER TABLE organizations ADD COLUMN cross_org_policy TEXT NOT NULL DEFAULT 'observe'" },
+    // C10-F: org-level external ingress. ADD COLUMN + DEFAULT backfills existing
+    // rows to 'off' at ALTER time — no data rewrite, and the safe state is the
+    // one an upgrading install lands on. Flipping it is a human action
+    // (OrganizationService.setExternalIngress), never raw SQL.
+    { table: 'organizations', column: 'external_ingress', sql: "ALTER TABLE organizations ADD COLUMN external_ingress TEXT NOT NULL DEFAULT 'off'" },
     // ①-2：决策行也要能回答「谁在哪个回合撤销了什么」。可空且不回填 ——
     // 加列之前的 22.7 万行属于旧纪元，NULL 是诚实的「不知道」，不是缺失。
     { table: 'agent_decisions', column: 'work_unit_ref', sql: 'ALTER TABLE agent_decisions ADD COLUMN work_unit_ref TEXT' },
@@ -1690,6 +1701,17 @@ export class SqliteOrgRepo {
       .run(policy, now(), orgId);
   }
 
+  /**
+   * C10-F: the single column writer for external_ingress. An instrument of
+   * OrganizationService.setExternalIngress — the only path that may call it,
+   * after a human approval and with an audit row. Not a public elevation path.
+   */
+  setExternalIngress(orgId: string, policy: 'off' | 'observe' | 'accept') {
+    this.db
+      .prepare('UPDATE organizations SET external_ingress = ?, updated_at = ? WHERE id = ?')
+      .run(policy, now(), orgId);
+  }
+
   private _mapOrg(r: Record<string, unknown>) {
     return {
       id: r['id'] as string,
@@ -1699,6 +1721,7 @@ export class SqliteOrgRepo {
       managerAgentId: r['manager_agent_id'] as string | null,
       orgSlug: (r['org_slug'] as string | null) ?? null,
       crossOrgPolicy: (r['cross_org_policy'] as string | null) ?? 'observe',
+      externalIngress: (r['external_ingress'] as string | null) ?? 'off',
       hubOrgId: (r['hub_org_id'] as string | null) ?? null,
       hubSyncedAt: (r['hub_synced_at'] as string | null) ?? null,
       settings: fromJson(r['settings'] as string),
@@ -6957,6 +6980,19 @@ export class SqliteExternalSourceRepo {
 
   recordError(id: string, error: string | null): void {
     this.db.prepare('UPDATE external_sources SET last_error = ?, updated_at = ? WHERE id = ?').run(error, new Date().toISOString(), id);
+  }
+
+  /**
+   * C10-F: replace a source's config (currently only used to rotate the webhook
+   * shared secret). Kept as its own writer so the secret has exactly one write
+   * path — register() is create-only and must never be reused for rotation
+   * (that would re-run the address ownership gate with a different answer).
+   */
+  setConfig(id: string, config: Record<string, unknown>): boolean {
+    const result = this.db
+      .prepare('UPDATE external_sources SET config = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(config), new Date().toISOString(), id);
+    return result.changes > 0;
   }
 
   private mapRow(r: Record<string, unknown>): ExternalSourceRecord {

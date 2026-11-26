@@ -18,6 +18,14 @@ export interface ExternalSourceRegisterResult {
   source?: { id: string };
   reason?: string;
   hint?: string;
+  /**
+   * C10-F: the organization's inbound policy at registration time. An agent may
+   * register a source (Owner ruling A), but it may not open the organization's
+   * door — so the receipt must say what the door currently is, or the agent will
+   * believe it just wired up something that can never fire.
+   */
+  ingress?: string;
+  ingressNote?: string;
 }
 
 export interface ExternalSourceToggleResult {
@@ -32,6 +40,19 @@ export interface ExternalSourceListRecord {
   kind: string;
   address: string;
   enabled: boolean;
+  /** Relative inbound path for webhook sources (`/api/webhooks/<id>`); null for RSS. */
+  urlPath?: string | null;
+  hasSecret?: boolean;
+  secretPreview?: string | null;
+  feedUrl?: string | null;
+  lastEventAt?: string | null;
+  lastError?: string | null;
+}
+
+/** List receipt: the org policy travels with the sources it governs. */
+export interface ExternalSourceListResult {
+  policy: string;
+  sources: ExternalSourceListRecord[];
 }
 
 /** 外部源端口。缺省（未接线）⇒ 工具不注册（与 address-tools 同纪律）。 */
@@ -43,7 +64,7 @@ export interface ExternalSourcePort {
     address: string;
     config?: Record<string, unknown>;
   }): ExternalSourceRegisterResult;
-  list(input: { orgId: string; agentId: string }): ExternalSourceListRecord[];
+  list(input: { orgId: string; agentId: string }): ExternalSourceListResult;
   toggle(input: {
     orgId: string;
     agentId: string;
@@ -109,12 +130,14 @@ export function createExternalSourceTools(ctx: ExternalSourceToolContext): Agent
     {
       name: 'external_source_list',
       description:
-        'List YOUR external signal sources (id, kind, address, enabled). Use the id with ' +
-        'external_source_toggle to pause/resume a source (kill switch).',
+        'List YOUR external signal sources (id, kind, address, enabled, inbound path, last event, '
+        + 'last error) together with the organization ingress policy that governs them: '
+        + '"off" = inbound refused, "observe" = recorded but does not wake you, "accept" = owes a turn. '
+        + 'Use the id with external_source_toggle to pause/resume a source (kill switch). '
+        + 'If policy is not "accept", say so to the human — they change it in Settings, you cannot.',
       inputSchema: { type: 'object', properties: {} },
       async execute(): Promise<string> {
-        const sources = ctx.list({ orgId: ctx.orgId, agentId: ctx.agentId });
-        return JSON.stringify({ sources });
+        return JSON.stringify(ctx.list({ orgId: ctx.orgId, agentId: ctx.agentId }));
       },
     },
     {
