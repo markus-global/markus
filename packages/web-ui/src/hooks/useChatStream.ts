@@ -1006,6 +1006,8 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           const without = prev.filter(m => m.id !== optId);
           return [...without, {
             id: `err_${Date.now()}`, sender: 'agent', text: t('page.errorWithMessage', { message: String(e) }),
+            // 原文旁路留给「反馈这个问题」——美化后的话不能当证据。
+            errorRaw: String(e),
             time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
           }];
         });
@@ -1061,6 +1063,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           const base = authExpired ? prev.filter(m => m.id !== optId) : prev;
           return [...base, {
             id: `err_${Date.now()}`, sender: 'agent', text: friendly,
+            errorRaw: String(e),
             time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
           }];
         });
@@ -1658,7 +1661,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             const u = [...prev];
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx >= 0) {
-              u[idx] = { ...u[idx]!, text: errText, isError: true };
+              u[idx] = { ...u[idx]!, text: errText, isError: true, errorRaw: String(e) };
             }
             return u;
           }, streamSessionId);

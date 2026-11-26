@@ -1,11 +1,16 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation, Trans } from 'react-i18next';
 import { api, type TeamInfo, type TeamMemberInfo } from '../api.ts';
 
 // ─── UI Primitives ────────────────────────────────────────────────────────────
 
 export function Modal({ children, onClose, title, width = 'w-[440px]' }: { children: React.ReactNode; onClose: () => void; title: string; width?: string }) {
-  return (
+  // Portal 到 body：`fixed inset-0` 的定位基准是「最近的带 transform /
+  // will-change / backdrop-filter / contain 的祖先」，不是视口。任何一处
+  // 把弹窗挂进带 transform 的容器（虚拟滚动行、动画容器、右侧栏）都会
+  // 让全屏遮罩被裁在容器里。这是仓库里 ConfirmModal 的同一惯例。
+  const modal = (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div className={`bg-surface-secondary border border-border-default rounded-xl p-6 ${width} shadow-2xl max-h-[90vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
         <h3 className="text-base font-semibold mb-5">{title}</h3>
@@ -13,6 +18,7 @@ export function Modal({ children, onClose, title, width = 'w-[440px]' }: { child
       </div>
     </div>
   );
+  return typeof document !== 'undefined' ? createPortal(modal, document.body) : modal;
 }
 
 export function Field({ label, children }: { label: string; children: React.ReactNode }) {

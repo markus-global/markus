@@ -706,6 +706,7 @@
     "submitting": "提交中…",
     "titleRequired": "请填写标题",
     "rejectNotImage": "只支持 PNG / JPG / WebP / GIF",
+    "reportThisError": "反馈这个问题",
     "rejectTooLarge": "单张不能超过 {{size}}",
     "rejectTooMany": "最多 {{max}} 张截图",
     "loginForImages": "登录 Hub 后才能上传截图；未登录也可以提交文字反馈。",

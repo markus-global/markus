@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { hubApi } from '../api.ts';
 import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
@@ -13,7 +14,14 @@ import {
 
 interface Props {
   /** 联系方式默认值：登录邮箱（没有则为空）。 */
-  defaultContact: string;
+  defaultContact?: string;
+  /**
+   * 标题初值（挂载时读一次，之后用户可改）。不传 = 空白 —— 现有的
+   * UserAccountMenu 入口就是这种「从零开始写」的用法。
+   */
+  initialTitle?: string;
+  /** 正文初值（挂载时读一次，之后用户可改）。错误气泡的「反馈这个问题」靠它预填诊断信息。 */
+  initialBody?: string;
   onClose: () => void;
 }
 
@@ -36,13 +44,14 @@ function rejectMessage(t: (key: string, opts?: Record<string, unknown>) => strin
  * 再把 URL 数组交给 `hubApi.feedback.create()`——Hub 只存快照。
  * 未登录 Hub 时图片上传不可用（上传接口需要鉴权），只允许纯文字反馈。
  */
-export function FeedbackModal({ defaultContact, onClose }: Props) {
+export function FeedbackModal({ defaultContact, initialTitle, initialBody, onClose }: Props) {
   const { t } = useTranslation('common');
   useNativeBrowserOverlay(true);
 
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [contact, setContact] = useState(defaultContact);
+  // 初值只在挂载时取一次：之后用户编辑的内容不能被父组件的重渲染盖掉。
+  const [title, setTitle] = useState(initialTitle ?? '');
+  const [content, setContent] = useState(initialBody ?? '');
+  const [contact, setContact] = useState(defaultContact ?? '');
   const [shots, setShots] = useState<Shot[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState('');
@@ -128,8 +137,19 @@ export function FeedbackModal({ defaultContact, onClose }: Props) {
     }
   };
 
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[10000] p-4" onClick={() => { if (!busy) onClose(); }}>
+  // Portal 到 document.body，而不是就地渲染。
+  //
+  // `fixed inset-0` 的定位基准是「最近的带 transform / will-change /
+  // backdrop-filter / contain 的祖先」，不是视口。聊天面板就是这种容器，
+  // 就地渲染会把这个全屏遮罩限制在聊天框里（右侧栏打开时浮层挤在左边，
+  // 居中基准也跟着聊天栏走）。仓库里 ConfirmModal / DeliverableDetailModal
+  // 已是同一惯例，这里补齐。
+  const modal = (
+    <div
+      data-testid="feedback-modal"
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[10000] p-4"
+      onClick={() => { if (!busy) onClose(); }}
+    >
       <div
         className="bg-surface-secondary border border-border-default rounded-xl w-[540px] max-w-full max-h-[calc(100vh-2rem)] overflow-y-auto shadow-2xl"
         onClick={e => e.stopPropagation()}
@@ -267,4 +287,6 @@ export function FeedbackModal({ defaultContact, onClose }: Props) {
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined' ? createPortal(modal, document.body) : modal;
 }

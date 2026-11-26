@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { getHubToken, ensureHubAuth, hubApi, api } from '../api.ts';
 import type { DeliverableInfo } from '../api.ts';
@@ -345,7 +346,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
   const isLinkVisible = visibility === 'link';
   const publishedUrl = record?.url ?? item.shareUrl;
 
-  return (
+  const modal = (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
       <div
@@ -618,6 +619,10 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
       </div>
     </div>
   );
+
+  // Portal 到 body：这个弹窗从右侧栏（RightPanel）打开，`fixed` 的定位基准
+  // 会被任何带 transform 的祖先劫持，而不是视口。
+  return typeof document !== 'undefined' ? createPortal(modal, document.body) : modal;
 }
 
 export default DeliverableShareModal;

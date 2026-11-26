@@ -194,6 +194,7 @@ export function shouldBypassEgress(target: string | URL, policy: EgressPolicy = 
 export const EGRESS_PROBE_URL = 'https://api.ipify.org?format=json';
 
 interface UndiciLike {
+  /** Direct (un-proxied) dispatcher: the one we restore when the proxy is turned off. */
   Agent: new (opts?: Record<string, unknown>) => EgressDispatcher;
   ProxyAgent: new (opts: Record<string, unknown>) => EgressDispatcher;
   /** Optional: absent in older undici builds (and in test doubles). */
@@ -463,14 +464,17 @@ export async function installEgress(options: { force?: boolean } = {}): Promise<
     // A previously-installed global proxy dispatcher outlives a config change.
     // Without this reset, turning the proxy OFF would keep routing every request
     // (loopback included) through the old proxy until the process restarts — the
-    // settings switch would look applied while traffic still went out via proxy.
+    // settings switch would look applied while traffic still went out via proxy,
+    // so the upstream failure blames a proxy the user has already turned off and
+    // cannot find (v0.12.4 report: `Markus proxy error 400 … "Request path cannot
+    // be relayed"`, whose only reachable emitter is the user's own proxy).
     if (installed) {
       const undici = await loadUndici();
       if (undici) {
         try {
           undici.setGlobalDispatcher(new undici.Agent());
         } catch (err) {
-          installError = `failed to reset dispatcher: ${String(err)}`;
+          installError = `failed to restore the direct dispatcher: ${String(err)}`;
         }
       }
       installed = false;
