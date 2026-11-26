@@ -23,6 +23,7 @@ import dagre from '@dagrejs/dagre';
 import type { TaskInfo, AgentInfo, RequirementInfo } from '../api.ts';
 import { api } from '../api.ts';
 import { TERMINAL_REQUIREMENT_STATUSES, TERMINAL_STATUSES } from '../lib/taskStatus.ts';
+import { resolveDagNodeClick, visibleIdsInFocus, defaultGroupsFor, countArchivedTasks, collectAnchoredTaskIds, isArchivedTask, isRequirementNode, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   pending:     { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
@@ -43,9 +44,9 @@ const PRIORITY_INDICATOR: Record<string, string> = {
   low: 'bg-blue-500',
 };
 
-function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; selected?: boolean; direction?: 'TB' | 'LR'; isExpandedRoot?: boolean; onCollapse?: () => void } }) {
+function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; selected?: boolean; direction?: 'TB' | 'LR' } }) {
   const { t } = useTranslation(['work', 'common']);
-  const { task, agentName, selected, direction = 'TB', isExpandedRoot, onCollapse } = data;
+  const { task, agentName, selected, direction = 'TB' } = data;
   const colors = STATUS_COLORS[task.status] ?? STATUS_COLORS['pending']!;
   const isSched = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedLabel = isSched
@@ -82,15 +83,6 @@ function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; select
         </div>
       )}
       <Handle type="source" position={sourcePos} className="!bg-border-default !w-2 !h-2" />
-      {isExpandedRoot && onCollapse && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onCollapse(); }}
-          className="absolute top-1/2 -translate-y-1/2 -right-7 w-5 h-5 rounded-full bg-surface-secondary border border-border-default flex items-center justify-center text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay transition-colors shadow-sm"
-          title={t('work:dag.backToOverview')}
-        >
-          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
-        </button>
-      )}
     </div>
   );
 }
@@ -110,15 +102,13 @@ const REQ_GROUP_MAP: Record<string, string> = {
   rejected: 'done', cancelled: 'done', archived: 'done',
 };
 
-function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean; direction?: 'TB' | 'LR'; isExpandedRoot?: boolean; onCollapse?: () => void } }) {
+function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean; focused?: boolean; direction?: 'TB' | 'LR' } }) {
   const { t } = useTranslation(['work', 'common']);
-  const { req, selected, direction = 'TB', isExpandedRoot, onCollapse } = data;
+  const { req, selected, focused, direction = 'TB' } = data;
   const colors = REQ_STATUS_COLORS[req.status] ?? REQ_STATUS_COLORS['pending']!;
-  const targetPos = direction === 'LR' ? Position.Left : Position.Top;
   const sourcePos = direction === 'LR' ? Position.Right : Position.Bottom;
   return (
-    <div className={`relative rounded-lg border-2 border-dashed px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border} ${selected ? 'ring-2 ring-brand-500 shadow-brand-500/25' : ''}`}>
-      <Handle type="target" position={targetPos} className="!bg-border-default !w-2 !h-2" />
+    <div className={`relative rounded-lg border-2 ${focused ? 'border-solid' : 'border-dashed'} px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border} ${selected || focused ? 'ring-2 ring-brand-500 shadow-brand-500/25' : ''}`}>
       <div className="flex items-center gap-1.5 mb-1">
         <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">{t('work:dag.reqLabel')}</span>
         <span className={`text-[10px] font-medium uppercase tracking-wider ${colors.text}`}>
@@ -133,16 +123,14 @@ function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: bo
           {t('work:dag.taskCount', { count: req.taskIds.length })}
         </div>
       )}
-      <Handle type="source" position={sourcePos} className="!bg-border-default !w-2 !h-2" />
-      {isExpandedRoot && onCollapse && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onCollapse(); }}
-          className="absolute top-1/2 -translate-y-1/2 -right-7 w-5 h-5 rounded-full bg-surface-secondary border border-border-default flex items-center justify-center text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay transition-colors shadow-sm"
-          title={t('work:dag.backToOverview')}
-        >
-          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
-        </button>
-      )}
+      {/* The requirement -> task membership edge is the only edge that leaves a
+          requirement, so this source handle MUST exist: ReactFlow resolves an
+          edge through its endpoint handles and silently drops the edge when the
+          source node has none (that is exactly how these lines disappeared).
+          It is `isConnectable={false}` because a requirement is not a dependency
+          endpoint — dependencies live on tasks only — and a handle you can drag
+          but that never connects is a lie. */}
+      <Handle type="source" position={sourcePos} isConnectable={false} className="!bg-border-default !w-2 !h-2" />
     </div>
   );
 }
@@ -314,6 +302,8 @@ interface TaskDAGProps {
   onShowArchivedChange?: (show: boolean) => void;
   onTaskClick?: (task: TaskInfo) => void;
   onReqClick?: (req: RequirementInfo) => void;
+  /** 手机端：三级钻取（概览→聚焦→详情），卡片点击不退出聚焦。 */
+  mobile?: boolean;
   onCollapseDAG?: () => void;
   onDependencyChange?: () => void;
   selectedTaskId?: string | null;
@@ -323,8 +313,6 @@ interface TaskDAGProps {
   previewMode?: boolean;
 }
 
-const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
-
 const DAG_FILTER_GROUPS = [
   { id: 'todo',        statuses: new Set(['pending']),                                           color: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', text: 'text-blue-500' } },
   { id: 'in_progress', statuses: new Set(['in_progress', 'blocked']),                           color: { bg: 'bg-amber-500/10', border: 'border-amber-500/30', text: 'text-amber-600' } },
@@ -332,48 +320,24 @@ const DAG_FILTER_GROUPS = [
   { id: 'done',        statuses: new Set<string>(TERMINAL_STATUSES),     color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
 ] as const;
 
-const ALL_DAG_GROUP_IDS = new Set(DAG_FILTER_GROUPS.map(g => g.id));
-const DEFAULT_DAG_GROUP_FILTER = new Set(DAG_FILTER_GROUPS.filter(g => g.id !== 'done').map(g => g.id));
+const ALL_DAG_GROUP_IDS = DAG_FILTER_GROUPS.map(g => g.id);
 
-const isArchivedTask = (t: TaskInfo) => t.status === 'archived';
 
-function collectTransitiveDeps(nodeId: string, taskMap: Map<string, TaskInfo>, reqMap: Map<string, RequirementInfo>, allTasks: TaskInfo[]): Set<string> {
-  const visited = new Set<string>();
-  const stack = [nodeId];
-  while (stack.length > 0) {
-    const id = stack.pop()!;
-    if (visited.has(id)) continue;
-    visited.add(id);
-    if (id.startsWith('req-')) {
-      const req = reqMap.get(id.slice(4));
-      if (req) {
-        for (const tid of req.taskIds) stack.push(tid);
-      }
-    } else {
-      const task = taskMap.get(id);
-      if (task?.blockedBy) {
-        for (const dep of task.blockedBy) stack.push(dep);
-      }
-      if (task?.requirementId) {
-        stack.push(`req-${task.requirementId}`);
-      }
-    }
-  }
-  for (const task of allTasks) {
-    if (task.requirementId && visited.has(task.id)) {
-      visited.add(`req-${task.requirementId}`);
-    }
-  }
-  return visited;
-}
-
-export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
+export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, mobile = false, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
   const { t } = useTranslation(['work', 'common']);
   const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
-  const [groupFilter, setGroupFilter] = useState<Set<string>>(() => new Set(DEFAULT_DAG_GROUP_FILTER));
+  // 筛选项按**层**作用域：概览与聚焦回答的是不同问题，所以默认勾选不同，
+  // 且各自记住自己的勾选（进/出聚焦 = 切到另一层的视图，不是重置）。
+  // 规则本体在 lib/dagFocus.ts#defaultGroupsFor（纯函数、可测）。
+  const [overviewFilter, setOverviewFilter] = useState<Set<string>>(() => defaultGroupsFor('overview', ALL_DAG_GROUP_IDS));
+  const [focusFilter, setFocusFilter] = useState<Set<string>>(() => defaultGroupsFor('focus', ALL_DAG_GROUP_IDS));
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(defaultExpandedNodeId ?? null);
+  const isFocusLayer = expandedNodeId !== null;
+  const groupFilter = isFocusLayer ? focusFilter : overviewFilter;
+  const setGroupFilter = isFocusLayer ? setFocusFilter : setOverviewFilter;
+  const layerDefaultFilter = defaultGroupsFor(isFocusLayer ? 'focus' : 'overview', ALL_DAG_GROUP_IDS);
   const [localShowArchived, setLocalShowArchived] = useState(showArchivedProp ?? false);
   const showArchived = showArchivedProp ?? localShowArchived;
   const setShowArchived = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
@@ -389,8 +353,6 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   useEffect(() => {
     if (defaultExpandedNodeId) setExpandedNodeId(defaultExpandedNodeId);
   }, [defaultExpandedNodeId]);
-
-  const archivedCount = useMemo(() => tasks.filter(t => isArchivedTask(t)).length, [tasks]);
 
   const allowedStatuses = useMemo(() => {
     const s = new Set<string>();
@@ -417,12 +379,16 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   }, [tasks, requirements]);
 
   const toggleGroup = useCallback((groupId: string) => {
+    // `setGroupFilter` is layer-scoped (overview vs focus), so it MUST be a dep:
+    // with an empty dep array this closure kept the setter of the layer that was
+    // active at mount, and a chip click after entering/leaving the focus mutated
+    // the other layer's state — the chips would look stuck.
     setGroupFilter(prev => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId); else next.add(groupId);
       return next;
     });
-  }, []);
+  }, [setGroupFilter]);
 
   const showToast = useCallback((msg: string, type: 'success' | 'error' = 'success') => {
     setToast({ msg, type });
@@ -447,6 +413,23 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     return m;
   }, [requirements]);
 
+  const focusRequirementId = expandedNodeId && isRequirementNode(expandedNodeId)
+    ? expandedNodeId.slice(REQ_NODE_PREFIX.length)
+    : null;
+
+  // 「N 个已归档」按**当前层**取数：概览 = 整张图，聚焦 = 该需求自己的。
+  // 这里曾经是全局 tasks.filter(...)，于是聚焦时显示的是整块看板的归档数，
+  // 用户看到的数字与眼前那张图对不上。
+  const archivedCount = useMemo(
+    () => countArchivedTasks(
+      tasks,
+      focusRequirementId
+        ? { requirementId: focusRequirementId, requirementTaskIds: reqMap.get(focusRequirementId)?.taskIds ?? [] }
+        : null,
+    ),
+    [tasks, focusRequirementId, reqMap],
+  );
+
   const userHasInteracted = useRef(false);
 
   const collapseDAG = useCallback(() => {
@@ -465,7 +448,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     style: { stroke: status === 'blocked' ? '#ef4444' : edgeDefault, strokeWidth: 1.5, cursor: 'pointer' },
   }), [edgeDefault]);
 
-  const { initialNodes, initialEdges, topLevelIds } = useMemo(() => {
+  const { initialNodes, initialEdges } = useMemo(() => {
     const buildNodesAndEdges = (srcTasks: TaskInfo[], srcReqs: RequirementInfo[]) => {
       const nodeIdSet = new Set<string>();
       const nodes: Node[] = srcTasks.map(task => {
@@ -525,13 +508,9 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
 
     // Overview: filtered by status groups
     const filteredTasks = tasks.filter(t => allowedStatuses.has(t.status) && (showArchived || !isArchivedTask(t)));
-    const allowedGroupIds = new Set<string>();
-    for (const g of DAG_FILTER_GROUPS) {
-      if (groupFilter.has(g.id)) allowedGroupIds.add(g.id);
-    }
     const filteredReqs = requirements.filter(r => {
       const gid = REQ_GROUP_MAP[r.status];
-      return gid && allowedGroupIds.has(gid);
+      return gid && groupFilter.has(gid);
     });
 
     // Requirement-anchored tasks: for any VISIBLE requirement that is still in
@@ -540,31 +519,28 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     // requirement must NOT disappear just because the "done" group is
     // unchecked). This keeps the full dependency picture of an in-flight
     // requirement intact for a better visualization experience.
+    //
+    // Membership goes through lib/dagFocus.ts#collectAnchoredTaskIds, which unions
+    // `requirement.taskIds` with `task.requirementId`. Reading `taskIds` alone here
+    // was a second implementation of "which tasks belong to this requirement", and
+    // it disagreed with the focus layer whenever either side was incomplete.
     const anchorReqIds = new Set(
       filteredReqs.filter(r => !TERMINAL_REQUIREMENT_STATUSES.has(r.status)).map(r => r.id),
     );
-    const anchorTaskIds = new Set<string>();
-    for (const r of requirements) {
-      if (anchorReqIds.has(r.id)) {
-        for (const tid of r.taskIds) anchorTaskIds.add(tid);
-      }
-    }
+    const anchorTaskIds = collectAnchoredTaskIds(tasks, requirements, anchorReqIds);
     const anchoredTasks = tasks.filter(
       t => anchorTaskIds.has(t.id) && (showArchived || !isArchivedTask(t)),
     );
     const mergedTasks = [...new Map([...filteredTasks, ...anchoredTasks].map(t => [t.id, t])).values()];
 
     const { nodes: overviewNodes, edges: overviewEdges } = buildNodesAndEdges(mergedTasks, filteredReqs);
-    const dependedUpon = new Set<string>();
-    for (const e of overviewEdges) dependedUpon.add(e.target);
-    const topLevel = new Set(overviewNodes.filter(n => !dependedUpon.has(n.id)).map(n => n.id));
 
     // An explicit focus (e.g. "open this workflow run's requirement") outranks
     // the browsing filters. The focus node may be archived, and archived nodes
-    // are dropped by the status-group filter above — so checking `topLevel`
-    // (built from *filtered* data) made the intent lose to the filter, and the
-    // user landed on an unrelated overview. Look for the focus in the complete
-    // node set instead: filters decide what to browse, never what was asked for.
+    // are dropped by the status-group filter above — so resolving the focus
+    // against *filtered* data made the intent lose to the filter, and the user
+    // landed on an unrelated overview. Resolve it in the complete node set
+    // instead: filters decide what to browse, never what was asked for.
     const allData = (() => {
       if (!expandedNodeId) return null;
       const { nodes: allNodes, edges: allEdges } = buildNodesAndEdges(tasks, requirements);
@@ -574,41 +550,42 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     if (!expandedNodeId || !allData) {
       // Overview: show ALL filtered nodes (incl. pending / not-yet-approved tasks
       // that depend on others) with their dependency edges, so the graph is a
-      // real dependency graph instead of only top-level cards. Users can still
-      // click a top-level node to expand/focus its transitive subgraph, and use
-      // the status-group filter bar to reduce clutter.
+      // real dependency graph instead of only top-level cards. Clicking a
+      // *requirement* card lowers into that requirement (see lib/dagFocus.ts);
+      // clicking a task card only selects it. The status-group filter bar
+      // reduces clutter.
       const visibleNodes = overviewNodes;
       const { nodes: layouted, direction: layoutDir } = layoutNodes(visibleNodes, overviewEdges);
       const withDir: Node[] = layouted.map(n => ({ ...n, data: { ...n.data, direction: layoutDir } }));
-      return { initialNodes: withDir, initialEdges: overviewEdges, topLevelIds: topLevel };
+      return { initialNodes: withDir, initialEdges: overviewEdges };
     }
 
-    // Expanded: use ALL tasks/requirements regardless of status filter
+    // Focused: exactly the requirement the user lowered into, plus its own
+    // tasks — and those tasks obey the same status-group chips as the overview.
+    // One rule, no exceptions: cross-requirement dependencies no longer drag
+    // other requirements into a "focused" view, and the requirement anchoring
+    // that used to make "uncheck done" a silent no-op does not apply here.
     const { allNodes, allEdges } = allData;
-    const visible = collectTransitiveDeps(expandedNodeId, taskMap, reqMap, tasks);
+    const visible = visibleIdsInFocus({
+      focusedNodeId: expandedNodeId,
+      requirementTaskIds: reqMap.get(expandedNodeId.slice(REQ_NODE_PREFIX.length))?.taskIds ?? [],
+      tasks,
+      allowedStatuses,
+      showArchived,
+    });
     const visibleNodes = allNodes.filter(n => visible.has(n.id)).map(n =>
-      n.id === expandedNodeId ? { ...n, data: { ...n.data, isExpandedRoot: true, onCollapse: collapseDAG } } : n
+      n.id === expandedNodeId ? { ...n, data: { ...n.data, focused: true } } : n
     );
     const visibleEdges = allEdges.filter(e => visible.has(e.source) && visible.has(e.target));
 
     const { nodes: layouted, direction: layoutDir } = layoutNodes(visibleNodes, visibleEdges);
     const withDir: Node[] = layouted.map(n => ({ ...n, data: { ...n.data, direction: layoutDir } }));
-    return { initialNodes: withDir, initialEdges: visibleEdges, topLevelIds: topLevel };
-  }, [tasks, requirements, agentMap, taskMap, reqMap, makeEdge, allowedStatuses, groupFilter, showArchived, selectedTaskId, selectedReqId, expandedNodeId, collapseDAG]);
+    return { initialNodes: withDir, initialEdges: visibleEdges };
+  }, [tasks, requirements, agentMap, reqMap, makeEdge, allowedStatuses, groupFilter, showArchived, selectedTaskId, selectedReqId, expandedNodeId]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const rfRef = useRef<ReactFlowInstance | null>(null);
-  const prevFilterRef = useRef({ groupFilter, showArchived });
-
-  useEffect(() => {
-    const prev = prevFilterRef.current;
-    if (prev.groupFilter !== groupFilter || prev.showArchived !== showArchived) {
-      userHasInteracted.current = false;
-      setExpandedNodeId(null);
-      prevFilterRef.current = { groupFilter, showArchived };
-    }
-  }, [groupFilter, showArchived]);
 
   useEffect(() => {
     setNodes(initialNodes);
@@ -634,26 +611,70 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   }, []);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    if (!expandedNodeId && topLevelIds.has(node.id)) {
-      userHasInteracted.current = false;
-      setExpandedNodeId(node.id);
+    // One decision point, one rule: what the click MEANS depends on whether it
+    // hits the entity the panel already shows — not on which node is the focus
+    // root, and not on the graph's topology. See lib/dagFocus.ts.
+    const clickedTask = isRequirementNode(node.id) ? null : taskMap.get(node.id);
+    // A task can only lower the view into a requirement we actually hold; when
+    // the requirement is filtered out or not loaded there is no layer to enter,
+    // so the click degrades to "open the panel".
+    const taskRequirementId = clickedTask?.requirementId && reqMap.has(clickedTask.requirementId)
+      ? clickedTask.requirementId
+      : null;
+
+    const action = resolveDagNodeClick({
+      nodeId: node.id,
+      focusedNodeId: expandedNodeId,
+      selectedEntityId: selectedReqId ?? selectedTaskId ?? null,
+      requirementIdOfTask: taskRequirementId,
+      profile: mobile ? 'mobile' : 'desktop',
+    });
+
+    switch (action.type) {
+      case 'exitFocus':
+        // Leave the focus ONLY. The panel keeps showing whatever it was showing:
+        // "is the graph focused" and "is the inspector open" are independent
+        // states, so backing out of a layer must not make the user lose what they
+        // were just reading (and must not silently close an unrelated task).
+        collapseDAG();
+        return;
+      case 'focusRequirement': {
+        userHasInteracted.current = false;
+        setExpandedNodeId(action.requirementNodeId);
+        if (action.select === null) return;
+        if (action.select.kind === 'requirement') {
+          const req = reqMap.get(action.select.requirementId);
+          if (req) onReqClick?.(req);
+        } else {
+          const task = taskMap.get(action.select.taskId);
+          if (task) onTaskClick?.(task);
+        }
+        return;
+      }
+      case 'selectRequirement': {
+        const req = reqMap.get(action.requirementId);
+        if (req) onReqClick?.(req);
+        return;
+      }
+      case 'selectTask': {
+        const task = taskMap.get(action.taskId);
+        if (task) onTaskClick?.(task);
+        return;
+      }
     }
-    if (node.id.startsWith('req-')) {
-      const req = reqMap.get(node.id.slice(4));
-      if (req && onReqClick) onReqClick(req);
-    } else {
-      const task = taskMap.get(node.id);
-      if (task && onTaskClick) onTaskClick(task);
-    }
-  }, [taskMap, reqMap, onTaskClick, onReqClick, topLevelIds, expandedNodeId]);
+  }, [taskMap, reqMap, onTaskClick, onReqClick, expandedNodeId, selectedReqId, selectedTaskId, collapseDAG, mobile]);
 
   // Drag from source (blocker) → target (dependent): source blocks target
   const handleConnect = useCallback(async (connection: Connection) => {
     const { source, target } = connection;
     if (!source || !target || source === target) return;
 
+    // Only tasks are dependency endpoints. A requirement node keeps a
+    // non-connectable source handle purely so its membership edges render; guard
+    // here anyway so a future UI change cannot write `req-…` into `blockedBy`.
+    const sourceTask = taskMap.get(source);
     const targetTask = taskMap.get(target);
-    if (!targetTask) return;
+    if (!sourceTask || !targetTask) return;
 
     if (targetTask.blockedBy?.includes(source)) {
       showToast(t('work:dag.toast.dependencyExists'), 'error');
@@ -788,8 +809,8 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     );
   }
 
-  const isDefaultFilter = groupFilter.size === DEFAULT_DAG_GROUP_FILTER.size
-    && [...DEFAULT_DAG_GROUP_FILTER].every(id => groupFilter.has(id))
+  const isDefaultFilter = groupFilter.size === layerDefaultFilter.size
+    && [...layerDefaultFilter].every(id => groupFilter.has(id))
     && !showArchived;
 
   const sourceTask = pendingDelete ? taskMap.get(pendingDelete.source) : null;
@@ -840,6 +861,23 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
         />
       </ReactFlow>
 
+      {/* Mobile-only exit from the focus layer. On a phone the detail panel is a
+          full-screen layer, so "tap the selected card again" is not reachable and
+          cannot be the way out — the drill-down is 概览 → focus → detail, and this
+          button is the only way back up a level. */}
+      {mobile && expandedNodeId && (
+        <button
+          onClick={collapseDAG}
+          className="absolute top-3 left-3 z-30 flex items-center gap-2 rounded-xl border border-brand-400/60 bg-brand-600 px-3.5 py-2 shadow-xl shadow-brand-500/35 text-on-brand active:bg-brand-500"
+          title={t('work:dag.showAll')}
+        >
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 9V5a2 2 0 0 1 2-2h4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M21 15v4a2 2 0 0 1-2 2h-4" />
+          </svg>
+          <span className="text-[12px] font-semibold tracking-wide">{t('work:dag.showAll')}</span>
+        </button>
+      )}
+
       {/* Filter + hint bar */}
       <div className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-surface-secondary/90 border border-border-default rounded-lg backdrop-blur-sm z-10 flex flex-col items-center gap-1">
         <div className="flex items-center gap-1 flex-wrap justify-center">
@@ -859,18 +897,16 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
             </button>
           )}
           {!isDefaultFilter && (
-            <button onClick={() => { setGroupFilter(new Set(DEFAULT_DAG_GROUP_FILTER)); setShowArchived(false); }} className="text-[10px] text-fg-tertiary hover:text-fg-secondary px-1">{t('work:dag.reset')}</button>
+            <button onClick={() => { setGroupFilter(new Set(layerDefaultFilter)); setShowArchived(false); }} className="text-[10px] text-fg-tertiary hover:text-fg-secondary px-1">{t('work:dag.reset')}</button>
           )}
         </div>
         <div className="text-[10px] text-fg-tertiary select-none flex items-center gap-2">
-          {expandedNodeId ? (
-            <button onClick={collapseDAG} className="text-brand-500 hover:text-brand-400 transition-colors">
-              {t('work:dag.backToOverview')}
-            </button>
-          ) : (
-            <span>{t('work:dag.expandHint')}</span>
+          {!expandedNodeId && (
+            <>
+              <span>{t('work:dag.expandHint')}</span>
+              <span className="text-fg-tertiary/50">·</span>
+            </>
           )}
-          <span className="text-fg-tertiary/50">·</span>
           <span>{t('work:dag.dragHint')}</span>
         </div>
       </div>
