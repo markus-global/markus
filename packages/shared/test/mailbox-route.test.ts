@@ -260,3 +260,43 @@ describe('C8-A — three destinations, one decision point', () => {
     expect(resolveMailboxDestination(['task:t1'], [])).toBe('queue');
   });
 });
+
+/**
+ * M0 — 「欠不欠一个 LLM 回合」由结构 intent 决定，不由 sourceType 的常量决定。
+ *
+ * 根因（2026-11-25 实测）：`external_signal` 在注册表里是 record 类 + `invokesLLM:false`，
+ * 而 `routeMailboxItem` 只抄这个常量 ⇒ 外部信号永远不欠回合。活实例读数：收件 agent 在该时段
+ * `execution_stream_logs`=0、`agent_activities`=0（根本没有模型调用），只有 pick 决策
+ * 且 outcome=NULL，work_unit 停 idle，邮箱行 1ms 内 completed。
+ *
+ * 判据方向必须是**只上调、不下调**：`mailbox.enqueue` 把每条 item 的 intent 缺省成 `deliver`
+ * （mailbox.ts 的 `options?.intent ?? 'deliver'`），若让 `deliver` 反向关掉回合，
+ * human_chat / a2a_message 会全部失去回合 —— 那是把整个平台静音。
+ */
+describe('M0 · invokesLLM derives from structural intent (upgrade only)', () => {
+  it('external_signal + action_required ⇒ owes a turn', () => {
+    expect(routeMailboxItem(lite('external_signal', {}, undefined, { intent: 'action_required' })).invokesLLM).toBe(true);
+  });
+
+  it('external_signal + trigger_execution ⇒ owes a turn', () => {
+    expect(routeMailboxItem(lite('external_signal', {}, undefined, { intent: 'trigger_execution' })).invokesLLM).toBe(true);
+  });
+
+  it('external_signal + deliver ⇒ stays a record (echoes must not wake anyone)', () => {
+    expect(routeMailboxItem(lite('external_signal', {}, undefined, { intent: 'deliver' })).invokesLLM).toBe(false);
+  });
+
+  it('external_signal without an envelope ⇒ registry default (legacy rows unchanged)', () => {
+    expect(routeMailboxItem(lite('external_signal')).invokesLLM).toBe(false);
+  });
+
+  it('the upgrade is general, not an external_signal special case', () => {
+    expect(routeMailboxItem(lite('task_comment', {}, undefined, { intent: 'action_required' })).invokesLLM).toBe(true);
+  });
+
+  it('deliver never cancels a turn the type already owes (no platform-wide mute)', () => {
+    for (const t of ['human_chat', 'a2a_message', 'mention', 'review_request'] as MailboxItemType[]) {
+      expect(routeMailboxItem(lite(t, {}, undefined, { intent: 'deliver' })).invokesLLM).toBe(true);
+    }
+  });
+});

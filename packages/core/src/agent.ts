@@ -186,6 +186,21 @@ export interface TaskSubmissionState {
  */
 export const taskAsyncContext = new AsyncLocalStorage<TaskAsyncContext>();
 
+/**
+ * 邮箱回合自己的 WorkUnit 身份（一份执行一份）。
+ *
+ * 为什么必须存在（2026-11-26 实测）：`turnWorkUnitRef()` 原来只在**任务**回合走 ALS，
+ * 聊天 / A2A / 外部信号回合退回共享实例字段 `currentTurnWorkUnitRef`，而它唯一的写者是
+ * 邮箱焦点链 `onFocusChanged`。并发分身下后一个回合覆盖前一个，于是 A 回合写的观测行
+ * 被盖上 B 回合的 ref —— 实库可见两条不同 activity_id 在同一毫秒被盖同一个 ref。
+ * 观测四表的 `work_unit_ref` 都建了索引（idx_*_wu），它本该是归属键；盖错就是台账撒谎。
+ *
+ * 这与 2026-11-15 P0 死锁**同一根因换个记号**：那次只把任务路径搬进 ALS。
+ * 结构上正确的做法是让「回合身份」根本不存在共享可变载体 —— 所以实例字段被删除，
+ * 而不是再加一道守卫。
+ */
+const mailboxTurnContext = new AsyncLocalStorage<{ workUnitRef: string | null }>();
+
 interface ChatSubagentContext {
   subagentProgress: SubagentProgressCallback;
 }
@@ -756,7 +771,7 @@ export class Agent {
    */
   private workUnitPort?: DelegationWorkUnitPort;
   /** C7-B：当前回合的父 WU ref（由 `onFocusChanged` 从 item 上取；无 item = null）。 */
-  private currentTurnWorkUnitRef: string | null = null;
+
   /**
    * C8-B：本回合已报告到哪个插入序号（**回合状态**，与回合身份同生共死）。
    *
@@ -766,10 +781,16 @@ export class Agent {
    * 注入不是「多说一遍」——它让上下文随回合长度线性膨胀，而新增信息为零。
    *
    * 唯一写者就是下面 `injectTurnDelta()`（注入成功即推进到本次扫到的最大序号），
-   * 唯一重置点是 `onFocusChanged()`（回合开始 = 拿到焦点）。不引入第二个「待处理事实」
-   * 存储：它只是**读游标**，事实本身仍然只在邮箱队列里。
+   * 唯一重置点是 `processMailboxItemCore()` 开头（回合开始 = 本分身拿到这条 item）。
+   * 不引入第二个「待处理事实」存储：它只是**读游标**，事实本身仍然只在邮箱队列里。
+   *
+   * 载体是工作区（per-worker = per-turn），不是 Agent 实例字段：实例字段被 5 个并发
+   * worker 共用，A 回合推进 watermark 会让 B 回合**跳过**它还没读到的事实（同一根因
+   * 换个记号：共享可变载体承载回合状态）。重置点也不能留在 `onFocusChanged()` ——
+   * 焦点是共享的「当前注意力」，B 拿到焦点会把 A 正在用的游标重置掉。
    */
-  private turnDeltaCursor = 0;
+  private get turnDeltaCursor(): number { return this.workspace().turnDeltaCursor ?? 0; }
+  private set turnDeltaCursor(v: number) { this.workspace().turnDeltaCursor = v; }
 
   /** C7-B：设置委派 WU 端口（AgentManager 在装配时调用）。 */
   setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {    this.workUnitPort = port;
@@ -821,9 +842,12 @@ export class Agent {
    * 反查当前 WU」—— 后者在库里无法成立（只有历史，没有「当前」）。
    */
   turnWorkUnitRef(): string | null {
-    // ALS 优先：任务执行/评审回合各自持有自己的 WU 身份（并发安全）。
-    // 聊天 / A2A 回合没有 taskAsyncContext，退回邮箱焦点链写入的实例字段。
-    return taskAsyncContext.getStore()?.workUnitRef ?? this.currentTurnWorkUnitRef;
+    // 两条都是 ALS：任务执行/评审回合一份，邮箱回合（聊天 / A2A / 外部信号）一份。
+    // **没有共享实例字段兜底** —— 那正是并发分身互相盖 ref 的载体，已删除。
+    // 拿不到身份就是 null（诚实），不是「借用别人那条」。
+    return taskAsyncContext.getStore()?.workUnitRef
+      ?? mailboxTurnContext.getStore()?.workUnitRef
+      ?? null;
   }
 
   /**
@@ -2375,11 +2399,11 @@ export class Agent {
         });
       },
       onFocusChanged: (item: MailboxItem | undefined) => {
-        // C7-B：回合开始（获得焦点）= 设置本轮父 WU。子 WU 的 `parent_id` 只能来自
-        // 这里 —— 不在别的时刻猜「最近那条」。
-        this.currentTurnWorkUnitRef = item?.workUnitRef ?? null;
-        // C8-B：回合开始即 watermark —— 只在回合内到达的事实才算 delta。
-        this.turnDeltaCursor = this.mailbox.currentSeq();
+        // C7-B：回合身份**不在这里确立**。它由 processMailboxItemInternal 的 ALS
+        // 一份执行一份地携带（见 mailboxTurnContext）—— 焦点是共享的「当前注意力」，
+        // 并发分身下用它承载回合身份会让 A 回合的观测行盖上 B 回合的 ref。
+        // C8-B：watermark **不在这里重置** —— 焦点是共享的「当前注意力」，并发下
+        // B 拿到焦点会把 A 回合正在用的游标抹掉。重置点在 processMailboxItemCore 开头。
         this.eventBus.emit('agent:focus-changed', {
           agentId: this.id,
           focus: item ? {
@@ -2818,11 +2842,16 @@ export class Agent {
     // 并发模式下 concurrentWorkerLoop 已用 worker workspace 包裹 ALS store——
     // 这里绝不覆盖外层 store，否则分身会话状态互相污染、workerId 全部退化为 1。
     const existing = sessionWorkspaceStore.getStore();
-    if (existing) {
-      return this.processMailboxItemCore(item, batchItems, batchContext);
-    }
-    // 串行 / 无外层上下文：rootWorkspace 兜底
-    return sessionWorkspaceStore.run(this.rootWorkspace, () => this.processMailboxItemCore(item, batchItems, batchContext));
+    const runCore = () => existing
+      ? this.processMailboxItemCore(item, batchItems, batchContext)
+      // 串行 / 无外层上下文：rootWorkspace 兜底
+      : sessionWorkspaceStore.run(this.rootWorkspace, () => this.processMailboxItemCore(item, batchItems, batchContext));
+    // 回合身份与工作区挂在**同一个入口**：一份执行一份，并发分身不互相覆盖。
+    // 这是「这一回合跑在哪条 WU 上」的唯一确立点（焦点链不再写共享字段）。
+    //
+    // 只放身份：`mailboxItemId` / `humanFacing` / delta 游标都是**工作区**里的事实
+    // （见 SessionWorkspace），在这里再存一份就是第二个写者。
+    return mailboxTurnContext.run({ workUnitRef: item.workUnitRef ?? null }, runCore);
   }
 
   private async processMailboxItemCore(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
@@ -2830,6 +2859,9 @@ export class Agent {
     // 回合起点写入「这条回复是否直接给人看」——后面两处消费：工具面（human_chat 不提供
     // end_turn）与执行侧闸门（幻觉调用被拒）。
     this.humanFacing = item.sourceType === 'human_chat';
+    // C8-B：回合开始即 watermark —— 只有本回合内到达的事实才算 delta。
+    // 写在本分身自己的工作区上，别的分身重置不到它。
+    this.turnDeltaCursor = this.mailbox.currentSeq();
     // Chain context: this item's chain becomes the parent of anything we send
     // during this turn. Cleared in the finally block below so a later turn that
     // starts a fresh conversation does not inherit a stale chain.
@@ -3584,6 +3616,39 @@ export class Agent {
             cbOpts,
           );
           if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, cbOpts.sessionId ?? this.currentSessionId), item);
+          resolveResponse(reply);
+          return reply;
+        }
+
+        // ── 兜底回合：**欠回合的信号必须有身体**（唯一执行点）
+        //
+        // 修的实测根因（2026-11-25）：这个 switch 原先没有 default。没有专属 case 的类型
+        // 直接穿透、返回 `undefined` —— 不调模型、不决策、不写事实。而路由侧
+        // (`routeMailboxItem`) 已经判它 `invokesLLM:true`，于是「欠一个回合」与
+        // 「回合做什么」分裂成两处，只有前者被实现。`external_signal` 是活实例：
+        // 三次真实 webhook 探针都唤醒了 agent，每次回合都被判空回复、重试烧完、丢弃。
+        //
+        // 为什么一处 default 就够（而不是给每个类型补 case / 补守卫 / 把形状表改完备）：
+        // **回合形状由会话身份决定**（见 buildHandleOpts 里 `isLoopSession ⇒ 'loop'`），
+        // 不靠 sourceType。所以「没有专属路径的信号」= 「在 agent 自己那条 Loop 会话里
+        // 判断这条世界事实是否改变我要做的事」—— 那就是已有的 loop 回合，不需要新形状。
+        // 这一处同时给 external_signal 和**所有未来类型**身体：新增类型漏写 case 不再
+        // 可能静默空转，因为它会落到这里跑真回合。
+        default: {
+          // 不欠回合的（record-only）保持原行为：只记录，不打扰模型。
+          if (!needsTurnCompletion) return undefined;
+          const sigOpts = buildHandleOpts({
+            scenario: 'loop',
+            sessionId: targetSessionId(item, this.id, ts),
+          });
+          const sigContent = String(
+            item.payload.content ?? item.payload.summary ?? displayLabelOf(item, 2000),
+          );
+          let reply = await this.handleMessage(sigContent, undefined, undefined, sigOpts);
+          reply = this.acceptTurnReply(
+            await this.ensureTurnCompleted(reply, sigOpts.sessionId ?? this.currentSessionId),
+            item,
+          );
           resolveResponse(reply);
           return reply;
         }
@@ -10710,25 +10775,43 @@ export class Agent {
 
   /**
    * C10-C: derive the trust-ceiling INPUT for the autonomy predicate — not a
-   * second permissibility measure. Only unverified agent-origin queued mail
-   * feeds it: a2a envelopes default fromVerified=false platform-wide, and the
-   * same-org/cross-org + policy decision belongs to the port (org-manager).
-   * external/im/platform origins never feed it — external records are already
-   * demand-capped at ingest (C10-B signal ceiling: a different fact, a different
-   * owner), and IM human chat is conversational input, not cross-org traffic.
+   * second permissibility measure. Two kinds of unverified queued origin feed
+   * it: agent senders (a2a envelopes default fromVerified=false platform-wide;
+   * the same-org/cross-org + policy decision belongs to the port) and external
+   * senders (no agent row, no org — untrusted by construction).
+   *
+   * A (Owner 2026-11-25): external events now OWE a turn — the platform decides
+   * that, not the sender. So the sender's authority is enforced HERE, on
+   * self-initiation, instead of being erased from the intent at ingest. Erasing
+   * the turn was the wrong lever: it silenced the event instead of capping the
+   * sender. IM human chat still never feeds it (conversational input, not
+   * cross-org traffic); platform origins are our own writes.
    */
   private selfInitiationCeiling(): AgentAutonomy | undefined {
     const port = this.trustBoundaryPort;
     if (!port) return undefined;
     const senders = new Set<string>();
+    let unverifiedExternal = false;
     for (const item of this.mailbox.getQueuedItems()) {
       const env = item.envelope;
-      if (env && env.from.kind === 'agent' && env.fromVerified === false) {
-        senders.add(env.from.agentId);
-      }
+      if (!env || env.fromVerified !== false) continue;
+      // Only input that actually OWES a turn may cap self-initiation. Otherwise the
+      // ceiling deadlocks: a record-class item (invokesLLM=false) never triggers a
+      // turn, so it sits queued forever, capping the very patrol that would have
+      // drained it. Measured 2026-11-25 on the live instance: 27 queued external
+      // signals persisted with intent='deliver' under the pre-A build — capping on
+      // them would have frozen that agent's patrol permanently.
+      //
+      // This reuses the SINGLE routing decision (routeMailboxItem), not a second
+      // measure of "is this demanding". It also matches the ceiling's purpose: stop
+      // unverified input from DRIVING autonomous turns. Input that drives no turn
+      // needs no cap.
+      if (!routeMailboxItem(item).invokesLLM) continue;
+      if (env.from.kind === 'agent') senders.add(env.from.agentId);
+      else if (env.from.kind === 'external') unverifiedExternal = true;
     }
-    if (senders.size === 0) return undefined;
-    return port.selfInitiationCeiling([...senders]);
+    if (senders.size === 0 && !unverifiedExternal) return undefined;
+    return port.selfInitiationCeiling([...senders], unverifiedExternal);
   }
 
   private async handleHeartbeat(ctx: {

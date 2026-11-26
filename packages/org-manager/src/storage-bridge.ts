@@ -32,6 +32,21 @@ export interface StorageBridge {
   migrationStatus(): unknown;
   /** 把迁移释放的页真正还给文件系统（VACUUM；不满足条件时是 no-op）。 */
   reclaimSpace(): { reclaimed: boolean; freeBytes: number; reason?: string; durationMs?: number };
+  /**
+   * 清理终态邮件项（M5）。
+   *
+   * 为什么必须由桥接层暴露：`pruneTerminalMailboxItems` 早已实现并被单测覆盖，
+   * 但**没有任何生产调用者** —— 真库实测 243,692 行中 243,531 行是终态（99.93%）、
+   * 文件 12.3 GB。一个只在测试里被调用的清理函数等于不存在。
+   */
+  pruneMailbox(opts?: { olderThanDays?: number; dryRun?: boolean }): {
+    dryRun: boolean;
+    candidates: number;
+    deleted: number;
+    bytes: number;
+    vacuumed: boolean;
+    error?: string;
+  };
   orgRepo: any;
   taskRepo: any;
   taskLogRepo: any;
@@ -236,6 +251,21 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
         return migrationRunner.run();
       },
       migrationStatus: () => migrationRunner.status(),
+      pruneMailbox: (opts) => {
+        try {
+          return storage.pruneTerminalMailboxItems(db, opts);
+        } catch (err) {
+          // 清理失败绝不能影响服务：退化成 no-op 并让调用方看到原因。
+          return {
+            dryRun: opts?.dryRun ?? true,
+            candidates: 0,
+            deleted: 0,
+            bytes: 0,
+            vacuumed: false,
+            error: String(err).slice(0, 200),
+          };
+        }
+      },
       reclaimSpace: () => storage.reclaimSpace(db, {
         freeDiskBytes: () => {
           try {

@@ -18,6 +18,22 @@ export interface MaintenanceStorage {
   quickCheck(): { ok: boolean; errors?: string[]; elapsedMs: number };
   runMigrations(): Promise<unknown>;
   reclaimSpace(): { reclaimed: boolean; freeBytes: number; durationMs?: number; reason?: string };
+  /**
+   * 清理终态邮件项（M5）。
+   *
+   * 为什么声明为**可选**：这是桥接层新增的能力，而 `scheduleBackgroundMaintenance`
+   * 在多个测试夹具里被一个手工对象调用。把它设成必填会让那些夹具全部编译不过，
+   * 而它们测的是完整性与迁移，跟清理无关。缺省时排期跳过（并在日志里说一声），
+   * 而不是静默什么都不做。
+   */
+  pruneMailbox?(opts?: { olderThanDays?: number; dryRun?: boolean }): {
+    dryRun: boolean;
+    candidates: number;
+    deleted: number;
+    bytes: number;
+    vacuumed: boolean;
+    error?: string;
+  };
 }
 
 export interface MaintenanceLogger {
@@ -33,6 +49,12 @@ export interface MaintenanceOptions {
   integrityDelayMs?: number;
   /** 超过这个大小的库不跑**主进程内**的 quick_check（它是同步的，会冻住服务）。 */
   autoCheckMaxBytes?: number;
+  /** 终态邮件项的保留天数（默认 30）。 */
+  mailboxRetentionDays?: number;
+  /** 首次清理延迟（默认 120 s：让迁移先跑完，它会把旧行变短）。 */
+  pruneDelayMs?: number;
+  /** 两次清理之间的间隔（默认 24 h）。 */
+  pruneIntervalMs?: number;
   /** 测试用：跳过延迟，立即执行。 */
   immediate?: boolean;
 }
@@ -77,6 +99,8 @@ export function scheduleBackgroundMaintenance(
   scheduled = true;
 
   const timers: Array<ReturnType<typeof setTimeout>> = [];
+  /** 周期清理的自取消句柄（未启用清理时为 undefined）。 */
+  let cancelPrune: (() => void) | undefined;
   const arm = (fn: () => void, delay: number) => {
     const t = (opts.immediate ? setTimeout(fn, 0) : setTimeout(fn, delay)) as ReturnType<typeof setTimeout>;
     // 不阻止进程退出：这些是后台维护，不是「必须等它跑完」的工作。
@@ -143,8 +167,67 @@ export function scheduleBackgroundMaintenance(
     }
   }, delayM);
 
+  // ③ 终态邮件项清理。**周期性**职责 —— 一次性跑完等于没跑：库会一直长。
+  //
+  // 为什么放在这里而不是「按需 CLI 命令」：开源用户的默认路径是 `markus start`，
+  // 他们不会知道要跑哪个命令；默认值即实际配置（实测：清理函数早已存在、单测全绿、
+  // 真实库 243,531 行终态 / 12.3 GB，因为生产里没有任何调用者）。
+  if (typeof storage.pruneMailbox !== 'function') {
+    log.info('Mailbox pruning unavailable on this storage build — skipped');
+  } else {
+    const prune = storage.pruneMailbox.bind(storage);
+    const retention = opts.mailboxRetentionDays ?? 30;
+    const intervalMs = opts.pruneIntervalMs ?? 24 * 60 * 60_000;
+
+    const runPrune = () => {
+      try {
+        // 先 dry-run 拿候选量：日志里要能回答「清了多少 / 为什么是 0」，
+        // 否则运维只能看到一条没有任何数字的 "pruned"。
+        const plan = prune({ olderThanDays: retention, dryRun: true });
+        if (plan.error) {
+          log.warn('Mailbox prune dry-run failed', { error: plan.error });
+          return;
+        }
+        if (plan.candidates === 0) {
+          log.info('Mailbox prune: nothing to delete', { retentionDays: retention });
+          return;
+        }
+        const res = prune({ olderThanDays: retention, dryRun: false });
+        log.info('Mailbox prune finished', {
+          retentionDays: retention,
+          candidates: plan.candidates,
+          deleted: res.deleted,
+          freedMb: Math.round(res.bytes / 1048576),
+          incrementalVacuum: res.vacuumed,
+          ...(res.error ? { error: res.error } : {}),
+        });
+      } catch (err) {
+        log.warn('Mailbox prune could not run', { error: String(err) });
+      }
+    };
+
+    arm(runPrune, opts.pruneDelayMs ?? 120_000);
+
+    // 周期执行：每次重新 arm 自己，而不是 setInterval —— 这样「上一轮还没跑完」
+    // 不会叠出两个清理者（同一张表的第二个写者）。
+    let cancelled = false;
+    const scheduleNext = () => {
+      if (cancelled) return;
+      const t = setTimeout(() => {
+        runPrune();
+        scheduleNext();
+      }, intervalMs);
+      const unref = (t as unknown as { unref?: () => void }).unref;
+      if (typeof unref === 'function') unref.call(t);
+      timers.push(t);
+    };
+    scheduleNext();
+    cancelPrune = () => { cancelled = true; };
+  }
+
   return {
     cancel() {
+      cancelPrune?.();
       for (const t of timers) clearTimeout(t);
     },
   };

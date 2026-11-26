@@ -17,11 +17,13 @@ import { tmpdir } from 'node:os';
  *           bare `return` — an observe agent that stops reporting looks dead in the UI.
  *   §2.0 — every a2a item carries `fromVerified=false` today (mailbox default) and for
  *           `from.kind==='agent'` identity is the platform-built id. So the ceiling is
- *           only asked when queued agent-sender items exist; platform / external
- *           senders are signal-capped elsewhere (B) and must NOT feed the agent axis.
+ *           only asked when unverified agent OR external senders are queued;
+ *           platform origins are our own writes and must NOT feed the agent axis.
+ *           A (Owner 2026-11-25): external events now owe a turn, so the sender's
+ *           authority is capped HERE (T6b/T6c) instead of erased from the intent.
  *   §2.3 — one port, one consumer: `Agent.setTrustBoundaryPort(port)` where
- *           `port.selfInitiationCeiling(senderAgentIds)` receives the INPUT (queued
- *           from.kind==='agent' && fromVerified===false sender ids) and decides.
+ *           `port.selfInitiationCeiling(senderAgentIds, unverifiedExternal)` receives
+ *           the INPUT (queued unverified sender ids + the external flag) and decides.
  *           Port absent ⇒ undefined ceiling ⇒ documented fail-open.
  *   §4   — red first: written against the contract BEFORE the implementation exists.
  *           On base 00358c88: T1 is behaviorally RED (base patrols an observe agent),
@@ -57,7 +59,7 @@ type Autonomy = 'observe' | 'act';
 
 /** §2.3 contract — the port the agent asks for a ceiling; it never decides itself. */
 interface TrustBoundaryPort {
-  selfInitiationCeiling(senderAgentIds: string[]): Autonomy | undefined;
+  selfInitiationCeiling(senderAgentIds: string[], unverifiedExternal: boolean): Autonomy | undefined;
 }
 
 /** §2.3 contract — the setter that will be added to Agent. */
@@ -172,13 +174,18 @@ function enqueueQueuedItem(
   agent: Agent,
   sourceType: 'a2a_message' | 'external_signal' | 'system_event',
   payload: { summary: string; content: string },
-  origin?: { from: ReturnType<typeof agentAddressRef> | { kind: 'external'; address: string } },
+  origin?: {
+    from: ReturnType<typeof agentAddressRef> | { kind: 'external'; address: string };
+    /** A 后真实 ingest 对外部信号恒给 action_required；夹具必须能表达这一点。 */
+    intent?: string;
+  },
 ) {
   return agent.enqueueToMailbox(
     sourceType,
     payload,
     {
       ...(origin ? { origin: { from: origin.from } } : {}),
+      ...(origin?.intent ? { intent: origin.intent } : {}),
       refOrigin: 'platform-internal',
     } as never,
   );
@@ -360,37 +367,36 @@ describe('C10-C §2.3 — the verified=false ceiling is an INPUT asked at the sa
     );
   });
 
-  it('T6: only platform/external senders queued → port NOT asked, patrol runs', async () => {
+  // A (Owner 2026-11-25): T6 used to assert "platform AND external senders never
+  // feed the ceiling". That bundled two different facts under one assertion, and
+  // A moves exactly one of them: external events now OWE a turn (the platform
+  // decides), so the sender's authority is capped HERE instead of at ingest.
+  // Split so each half bites on its own — a regression in either one turns red.
+  it('T6a: only platform-origin senders queued → port NOT asked, patrol runs', async () => {
     const router = makeMockRouter();
     const agent = createAgent(router, {
-      id: 'agt_c10c_t6_nonsender',
+      id: 'agt_c10c_t6a_platform',
       orgId: 'default',
       autonomy: 'act',
     });
 
-    // from.kind='platform' (explicit platformOriginRef) and from.kind='external'.
     enqueueQueuedItem(
       agent,
       'system_event',
       { summary: 'platform event', content: 'platform-originated signal in the queue' },
       { from: platformOriginRef() },
     );
-    enqueueQueuedItem(
-      agent,
-      'external_signal',
-      { summary: 'rss item', content: 'unverified external signal (B caps its demand, not patrol)' },
-      { from: { kind: 'external', address: 'stranger@example.com' } },
-    );
     const queuedFromKinds = agent.getMailbox().getQueuedItems()
       .map(i => i.envelope?.from?.kind);
     expect(queuedFromKinds.length).toBeGreaterThan(0);
     expect(
       queuedFromKinds,
-      'premise: no queued from.kind===\'agent\' sender exists in this case',
+      'premise: only our own platform writes are queued',
     ).not.toContain('agent');
+    expect(queuedFromKinds).not.toContain('external');
 
     const ceiling = vi.fn(
-      (_senderAgentIds: string[]): Autonomy | undefined => undefined,
+      (_senderAgentIds: string[], _unverifiedExternal: boolean): Autonomy | undefined => undefined,
     );
     installTrustPort(agent, { selfInitiationCeiling: ceiling });
 
@@ -398,11 +404,118 @@ describe('C10-C §2.3 — the verified=false ceiling is an INPUT asked at the sa
 
     await expectPatrolStarted(
       router,
-      'non-agent senders must not feed the agent ceiling — patrol must run (§2.0)',
+      'platform origins are our own writes — they must not feed the ceiling',
     );
     expect(
       ceiling.mock.calls.length,
-      'no queued from.kind===\'agent\' unverified sender ⇒ the port must not be asked (§2.3)',
+      'no unverified agent/external sender ⇒ the port must not be asked',
     ).toBe(0);
+  });
+
+  it('T6b: unverified EXTERNAL sender queued → port asked with unverifiedExternal=true, observe caps patrol', async () => {
+    const router = makeMockRouter();
+    const agent = createAgent(router, {
+      id: 'agt_c10c_t6b_external',
+      orgId: 'default',
+      autonomy: 'act',
+    });
+
+    const item = enqueueQueuedItem(
+      agent,
+      'external_signal',
+      { summary: 'rss item', content: 'unverified external signal — owes a turn, cannot drive patrol' },
+      // A 后真实 ingest 给的就是 action_required（欠回合）。夹具不给 intent 会退到
+      // deliver = record 类，那是不驱动回合的输入，本就不该封顶（见 T6d）。
+      { from: { kind: 'external', address: 'stranger@example.com' }, intent: 'action_required' },
+    );
+    expect(item.envelope?.from).toEqual({ kind: 'external', address: 'stranger@example.com' });
+    expect(item.envelope?.fromVerified).toBe(false);
+
+    // The port decides; the agent only derives the INPUT. An external address has
+    // no agent row, so it must arrive as the explicit flag, NOT smuggled into the
+    // id list (where a lookup would silently resolve it to nothing = no ceiling).
+    const ceiling = vi.fn(
+      (_senderAgentIds: string[], unverifiedExternal: boolean): Autonomy | undefined =>
+        unverifiedExternal ? 'observe' : undefined,
+    );
+    installTrustPort(agent, { selfInitiationCeiling: ceiling });
+
+    agent.triggerHeartbeat();
+    await sleep(NEGATIVE_WINDOW_MS);
+
+    expect(ceiling.mock.calls.length).toBeGreaterThan(0);
+    const [senderIds, externalFlag] = ceiling.mock.calls[0]!;
+    expect(externalFlag, 'unverified external origin must reach the port as its own fact').toBe(true);
+    expect(senderIds, 'an external address is not an agent id').toEqual([]);
+    expect(
+      router.chat.mock.calls.length,
+      'port said observe ⇒ self-initiated patrol must not run',
+    ).toBe(0);
+  });
+
+  it('T6d: record-class external signal (owes NO turn) must NOT cap patrol — else the queue deadlocks', async () => {
+    const router = makeMockRouter();
+    const agent = createAgent(router, {
+      id: 'agt_c10c_t6d_record',
+      orgId: 'default',
+      autonomy: 'act',
+    });
+
+    // 活实例取证（2026-11-25）：27 条 queued 外部信号持久化为 intent='deliver'。
+    // 它们不驱动回合，若仍封顶就形成死锁：巡逻被它们封住，而它们只能靠回合消费。
+    const item = enqueueQueuedItem(
+      agent,
+      'external_signal',
+      { summary: 'legacy record', content: 'pre-A external signal persisted as deliver' },
+      { from: { kind: 'external', address: 'stranger@example.com' }, intent: 'deliver' },
+    );
+    expect(item.envelope?.intent).toBe('deliver');
+    expect(item.envelope?.fromVerified).toBe(false);
+
+    const ceiling = vi.fn(
+      (_senderAgentIds: string[], unverifiedExternal: boolean): Autonomy | undefined =>
+        unverifiedExternal ? 'observe' : undefined,
+    );
+    installTrustPort(agent, { selfInitiationCeiling: ceiling });
+
+    agent.triggerHeartbeat();
+
+    await expectPatrolStarted(
+      router,
+      'input that drives no turn must not cap the patrol that would drain it (deadlock)',
+    );
+    expect(
+      ceiling.mock.calls.length,
+      'no turn-owing unverified input queued ⇒ the port must not be asked',
+    ).toBe(0);
+  });
+
+  it('T6c: unverified external sender but port lifts the ceiling → patrol runs (policy is the port\'s call)', async () => {
+    const router = makeMockRouter();
+    const agent = createAgent(router, {
+      id: 'agt_c10c_t6c_lifted',
+      orgId: 'default',
+      autonomy: 'act',
+    });
+
+    enqueueQueuedItem(
+      agent,
+      'external_signal',
+      { summary: 'rss item', content: 'unverified external signal, org policy auto' },
+      { from: { kind: 'external', address: 'stranger@example.com' }, intent: 'action_required' },
+    );
+
+    const ceiling = vi.fn(
+      (_senderAgentIds: string[], _unverifiedExternal: boolean): Autonomy | undefined => undefined,
+    );
+    installTrustPort(agent, { selfInitiationCeiling: ceiling });
+
+    agent.triggerHeartbeat();
+
+    await expectPatrolStarted(
+      router,
+      'the agent must not hard-code the external ceiling — the port owns the policy',
+    );
+    expect(ceiling.mock.calls[0]![1]).toBe(true);
   });
 });

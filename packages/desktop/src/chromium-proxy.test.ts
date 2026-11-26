@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toChromiumBypassRules } from './chromium-proxy.ts';
+import { toChromiumBypassRules } from './chromium-proxy.js';
 
 /**
  * These assertions exist because a mistranslated bypass rule does not crash

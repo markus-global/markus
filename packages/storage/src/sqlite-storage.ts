@@ -4944,7 +4944,22 @@ export class SqliteMailboxRepo {
             AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?)`
       )
       .run(nowIso, ownerId, leaseUntil, itemId, nowIso);
-    if (((res as { changes?: number }).changes ?? 0) === 1) return true;
+    if (((res as { changes?: number }).changes ?? 0) === 1) {
+      // 认领成功 = **这个回合开始了**，所以台账必须在同一个执行点说 running。
+      //
+      // 实测根因（2026-11-26 活探针 razor-verify-0006）：外部信号的回合真跑了 7 次模型
+      // 调用 + 7 组工具调用，而 `work_units` 那行仍是 `idle`、`claimed_by` 空 ——
+      // `work_status` 把正在输出的回合报成「没人在干活」。台账撒谎与回合空转是同一类
+      // 缺陷：事实被声明、执行点缺失。
+      //
+      // 为什么在这里而不是某个 sourceType 分支：本方法是「回合开始」的唯一写者
+      // （status/started_at/claimed_by/lease_until 同一条件写）。认领即开始，
+      // 所以这一处覆盖**所有**邮箱类型，不必给外部信号开特例。
+      // 口径与 chat 路径一致：`ensure` 对已存在的行什么都不做，撞上已收口的 idle 行
+      // 必须显式拉回，否则重试 / 同轮重入会让台账停在 idle。
+      this.markTurnRunning(itemId, ownerId);
+      return true;
+    }
 
     // 未胜出有两种可能，必须区分开：
     //  a) 行存在、但被有效租约持有或状态不允许 → 认领失败（唯一胜者语义，必须拒绝）；
@@ -4960,6 +4975,40 @@ export class SqliteMailboxRepo {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 回合开始 ⇒ 台账说 running。`claimItem` 胜出后的同一步，不对外暴露第二个入口。
+   *
+   * 复用 `SqliteWorkUnitRepo`（work_units 的唯一写者），绝不在这里另写 UPDATE ——
+   * 状态机校验、status_transitions 留痕、并发条件写都在那边，绕过去就是第二写者。
+   *
+   * 失败不吞掉真相也不丢消息：认领已经成功，回合必须继续跑；台账写不进去是**可行动的
+   * 结构化告警**（带 itemId / ref），不是静默降级。
+   */
+  private markTurnRunning(itemId: string, ownerId: string): void {
+    try {
+      const row = this.db
+        .prepare('SELECT work_unit_ref AS ref FROM mailbox_items WHERE id = ?')
+        .get(itemId) as { ref?: string | null } | undefined;
+      const ref = row?.ref;
+      // 只记录、不欠回合的信号没有 work unit —— 那是路径事实，不是缺陷。
+      if (!ref) return;
+      const units = new SqliteWorkUnitRepo(this.db);
+      const current = units.getByRef(ref);
+      if (!current) {
+        // ref 已写进行、台账却没有对应行：生产方漏了 ensure。补建而不是假装成功。
+        units.ensure({ ref, agentId: ownerId, status: 'running' } as never);
+        return;
+      }
+      if (current.status !== 'running') units.transition(ref, 'running');
+    } catch (err) {
+      log.warn('Turn claimed but work unit could not be marked running — ledger may under-report', {
+        itemId,
+        ownerId,
+        error: String(err),
+      });
+    }
   }
 
   /**
@@ -6646,6 +6695,27 @@ export class SqliteAddressBindingRepo {
       )
       .run(new Date().toISOString(), address, input.agentId);
     if (result.changes > 0) {
+      // M1：源不得比路由活得久。
+      //
+      // `registerSource` 已经要求「地址先绑给自己」，所以源不可能生来无路由 —— 撤销是唯一
+      // 能破坏这条不变量的操作，因此连带处置就写在这个唯一执行点，而不是在下游再为
+      // 「无路由的源」加一套识别/退信/决策机制。修完之后该状态结构上不可表达。
+      //
+      // 只动还启用着的行：已停用的源保留它自己的停用原因，不被这次撤销覆写。
+      // 原因写成可行动的提示（重新绑定 + 重新启用），不是一个不可解读的代码。
+      this.db
+        .prepare(
+          `UPDATE external_sources
+              SET enabled = 0,
+                  last_error = ?,
+                  updated_at = ?
+            WHERE address = ? AND enabled = 1`,
+        )
+        .run(
+          `address_revoked: ${address} was released; bind it again and re-enable this source to resume.`,
+          new Date().toISOString(),
+          address,
+        );
       this.transitions.record({
         entityType: 'address',
         entityId: address,

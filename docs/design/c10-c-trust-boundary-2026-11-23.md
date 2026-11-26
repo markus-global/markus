@@ -90,11 +90,25 @@ This doc is the construction design + test plan; it does not restate the card.
   meaningful for kind='external'; for kind='agent' identity IS the platform-built id.
   ⇒ A naive "any fromVerified=false caps patrol" rule would stop every agent with queued
   a2a mail — a live-traffic regression, not a trust boundary. REJECTED.
-- Settled division of labor (B, mail.ts:291-293): signal-level ceiling
-  (mayExternalSignalDemandAction, sole consumer = ingest) caps what an external signal
-  may DEMAND (intent→deliver, record-only). C's agent-level axis caps what the agent may
-  SELF-INITIATE. external_signal records are already demand-capped by B; capping patrol
-  on them again would break the L5 observe→propose flow. They do NOT feed C's ceiling.
+
+- SUPERSEDED (A, Owner ruling 2026-11-25) — the earlier B/C division of labor said
+  "external_signal is demand-capped at ingest (intent→deliver), so it does NOT feed
+  C's ceiling". That lever was wrong: erasing the intent silenced the EVENT instead
+  of capping the SENDER, so an external signal could never reach a decision turn at
+  all. A splits the two facts:
+    · owing a turn is the PLATFORM's call — every external event gets
+      intent=action_required at the single ingest point, and routeMailboxItem
+      upgrades invokesLLM from it (upgrade-only, M0);
+    · sender authority is capped at the AGENT level — an unverified external origin
+      now DOES feed selfInitiationCeiling. It has no agent row and no org, so it
+      reaches the port as its own structural flag (`unverifiedExternal`), never
+      smuggled into senderAgentIds where a lookup would resolve it to nothing and
+      silently grant it more trust than a known cross-org peer.
+  A verified sender may still escalate to trigger_execution; an unverified one may
+  not (identity-audit criterion 14 now bites exactly that, and no longer bites
+  action_required — same field, different meaning under A).
+  Lesson worth keeping: when a ceiling is enforced by deleting the input, the
+  ceiling and the silencing become indistinguishable. Cap the actor, not the event.
 - RULING (documented for CTO review — review is the adjudication point, as with B2):
   the verified=false→observe ceiling at the AGENT level applies to **cross-org agent
   mail**: queued item with envelope.from.kind='agent' AND fromVerified===false AND

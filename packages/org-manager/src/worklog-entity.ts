@@ -56,6 +56,47 @@ export function declaredConversationKey(extra: Record<string, unknown>): string 
   return '';
 }
 
+/**
+ * 外部信号（C10 webhook / RSS）的会话实体 = **信封声明的投递地址**。
+ *
+ * 为什么读 `envelope` 而不是让 ingest 再写一个 `payload.extra.channelKey`：
+ * 投递地址**已经**由唯一 ingest 点写进 `envelope.to`（结构事实，持久化在
+ * `mailbox_items.envelope` 列）。再写一份 channelKey 就是同一事实的第二个写者，
+ * 两处必然漂移。所以这里只**读声明**，入口一行不改。
+ *
+ * 只认 `to.kind === 'markus'`：那是平台自己的地址空间，跨消息稳定（一个地址 =
+ * 一条会话），而 `workUnitRef` 是**按消息**的幂等键，反解不出会话。
+ * 解不出返回空串 —— 不猜、不从 ref 形状反推。
+ */
+export function declaredExternalAddress(envelope: unknown): string {
+  let env: unknown = envelope;
+  if (typeof env === 'string') {
+    if (!env.trim()) return '';
+    try {
+      env = JSON.parse(env);
+    } catch {
+      return '';
+    }
+  }
+  if (!env || typeof env !== 'object') return '';
+  const to = (env as Record<string, unknown>)['to'];
+  if (!to || typeof to !== 'object') return '';
+  const t = to as Record<string, unknown>;
+  if (t['kind'] !== 'markus') return '';
+  const addr = t['address'];
+  return typeof addr === 'string' && addr.trim() ? addr : '';
+}
+
+/**
+ * 外部地址的人话标签（**仅显示**，实体 id 仍是完整地址，一个字符不改）。
+ * 取 @ 前的 local part：`sigprobe.jsyqrt@markus.global` → `外部地址 · sigprobe.jsyqrt`。
+ */
+export function externalAddressLabel(address: string): string | undefined {
+  const at = address.indexOf('@');
+  if (at <= 0) return undefined;
+  return `外部地址 · ${address.slice(0, at)}`;
+}
+
 const PLATFORM_NAMES: Record<string, string> = {
   feishu: '飞书',
   telegram: 'Telegram',
@@ -167,12 +208,19 @@ export function createWorklogEntityResolver(
       return put('channel', inner, undefined, '会话');
     }
 
-    // ⑥ IM / 外部人类会话：结构身份都没命中时，读入口**声明**的会话键。
-    //    external ref 是按消息的幂等键，反解不出会话；channelKey 才是跨消息稳定的
-    //    会话实体。读声明 → 一段飞书对话聚成一个 channel 桶，而不是「历史记录」。
+    // ⑥ IM / 外部会话：结构身份都没命中时，读入口**声明**的会话键。
+    //    external ref 是按消息的幂等键，反解不出会话；声明才是跨消息稳定的会话实体。
+    //    两种声明，同一个 ingest 点写的，按入口各写各的：
+    //      · IM 网关 → `payload.extra.channelKey`（飞书/Telegram…）
+    //      · C10 外部源 → `envelope.to.address`（webhook/RSS；投递地址即会话）
+    //    读声明 → 一段对话聚成一个 channel 桶，而不是全落「历史记录」。
     const channelKey = declaredConversationKey(extra);
     if (channelKey) {
       return put('channel', channelKey, imConversationLabel(channelKey), '会话');
+    }
+    const extAddress = declaredExternalAddress(item['envelope']);
+    if (extAddress) {
+      return put('channel', extAddress, externalAddressLabel(extAddress), '外部地址');
     }
 
     // ⑦ 解不出 → null，前端显示「未归属」，不猜、不塞进别的实体。

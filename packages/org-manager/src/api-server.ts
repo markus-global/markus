@@ -446,6 +446,26 @@ const EMPTY_REMOTE_STATUS = {
  */
 export const DEFAULT_BIND_HOST = '0.0.0.0';
 
+/**
+ * 请求体硬上限（字节）。
+ *
+ * 为什么需要：`readBody` 是**不可信请求体进入内存的唯一关口**，而它原先无上限 ——
+ * 一个未登录的外部调用者就能把整个进程的内存吃满（markus 现在要给大量开源用户
+ * 部署，默认值即实际配置，不能指望运维去加反向代理）。
+ *
+ * 两条值分开，是因为两类入口的“合理大小”差两个量级：
+ *  - 平台内 API：UI 一次性提交的 JSON（批量导入/设置）可能不小，给 10 MB；
+ *  - `/api/webhooks/*`：对外公开、无会话、共享密钥就是全部凭据。外部系统需要投递的
+ *    只是一个事件信封，64 KB 足够；再大就是攻击面（提示注入 + 烧 token）。
+ */
+export const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
+export const WEBHOOK_MAX_BODY_BYTES = 64 * 1024;
+
+/** 按路径选上限 —— 唯一分派点，路由里不要再写第二份判断。 */
+export function maxBodyBytesForPath(path: string): number {
+  return path.startsWith('/api/webhooks/') ? WEBHOOK_MAX_BODY_BYTES : DEFAULT_MAX_BODY_BYTES;
+}
+
 export class APIServer {
   /**
    * A2A 投递/回复的**唯一**执行点（docs/architecture/a2a-communication.md §11.1.1–§11.1.4）。
@@ -2321,9 +2341,13 @@ export class APIServer {
     // 'auto' (human-approved, audited) lifts the ceiling; same-org senders never
     // feed it. Storage absent ⇒ no ceiling (documented fail-open for embedded).
     manager.setTrustBoundaryPort({
-      selfInitiationCeiling: (receiverOrgId, senderAgentIds) => {
+      selfInitiationCeiling: (receiverOrgId, senderAgentIds, unverifiedExternal) => {
         const org = storage?.orgRepo.findOrgById(receiverOrgId);
         if ((org?.crossOrgPolicy ?? 'observe') === 'auto') return undefined;
+        // A: an external address has no agent row, so the lookup below can never
+        // see it. Decide it explicitly — unverified external input is at least as
+        // untrusted as a cross-org peer, never silently exempt.
+        if (unverifiedExternal) return 'observe';
         for (const senderId of senderAgentIds) {
           const sender = storage?.agentRepo.findById(senderId);
           if (sender && sender.orgId !== receiverOrgId) return 'observe';
@@ -2986,9 +3010,9 @@ export class APIServer {
    *
    * 旧写法是 `openChatTurnWorkUnit(agentId, senderId, item.id)`：入队后再异步查会话、
    * 算 round、再回写 `mailbox_items.work_unit_ref`。但 agent 可能在这一行入队后立刻
-   * 开始处理它 —— 那一刻 `item.workUnitRef` 还是 null，于是
-   * `agent.currentTurnWorkUnitRef` 为 null，本回合内的 `spawn_subagents` 拿不到父 ref，
-   * 子 WU 只能落 `delegation:root:…`（父链断）。
+   * 开始处理它 —— 那一刻 `item.workUnitRef` 还是 null，于是本回合的
+   * `agent.turnWorkUnitRef()` 为 null（身份由 `processMailboxItemInternal` 的 ALS 携带），
+   * 回合内的 `spawn_subagents` 拿不到父 ref，子 WU 只能落 `delegation:root:…`（父链断）。
    *
    * 现在改回正确的因果方向：**身份先于消息存在**，ref 作为入队参数一起落地。
    */
@@ -3726,6 +3750,8 @@ export class APIServer {
       } else {
         if (msg.startsWith('CONTENT_TYPE_ERROR:')) {
           this.json(res, 415, { error: 'Content-Type must be application/json' });
+        } else if (msg.startsWith('BODY_TOO_LARGE:')) {
+          this.json(res, 413, { error: 'Request body too large' });
         } else if (msg.startsWith('BODY_PARSE_ERROR:')) {
           this.json(res, 400, { error: 'Invalid request body' });
         } else {
@@ -3752,7 +3778,7 @@ export class APIServer {
       || (req.method === 'DELETE' && Number(req.headers['content-length'] ?? 0) > 0)) {
       const ct = String(req.headers['content-type'] ?? '').toLowerCase();
       if (!ct.includes('multipart/form-data')) {
-        await this.readBody(req);
+        await this.readBody(req, { maxBytes: maxBodyBytesForPath(path) });
       }
     }
 
@@ -4676,6 +4702,32 @@ export class APIServer {
         return;
       }
       const out = svc.setSourceEnabled({ orgId: authUser.orgId, agentId, sourceId: path.split('/')[3]!, enabled });
+      this.json(res, out.status === 'forbidden' ? 403 : 200, out);
+      return;
+    }
+
+    // B（Owner 2026-11-25）：鉴权运营投递入口。成员门槛由上面的 /api/external-sources
+    // 前缀闸门覆盖；orgId 取会话身份，归属裁决仍只在 service（唯一写者）。
+    // 与公开 webhook 入口的区别：这里可以指定**目标地址**（无人认领的地址也有入站口），
+    // 而公开入口结构上拿不到这个能力 —— 外部方不能重定向。
+    if (path.match(/^\/api\/external-sources\/[^/]+\/deliver$/) && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req, res);
+      if (!authUser) return;
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      const body = await this.readBody(req);
+      const agentId = typeof body['agentId'] === 'string' ? body['agentId'] : '';
+      const address = typeof body['address'] === 'string' ? body['address'] : '';
+      const payload = body['payload'];
+      // payload 必须显式给出：不从控制字段里「剩下的就当载荷」推断结构。
+      if (!agentId || !address || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        this.json(res, 400, { error: 'agentId (string), address (string) and payload (object) are required' });
+        return;
+      }
+      const out = svc.deliverAsOperator({
+        orgId: authUser.orgId, agentId, sourceId: path.split('/')[3]!, address, body: payload,
+      });
+      // status 字段是唯一判决；退信是合法结果（与 webhook 入口同口径：200 + status）。
       this.json(res, out.status === 'forbidden' ? 403 : 200, out);
       return;
     }
@@ -16109,7 +16161,11 @@ EXPLANATION_END`;
     res.end(payload);
   }
 
-  readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  readBody(
+    req: IncomingMessage,
+    opts: { maxBytes?: number } = {},
+  ): Promise<Record<string, unknown>> {
+    const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BODY_BYTES;
     // Return cached body if already pre-read at route level (BUG-003/005)
     const cached: unknown = (req as any).__parsedBody__;
     if (cached !== undefined) {
@@ -16132,8 +16188,27 @@ EXPLANATION_END`;
       }
 
       const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      // 超限后**继续排水但不缓冲**：既不把内存交给调用者，也不用 destroy 掐掉连接
+      // （掐连接会让 413 根本发不出去，调用方只看到 connection reset）。
+      let received = 0;
+      let tooLarge = false;
+      req.on('data', (chunk: Buffer) => {
+        received += chunk.length;
+        if (tooLarge) return;
+        if (received > maxBytes) {
+          tooLarge = true;
+          chunks.length = 0;
+          return;
+        }
+        chunks.push(chunk);
+      });
       req.on('end', () => {
+        if (tooLarge) {
+          const err = new Error(`BODY_TOO_LARGE: request body exceeds ${maxBytes} bytes`);
+          (req as any).__parsedBody__ = err;
+          reject(err);
+          return;
+        }
         try {
           const raw = Buffer.concat(chunks).toString();
           const parsed = JSON.parse(raw);

@@ -63,9 +63,32 @@ async function fire(event: Event): Promise<void> {
   });
 }
 
+/**
+ * 文件级确定性 localStorage。
+ *
+ * 为什么必须是文件级：hook 会拿 `markus:hub:credits` 缓存当初始值（「冷启动先显示
+ * 上次读数」）。只要某个用例成功跑完一次 plan，它就会把 `summary(0)` 写进缓存；
+ * 下一个用例再挂载就**读到上一个用例的余额** —— 「plan 失败时 credits 必须为 null」
+ * 于是变成依赖执行顺序与微任务时序的断言：本机绿、CI 红（CI 实测收到 summary(0)）。
+ *
+ * happy-dom 自带的 localStorage 不可信（连 removeItem 都没有），所以自建 stub；
+ * 每个用例前清空 —— 让「缓存为空」是**显式前提**，而不是运气。
+ */
+const cacheStore = new Map<string, string>();
+const storageStub: Storage = {
+  getItem: (k: string) => cacheStore.get(k) ?? null,
+  setItem: (k: string, v: string) => { cacheStore.set(k, String(v)); },
+  removeItem: (k: string) => { cacheStore.delete(k); },
+  clear: () => { cacheStore.clear(); },
+  key: (i: number) => [...cacheStore.keys()][i] ?? null,
+  get length() { return cacheStore.size; },
+};
+
 beforeEach(() => {
   vi.resetAllMocks();
   // 默认：未登录、无缓存、探测失败、无 planned 余额。
+  cacheStore.clear();
+  vi.stubGlobal('localStorage', storageStub);
   mockIsAuth.mockReturnValue(false);
   mockGetUser.mockReturnValue(null);
   mockValidate.mockResolvedValue(false);
@@ -74,6 +97,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -147,6 +171,25 @@ describe('useHubAccount — credits 取值', () => {
     expect(mockPlan).toHaveBeenCalledTimes(1);
     expect(result.current.credits).toBeNull();
     expect(mockResolveSummary).not.toHaveBeenCalled();
+  });
+
+  it('缓存属于同一账号时，plan 失败保留上次读数（既不造假 0，也不抹成 null）', async () => {
+    // 钉住 hook 的既有契约（useHubAccount.ts 的 catch 注释）：一次失败的刷新不该把
+    // 「仍然是最好的答案」抹掉。与上一条的区别**只在缓存**，两条一起把这条边界说清楚：
+    // 空缓存 → null（不渲染假 0）；有同账号缓存 → 保留（不用空白替换可信旧值）。
+    cacheStore.set('markus:hub:credits', JSON.stringify({
+      userId: 'A',
+      credits: { total: 42, used: 0, remaining: 42, pct: 0, personalLimit: false },
+    }));
+    mockIsAuth.mockReturnValue(true);
+    mockGetUser.mockReturnValue(user('A'));
+    mockValidate.mockResolvedValue(true);
+    mockPlan.mockRejectedValue(new Error('boom'));
+
+    const { result } = renderHook(() => useHubAccount(true));
+    await flush();
+
+    expect(result.current.credits?.remaining).toBe(42);
   });
 
   it('plan 成功时 credits 来自 resolveCreditSummary（唯一真源）', async () => {
@@ -300,27 +343,9 @@ describe('useHubAccount — 卸载清理', () => {
  * 只可能来自缓存 —— 若把初始值改回 null，这些用例必红。
  */
 describe('useHubAccount — 冷启动先显示上次读数', () => {
+  // 存储桩是**文件级**的（见上方 cacheStore）：这里不再自建第二份，
+  // 只负责把想要的上次读数种进去。
   const CACHE_KEY = 'markus:hub:credits';
-
-  // happy-dom 的 localStorage 不可信（连 removeItem 都没有），必须自建 stub。
-  const store = new Map<string, string>();
-  const stub: Storage = {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => { store.set(k, String(v)); },
-    removeItem: (k: string) => { store.delete(k); },
-    clear: () => { store.clear(); },
-    key: (i: number) => [...store.keys()][i] ?? null,
-    get length() { return store.size; },
-  };
-
-  beforeEach(() => {
-    store.clear();
-    vi.stubGlobal('localStorage', stub);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
 
   const seed = (userId: string, total: number) =>
     localStorage.setItem(CACHE_KEY, JSON.stringify({ userId, credits: summary(total) }));
