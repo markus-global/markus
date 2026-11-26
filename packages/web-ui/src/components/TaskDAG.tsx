@@ -23,7 +23,7 @@ import dagre from '@dagrejs/dagre';
 import type { TaskInfo, AgentInfo, RequirementInfo } from '../api.ts';
 import { api } from '../api.ts';
 import { TERMINAL_REQUIREMENT_STATUSES, TERMINAL_STATUSES } from '../lib/taskStatus.ts';
-import { resolveDagNodeClick, visibleIdsInFocus, defaultGroupsFor, isArchivedTask, isRequirementNode, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
+import { resolveDagNodeClick, visibleIdsInFocus, defaultGroupsFor, countArchivedTasks, isArchivedTask, isRequirementNode, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   pending:     { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
@@ -352,8 +352,6 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     if (defaultExpandedNodeId) setExpandedNodeId(defaultExpandedNodeId);
   }, [defaultExpandedNodeId]);
 
-  const archivedCount = useMemo(() => tasks.filter(t => isArchivedTask(t)).length, [tasks]);
-
   const allowedStatuses = useMemo(() => {
     const s = new Set<string>();
     for (const g of DAG_FILTER_GROUPS) {
@@ -412,6 +410,23 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     for (const r of requirements) m.set(r.id, r);
     return m;
   }, [requirements]);
+
+  const focusRequirementId = expandedNodeId && isRequirementNode(expandedNodeId)
+    ? expandedNodeId.slice(REQ_NODE_PREFIX.length)
+    : null;
+
+  // 「N 个已归档」按**当前层**取数：概览 = 整张图，聚焦 = 该需求自己的。
+  // 这里曾经是全局 tasks.filter(...)，于是聚焦时显示的是整块看板的归档数，
+  // 用户看到的数字与眼前那张图对不上。
+  const archivedCount = useMemo(
+    () => countArchivedTasks(
+      tasks,
+      focusRequirementId
+        ? { requirementId: focusRequirementId, requirementTaskIds: reqMap.get(focusRequirementId)?.taskIds ?? [] }
+        : null,
+    ),
+    [tasks, focusRequirementId, reqMap],
+  );
 
   const userHasInteracted = useRef(false);
 

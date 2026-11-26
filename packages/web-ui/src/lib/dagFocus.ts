@@ -148,14 +148,47 @@ export interface FocusVisibilityInput {
  * 任务归属取 `requirement.taskIds` 与 `task.requirementId` 的**并集**：归档 /
  * 分页场景下两者可能各缺一部分，取并集才不会漏任务。
  */
+export interface ArchivedCountScope {
+  requirementId: string;
+  requirementTaskIds: readonly string[];
+}
+
+/**
+ * 「哪些任务属于这个需求」——**唯一实现**。
+ *
+ * 取 `requirement.taskIds` 与 `task.requirementId` 的**并集**：归档 / 分页场景下
+ * 两者可能各缺一部分，取并集才不会漏任务。可见集与「N 个已归档」的计数都必须
+ * 走这一个谓词，否则两边会对不上（而用户一眼就能看出对不上）。
+ */
+export function tasksOfRequirement<T extends { id: string; requirementId?: string }>(
+  tasks: readonly T[],
+  requirementId: string,
+  requirementTaskIds: readonly string[],
+): T[] {
+  const memberIds = new Set(requirementTaskIds);
+  return tasks.filter(task => memberIds.has(task.id) || task.requirementId === requirementId);
+}
+
+/**
+ * 当前层里已归档的任务数：`scope` 为 `null` 时是整块图（概览），否则只数该需求自己的。
+ *
+ * 之前这里是全局 `tasks.filter(isArchivedTask).length`，于是在聚焦态显示的是
+ * **整块看板的归档数**——数字看着像本需求的，其实不是。
+ */
+export function countArchivedTasks(
+  tasks: readonly { id: string; requirementId?: string; status: string }[],
+  scope: ArchivedCountScope | null,
+): number {
+  const pool = scope ? tasksOfRequirement(tasks, scope.requirementId, scope.requirementTaskIds) : tasks;
+  return pool.filter(isArchivedTask).length;
+}
+
 export function visibleIdsInFocus(input: FocusVisibilityInput): Set<string> {
   const visible = new Set<string>([input.focusedNodeId]);
   if (!isRequirementNode(input.focusedNodeId)) return visible;
 
   const requirementId = input.focusedNodeId.slice(REQ_NODE_PREFIX.length);
-  const memberIds = new Set(input.requirementTaskIds);
-  for (const task of input.tasks) {
-    if (!memberIds.has(task.id) && task.requirementId !== requirementId) continue;
+  for (const task of tasksOfRequirement(input.tasks, requirementId, input.requirementTaskIds)) {
     if (!input.allowedStatuses.has(task.status)) continue;
     if (!input.showArchived && isArchivedTask(task)) continue;
     visible.add(task.id);

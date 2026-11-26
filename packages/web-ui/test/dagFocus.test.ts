@@ -5,6 +5,8 @@ import {
   reqNodeId,
   visibleIdsInFocus,
   defaultGroupsFor,
+  tasksOfRequirement,
+  countArchivedTasks,
 } from '../src/lib/dagFocus.ts';
 
 const ACTIVE = new Set(['pending', 'in_progress', 'blocked', 'review']);
@@ -134,6 +136,37 @@ describe('筛选项按层作用域：概览与聚焦各有默认值', () => {
     const a = defaultGroupsFor('focus', ALL);
     a.delete('done');
     expect(defaultGroupsFor('focus', ALL).has('done')).toBe(true);
+  });
+});
+
+describe('「N 个已归档」按当前层取数', () => {
+  const tasks = [
+    { id: 'tsk_a1', requirementId: 'rq_a', status: 'archived' },
+    { id: 'tsk_a2', requirementId: 'rq_a', status: 'in_progress' },
+    { id: 'tsk_a3', status: 'archived' }, // 不在 taskIds，靠 requirementId 归属
+    { id: 'tsk_b1', requirementId: 'rq_b', status: 'archived' },
+    { id: 'tsk_orphan', status: 'archived' },
+  ];
+
+  it('概览（scope=null）：数整张图的已归档任务', () => {
+    expect(countArchivedTasks(tasks, null)).toBe(4);
+  });
+
+  it('聚焦：只数该需求自己的已归档任务，不把别的需求/孤儿算进去', () => {
+    // 这是 Owner 报的那个 bug：之前全局数，给了 4。
+    expect(countArchivedTasks(tasks, { requirementId: 'rq_a', requirementTaskIds: ['tsk_a3'] })).toBe(2);
+  });
+
+  it('计数与可见集用同一个归属谓词（两边不会对不上）', () => {
+    const scope = { requirementId: 'rq_a', requirementTaskIds: ['tsk_a3'] };
+    const own = tasksOfRequirement(tasks, scope.requirementId, scope.requirementTaskIds).map(t => t.id);
+    expect(own).toEqual(['tsk_a1', 'tsk_a2', 'tsk_a3']);
+    expect(countArchivedTasks(tasks, scope)).toBe(own.filter(id => tasks.find(t => t.id === id)!.status === 'archived').length);
+  });
+
+  it('没有任何已归档任务时给 0（按钮因此不渲染）', () => {
+    const fresh = [{ id: 'tsk_x', requirementId: 'rq_a', status: 'pending' }];
+    expect(countArchivedTasks(fresh, { requirementId: 'rq_a', requirementTaskIds: [] })).toBe(0);
   });
 });
 
