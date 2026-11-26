@@ -23,7 +23,7 @@ import dagre from '@dagrejs/dagre';
 import type { TaskInfo, AgentInfo, RequirementInfo } from '../api.ts';
 import { api } from '../api.ts';
 import { TERMINAL_REQUIREMENT_STATUSES, TERMINAL_STATUSES } from '../lib/taskStatus.ts';
-import { resolveDagNodeClick, visibleIdsInFocus, defaultGroupsFor, countArchivedTasks, isArchivedTask, isRequirementNode, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
+import { resolveDagNodeClick, visibleIdsInFocus, defaultGroupsFor, countArchivedTasks, collectAnchoredTaskIds, isArchivedTask, isRequirementNode, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   pending:     { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
@@ -517,15 +517,15 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     // requirement must NOT disappear just because the "done" group is
     // unchecked). This keeps the full dependency picture of an in-flight
     // requirement intact for a better visualization experience.
+    //
+    // Membership goes through lib/dagFocus.ts#collectAnchoredTaskIds, which unions
+    // `requirement.taskIds` with `task.requirementId`. Reading `taskIds` alone here
+    // was a second implementation of "which tasks belong to this requirement", and
+    // it disagreed with the focus layer whenever either side was incomplete.
     const anchorReqIds = new Set(
       filteredReqs.filter(r => !TERMINAL_REQUIREMENT_STATUSES.has(r.status)).map(r => r.id),
     );
-    const anchorTaskIds = new Set<string>();
-    for (const r of requirements) {
-      if (anchorReqIds.has(r.id)) {
-        for (const tid of r.taskIds) anchorTaskIds.add(tid);
-      }
-    }
+    const anchorTaskIds = collectAnchoredTaskIds(tasks, requirements, anchorReqIds);
     const anchoredTasks = tasks.filter(
       t => anchorTaskIds.has(t.id) && (showArchived || !isArchivedTask(t)),
     );

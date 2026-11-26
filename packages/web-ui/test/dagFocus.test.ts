@@ -7,6 +7,7 @@ import {
   defaultGroupsFor,
   tasksOfRequirement,
   countArchivedTasks,
+  collectAnchoredTaskIds,
 } from '../src/lib/dagFocus.ts';
 
 const ACTIVE = new Set(['pending', 'in_progress', 'blocked', 'review']);
@@ -136,6 +137,40 @@ describe('筛选项按层作用域：概览与聚焦各有默认值', () => {
     const a = defaultGroupsFor('focus', ALL);
     a.delete('done');
     expect(defaultGroupsFor('focus', ALL).has('done')).toBe(true);
+  });
+});
+
+describe('概览锚定：可见的未结束需求，其全部任务都要出现', () => {
+  const reqs = [
+    { id: 'rq_a', taskIds: ['tsk_a1'] },
+    { id: 'rq_b', taskIds: ['tsk_b1'] },
+  ];
+  const tasks = [
+    { id: 'tsk_a1', requirementId: 'rq_a', status: 'completed' },
+    // 不在 rq_a.taskIds 里，但自己指明归属（归档跑批/分页时 taskIds 可能不全）
+    { id: 'tsk_a2', requirementId: 'rq_a', status: 'completed' },
+    { id: 'tsk_b1', requirementId: 'rq_b', status: 'pending' },
+    { id: 'tsk_orphan', status: 'pending' },
+  ];
+
+  it('锚定集走并集：只在 requirementId 上归属的任务也进（这就是收口的那条）', () => {
+    // 旧实现只用 req.taskIds → 这里只会得到 tsk_a1，A 收口前就是这个行为。
+    const ids = collectAnchoredTaskIds(tasks, reqs, new Set(['rq_a']));
+    expect([...ids].sort()).toEqual(['tsk_a1', 'tsk_a2']);
+  });
+
+  it('不可见需求的任务不进锚定集（它们该由状态分组决定）', () => {
+    const ids = collectAnchoredTaskIds(tasks, reqs, new Set(['rq_a']));
+    expect(ids.has('tsk_b1')).toBe(false);
+  });
+
+  it('孤儿任务永远不进锚定集（没有被锚定的归属）', () => {
+    const ids = collectAnchoredTaskIds(tasks, reqs, new Set(['rq_a', 'rq_b']));
+    expect(ids.has('tsk_orphan')).toBe(false);
+  });
+
+  it('没有任何可见需求时锚定集为空', () => {
+    expect(collectAnchoredTaskIds(tasks, reqs, new Set()).size).toBe(0);
   });
 });
 

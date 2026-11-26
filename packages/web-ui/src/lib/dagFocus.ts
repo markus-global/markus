@@ -170,6 +170,26 @@ export function tasksOfRequirement<T extends { id: string; requirementId?: strin
 }
 
 /**
+ * 概览层的「锚定任务」：可见且未结束的需求，其**全部任务**都要出现（不看任务自身的状态分组）。
+ *
+ * 归属必须走 `tasksOfRequirement`：只用 `requirement.taskIds` 会让“一个可见需求整体显示”
+ * 这句话在概览层与聚焦层得到**不同的任务集合**（归档跑批/需求列表分页时 `taskIds`
+ * 可能不全，而 `task.requirementId` 还在）。同一个概念只能有一个实现。
+ */
+export function collectAnchoredTaskIds(
+  tasks: readonly { id: string; requirementId?: string }[],
+  requirements: readonly { id: string; taskIds: readonly string[] }[],
+  anchoredRequirementIds: ReadonlySet<string>,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const requirement of requirements) {
+    if (!anchoredRequirementIds.has(requirement.id)) continue;
+    for (const task of tasksOfRequirement(tasks, requirement.id, requirement.taskIds)) ids.add(task.id);
+  }
+  return ids;
+}
+
+/**
  * 当前层里已归档的任务数：`scope` 为 `null` 时是整块图（概览），否则只数该需求自己的。
  *
  * 之前这里是全局 `tasks.filter(isArchivedTask).length`，于是在聚焦态显示的是
