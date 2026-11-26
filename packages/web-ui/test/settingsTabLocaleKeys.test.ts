@@ -23,7 +23,13 @@ import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SETTINGS_TABS, SETTINGS_TAB_GROUPS, SETTINGS_TAB_ICONS } from '../src/pages/Settings.tsx';
+import {
+  SETTINGS_TABS,
+  SETTINGS_TAB_GROUPS,
+  SETTINGS_TAB_ICONS,
+  normalizeSettingsTab,
+  visibleSettingsTabs,
+} from '../src/pages/Settings.tsx';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const localesDir = join(here, '..', 'src', 'locales');
@@ -89,5 +95,30 @@ describe('settings tabs are named in every locale', () => {
       return !path || path === SETTINGS_TAB_ICONS._default;
     }).map((tab) => tab.id);
     expect(iconless, 'tab fell back to the default dot').toEqual([]);
+  });
+});
+
+/**
+ * Owner 2026-11-26：外部信号暂不在正式发版开放 —— 只有 dev 构建（8057 开发实例）
+ * 在侧边栏露出它。判据必须同时咬住两条路，否则「隐藏」只关了一扇门：
+ * 侧边栏（rail）与深链（`#settings/external-sources`）是同一屏的两个入口。
+ */
+describe('dev-only settings tabs stay out of a production build', () => {
+  it('declares the external-signals tab as dev-only at its single declaration point', () => {
+    expect(SETTINGS_TABS.find((tab) => tab.id === 'external-sources')?.devOnly).toBe(true);
+  });
+
+  it('a production build exposes neither the rail item nor the deep link', () => {
+    const prod = visibleSettingsTabs({ dev: false, canManageOrg: true }).map((tab) => tab.id);
+    expect(prod).not.toContain('external-sources');
+    expect(normalizeSettingsTab('external-sources', false)).toBeNull();
+    // 别的 tab 不受影响：这道门只关这一个。
+    expect(prod).toContain('integrations');
+    expect(normalizeSettingsTab('integrations', false)).toBe('integrations');
+  });
+
+  it('a dev build keeps it reachable for the same admin', () => {
+    expect(visibleSettingsTabs({ dev: true, canManageOrg: true }).map((tab) => tab.id)).toContain('external-sources');
+    expect(normalizeSettingsTab('external-sources', true)).toBe('external-sources');
   });
 });

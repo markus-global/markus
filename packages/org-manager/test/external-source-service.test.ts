@@ -614,3 +614,20 @@ describe('C10 开源默认值：密钥必铸 / 入站 fail-closed / 内容必有
   });
 
 });
+
+// ─── C10-F：密钥的展示投影 ─────────────────────────────────────────────────
+describe('C10-F：轮换后的显示内容就地刷新（一个事实一个投影函数）', () => {
+  it('rotate 回执自带 secretPreview，并与 listSources 的投影逐字一致', () => {
+    bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
+    const srcId = service.registerSource({ orgId: ORG, agentId: OWNER, kind: 'webhook', address: ADDR }).source!.id;
+
+    const rot = service.rotateSecret({ orgId: ORG, agentId: OWNER, sourceId: srcId });
+
+    expect(rot.status).toBe('rotated');
+    // 已轮换的尾四位必须能从回执里拿到 —— 这就是界面「不及时刷新」的根因：
+    // 旧实现只回 secret，界面只能把 hasSecret 置 true、尾号停在旧值直到整页刷新。
+    expect(rot.secretPreview).toBe(`••••${rot.secret!.slice(-4)}`);
+    const listed = service.listSources(ORG, OWNER).find(s => s.id === srcId)!;
+    expect(listed.secretPreview).toBe(rot.secretPreview);
+  });
+});

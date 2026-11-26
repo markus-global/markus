@@ -1557,7 +1557,7 @@ export const api = {
         { method: 'POST', body: JSON.stringify({ agentId, enabled }) },
       ),
     rotateSecret: (agentId: string, sourceId: string) =>
-      request<{ status: string; secret?: string; hint?: string }>(
+      request<{ status: string; secret?: string; secretPreview?: string; hint?: string }>(
         `/external-sources/${encodeURIComponent(sourceId)}/token`,
         { method: 'POST', body: JSON.stringify({ agentId }) },
       ),

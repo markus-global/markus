@@ -80,6 +80,18 @@ const EXTERNAL_CONTENT_LIMIT = 32 * 1024;
  * 于是「不安全」是默认态、「安全」要靠用户记得配 —— 对开源产品的绝大多数用户，
  * 默认值就是实际配置。现在注册时必然产出密钥（不传就生成），入站时无密钥一律拒收。
  */
+
+/**
+ * 共享密钥的**唯一展示投影**（尾四位）。
+ *
+ * `listSources` 与 `rotateSecret` 都要印它。两处各算一次就会漂移 —— 实证：轮换后
+ * 界面仍显示**旧**密钥的尾号，直到整页刷新才变（rotate 的响应里没有 preview，前端
+ * 只能瞎猜或不更新）。一个事实一个投影函数，这里就是那一个。
+ */
+function secretPreviewOf(token: string | null): string | null {
+  return token ? `••••${token.slice(-4)}` : null;
+}
+
 function mintWebhookSecret(): string {
   return randomBytes(24).toString('hex');
 }
@@ -347,7 +359,7 @@ export class ExternalSourceService {
         enabled: s.enabled,
         urlPath: s.kind === 'webhook' ? `/api/webhooks/${s.id}` : null,
         hasSecret: token !== null,
-        secretPreview: token ? `••••${token.slice(-4)}` : null,
+        secretPreview: secretPreviewOf(token),
         feedUrl: typeof config['feedUrl'] === 'string' ? (config['feedUrl'] as string) : null,
         lastEventAt: s.lastEventAt,
         lastError: s.lastError,
@@ -369,7 +381,7 @@ export class ExternalSourceService {
    */
   rotateSecret(input: {
     orgId: string; agentId: string; sourceId: string;
-  }): { status: string; secret?: string; reason?: string; hint?: string } {
+  }): { status: string; secret?: string; secretPreview?: string | null; reason?: string; hint?: string } {
     const source = this.deps.sources.get(input.sourceId);
     if (!source || source.orgId !== input.orgId || source.agentId !== input.agentId) {
       return {
@@ -385,9 +397,12 @@ export class ExternalSourceService {
     }
     const next = { ...safeJson(source.config), token: mintWebhookSecret() };
     this.deps.sources.setConfig(source.id, next);
+    const token = next['token'] as string;
     return {
       status: 'rotated',
-      secret: next['token'] as string,
+      secret: token,
+      // 同一投影随响应一起下发：界面不必等下一次 list 就显示新尾号。
+      secretPreview: secretPreviewOf(token),
       hint: 'Store this secret now — it is shown once. The previous secret stopped working immediately.',
     };
   }

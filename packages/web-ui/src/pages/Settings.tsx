@@ -65,7 +65,19 @@ interface OllamaDetectResult {
 
 type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'external-sources' | 'license';
 
-interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
+interface SettingsTabDef {
+  id: SettingsTab;
+  labelKey: string;
+  adminOnly?: boolean;
+  /**
+   * Only exposed by a development build (`import.meta.env.DEV`).
+   *
+   * C10-F（Owner 2026-11-26）：外部信号暂时不在正式发版里开放。这个字段是那道门的
+   * **唯一声明点** —— 侧边栏、L1 键盘顺序与深链归一化全读它，所以“隐藏”不会因为
+   * 某个调用点忘了判而漏掉一条路（深链就是第二条路）。
+   */
+  devOnly?: boolean;
+}
 
 /** Module-scoped — used by Settings page and CollapsibleAvailableModels. */
 export const SETTINGS_TABS: SettingsTabDef[] = [
@@ -79,7 +91,11 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
   // C10-F: whether the platform accepts input from outside at all, and what an
   // accepted signal may do. Admin-only like the other connection surfaces — it
   // is an access decision, not a preference.
-  { id: 'external-sources', labelKey: 'nav.externalSignals', adminOnly: true },
+  //
+  // 暂不在正式发版开放（Owner 2026-11-26）：只在 dev 构建 / 8057 开发实例出现。
+  // 后端入口仍在，但组织级总闸默认 `off` —— 见 external-source-service 的
+  // `ingressPolicy ?? 'off'`（失败关闭），所以“没入口”不等于“无门禁”。
+  { id: 'external-sources', labelKey: 'nav.externalSignals', adminOnly: true, devOnly: true },
   { id: 'network', labelKey: 'nav.network', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
   { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
@@ -97,6 +113,21 @@ export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] 
   // 属于诊断/取证，不该夹在日常偏好设置中间（Owner 2026-11-15）。
   { labelKey: 'nav.group.data', tabs: ['storage', 'facts'] },
 ];
+
+/** The build's own dev signal — the same single source `InstancesSection` reads. */
+export const DEV_BUILD: boolean = import.meta.env.DEV;
+
+/**
+ * Which tabs this build/role exposes. Pure, and the only place that decides.
+ *
+ * The rail, the keyboard order and the deep-link normaliser all read this one
+ * answer; asking the question twice is how "hidden" grows a second door.
+ */
+export function visibleSettingsTabs(opts: { dev: boolean; canManageOrg: boolean }): SettingsTabDef[] {
+  return SETTINGS_TABS.filter(
+    (tab) => (!tab.adminOnly || opts.canManageOrg) && (!tab.devOnly || opts.dev),
+  );
+}
 
 /** Data each settings tab needs the first time it is opened (pure, testable). */
 export type SettingsLoadKey = 'llm' | 'network' | 'oauth' | 'authProfiles' | 'agent' | 'browser' | 'storage';
@@ -198,8 +229,25 @@ export function resolveSettingsTab(hash: string): SettingsTab | null {
   return null;
 }
 
+/**
+ * A tab that this build does not expose must not be reachable by URL either.
+ *
+ * `resolveSettingsTab` answers "which tab does this URL name"; this answers "is
+ * that name open in this build". Keeping them separate means the hash parser
+ * stays a registry question and a dev-only surface cannot be entered by typing
+ * `#settings/external-sources` into a production build.
+ */
+export function normalizeSettingsTab(
+  tab: SettingsTab | null,
+  dev: boolean = DEV_BUILD,
+): SettingsTab | null {
+  if (!tab) return null;
+  const def = SETTINGS_TABS.find((t) => t.id === tab);
+  return def?.devOnly && !dev ? null : tab;
+}
+
 function getSettingsTab(): SettingsTab | null {
-  return resolveSettingsTab(window.location.hash);
+  return normalizeSettingsTab(resolveSettingsTab(window.location.hash));
 }
 
 export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdated }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser; onLogout?: () => void; onUserUpdated?: (u: AuthUser) => void } = {}) {
@@ -1180,7 +1228,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   const canManageOrgSettings = authUser?.role === 'owner' || authUser?.role === 'admin';
 
-  const visibleTabs = SETTINGS_TABS.filter(tab => !tab.adminOnly || canManageOrgSettings);
+  const visibleTabs = visibleSettingsTabs({ dev: DEV_BUILD, canManageOrg: canManageOrgSettings });
   /** Flat tab order matching the L1 sidebar visual order (grouped). */
   const navigableTabs = useMemo(() => {
     const out: SettingsTabDef[] = [];
