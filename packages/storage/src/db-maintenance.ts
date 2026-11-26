@@ -197,6 +197,8 @@ export interface PruneResult {
   deleted: number;
   bytes: number;
   vacuumed: boolean;
+  /** 未回收空间时的原因（避免把 false 误读成“已回收”）。 */
+  vacuumNote?: string;
   error?: string;
 }
 
@@ -248,9 +250,31 @@ export function pruneTerminalMailboxItems(db: DatabaseSync, opts: PruneOptions =
   }
 
   let vacuumed = false;
+  /** 为什么没有回收空间（真空时回传，避免调用方把 false 误读成“已回收”）。 */
+  let vacuumNote: string | undefined;
   if (opts.vacuum !== false) {
-    try { db.exec('PRAGMA incremental_vacuum'); vacuumed = true; } catch { /* auto_vacuum=0 → no-op */ }
+    // 删行只是把页交给 freelist，**文件大小不变**。真正还盘只有三条路：
+    //   ① auto_vacuum=2（INCREMENTAL）→ PRAGMA incremental_vacuum 有效；
+    //   ② auto_vacuum=1（FULL）→ 提交时自动回收，无需额外动作；
+    //   ③ auto_vacuum=0（默认）→ 只能整库 VACUUM（需等量临时磁盘 + 长锁）。
+    // 旧代码无条件 exec('PRAGMA incremental_vacuum') 并回 vacuumed:true —— 在
+    // auto_vacuum=0 的真库上那是**空操作**（实测这台机器 auto_vacuum=0、
+    // freelist_count=0）：删了 24 万行，文件一个字节不缩。宁可回报 false + 原因，
+    // 也不要一个“看起来做了”的字段。
+    let mode = 0;
+    try {
+      mode = Number((db.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum?: number })?.auto_vacuum ?? 0);
+    } catch { /* pragma 不可用 → 当 0 处理（保守） */ }
+
+    if (mode === 2) {
+      try { db.exec('PRAGMA incremental_vacuum'); vacuumed = true; }
+      catch (err) { vacuumNote = `incremental_vacuum failed: ${String(err).slice(0, 120)}`; }
+    } else if (mode === 1) {
+      vacuumed = true; // FULL：页在提交时已经回收
+    } else {
+      vacuumNote = 'auto_vacuum=0: deleted rows stay as free pages; an explicit VACUUM is required to shrink the file';
+    }
   }
 
-  return { dryRun: false, candidates: agg.n, deleted, bytes: agg.bytes, vacuumed };
+  return { dryRun: false, candidates: agg.n, deleted, bytes: agg.bytes, vacuumed, ...(vacuumNote ? { vacuumNote } : {}) };
 }
