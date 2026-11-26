@@ -868,13 +868,13 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       {mobile && expandedNodeId && (
         <button
           onClick={collapseDAG}
-          className="absolute top-3 left-3 z-20 flex items-center gap-1.5 rounded-full border border-border-default bg-surface-secondary/95 pl-2.5 pr-3 py-1.5 shadow-lg backdrop-blur-sm text-fg-secondary active:bg-surface-overlay"
+          className="absolute top-3 left-3 z-30 flex items-center gap-2 rounded-xl border border-brand-400/60 bg-brand-600 px-3.5 py-2 shadow-xl shadow-brand-500/35 text-on-brand active:bg-brand-500"
           title={t('work:dag.showAll')}
         >
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M3 9V5a2 2 0 0 1 2-2h4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M21 15v4a2 2 0 0 1-2 2h-4" />
           </svg>
-          <span className="text-[11px] font-medium">{t('work:dag.showAll')}</span>
+          <span className="text-[12px] font-semibold tracking-wide">{t('work:dag.showAll')}</span>
         </button>
       )}
 

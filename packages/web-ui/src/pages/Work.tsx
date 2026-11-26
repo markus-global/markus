@@ -5472,6 +5472,30 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     setAllRequirements(previewData.allRequirements ?? []);
   }, [previewMode, previewData]);
 
+  /**
+   * Enter the mobile detail layer — ONE implementation.
+   *
+   * On a phone the detail is a *level of navigation*, not merely a visible panel:
+   * it must own a history entry, otherwise the back button pops the whole page
+   * (Work -> whatever page you came from) instead of closing this layer and
+   * returning to the focus. It used to live inline inside `handleSelectTask` /
+   * `handleSelectReq` only, so every path that opened the detail through
+   * `forceOpenTask` / `forceOpenReq` (the dependency graph's own selectors, deep
+   * links) skipped it — and back escaped the page entirely.
+   *
+   * Guarded on `!mobileShowDetailRef.current`: switching entity *inside* the
+   * detail must not stack entries, or back would need one press per entity viewed.
+   *
+   * Declared before its callers on purpose: it appears in their `useCallback`
+   * dependency arrays, which are evaluated during render — a later `const` would
+   * be in the temporal dead zone and throw before the first paint.
+   */
+  const enterMobileDetail = useCallback(() => {
+    if (!isMobile || mobileShowDetailRef.current) return;
+    setMobileShowDetail(true);
+    history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash);
+  }, [isMobile]);
+
   const handleSelectTask = useCallback((task: TaskInfo) => {
     setNavFocus('items');
     setSelectedTask(prev => {
@@ -5482,14 +5506,11 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       }
       setRightDetailMode('item');
       setPanelWidthPref('auto');
-      if (isMobile) {
-        setMobileShowDetail(true);
-        history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash);
-      }
+      enterMobileDetail();
       return task;
     });
     setSelectedReq(null);
-  }, [isMobile, rightDetailMode]);
+  }, [isMobile, rightDetailMode, enterMobileDetail]);
 
   const handleSelectReq = useCallback((req: RequirementInfo) => {
     setNavFocus('items');
@@ -5501,14 +5522,11 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       }
       setRightDetailMode('item');
       setPanelWidthPref('auto');
-      if (isMobile) {
-        setMobileShowDetail(true);
-        history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash);
-      }
+      enterMobileDetail();
       return req;
     });
     setSelectedTask(null);
-  }, [isMobile, rightDetailMode]);
+  }, [isMobile, rightDetailMode, enterMobileDetail]);
 
   const handleCloseDetail = useCallback(() => {
     setSelectedTask(null);
@@ -5703,8 +5721,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     setNavFocus('items');
     setPanelWidthPref('auto');
     if (opts?.scrollToComments) setScrollToComments(true);
-    if (isMobile) { setMobileShowDetail(true); }
-  }, [isMobile]);
+    enterMobileDetail();
+  }, [enterMobileDetail]);
   const forceOpenReq = useCallback((req: RequirementInfo, opts?: { scrollToComments?: boolean }) => {
     setSelectedReq(req);
     setSelectedTask(null);
@@ -5712,8 +5730,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     setNavFocus('items');
     setPanelWidthPref('auto');
     if (opts?.scrollToComments) setScrollToComments(true);
-    if (isMobile) { setMobileShowDetail(true); }
-  }, [isMobile]);
+    enterMobileDetail();
+  }, [enterMobileDetail]);
 
   /**
    * "Open this requirement's dependency graph" — one intent, one implementation.
@@ -7290,7 +7308,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 setSelectedTask(task);
                 setSelectedReq(null);
                 setRightDetailMode('item');
-                if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
+                enterMobileDetail();
               }}
               onCreateTask={(reqId, projectId) => {
                 setTaskRequirementId(reqId);
