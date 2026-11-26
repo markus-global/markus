@@ -5314,12 +5314,162 @@ export class SqliteMailboxRepo {
     }
   }
 
+  /**
+   * 工作记录：把「逻辑上不可能有实体归属」的遥测行一次性标记为已判定。
+   *
+   * 旧调度器的心跳节拍在任何版本里都不属于某个实体，而 0.12.4 升级上来的库里
+   * 它们的 `entity_id` 全是 NULL。逐条 `resolveEntity` 纯属浪费（真实库里单个
+   * agent 就有数百到上千行），一条 UPDATE 全部覆盖 —— 之后它们既不会出现在
+   * `getUnindexed()` 里，也不会进任何分组（工作记录的查询条件已排除 heartbeat）。
+   */
+  markUnresolvableTelemetryIndexed(agentId: string): number {
+    const res = this.db
+      .prepare(
+        `UPDATE mailbox_items SET entity_kind = 'none', entity_id = ''
+          WHERE agent_id = ? AND entity_id IS NULL AND source_type = 'heartbeat'`,
+      )
+      .run(agentId);
+    return Number((res as { changes?: number }).changes ?? 0);
+  }
+
+  /** 工作记录：仍未判定归属的行数（>0 = 还有历史没整理完，界面必须让它可见）。 */
+  countUnindexed(agentId: string): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS c FROM mailbox_items WHERE agent_id = ? AND entity_id IS NULL')
+      .get(agentId) as Record<string, unknown> | undefined;
+    return Number(row?.['c'] ?? 0);
+  }
+
   /** 工作记录：按实体键取（走 idx_mailbox_entity）。 */
   getByEntityKey(agentId: string, kind: string, entityId: string, limit = 2000): MailboxItemRow[] {
     const rows = this.db.prepare(
-      'SELECT * FROM mailbox_items WHERE agent_id = ? AND entity_kind = ? AND entity_id = ? ORDER BY queued_at DESC LIMIT ?',
+      // 过滤条件必须与 `countWorklogByEntityKind` / `getEntityGroups` 完全一致：
+      // 左栏说「这组有 N 条」、右栏却列出 N+M 条，就是同一事实两种口径。
+      `SELECT * FROM mailbox_items
+        WHERE agent_id = ? AND entity_kind = ? AND entity_id = ?
+          AND source_type <> 'heartbeat'
+          AND NOT (entity_id = '' AND source_type = 'callback_result')
+        ORDER BY queued_at DESC LIMIT ?`,
     ).all(agentId, kind, entityId, limit) as Array<Record<string, unknown>>;
     return rows.map(r => this.mapRow(r));
+  }
+
+  /**
+   * 工作记录左栏：已索引行的实体聚合（走 `idx_mailbox_entity`），SQL 层分组 + 分页。
+   *
+   * 为什么必须在这里分组：`/api/agents/:id/mailbox?mode=groups` 原先每次请求都
+   * `getHistory(limit: 5000)` 拉全量历史，再在 JS 里逐行解析实体、内存聚合。旧库里
+   * `entity_id` 为 NULL 的行占多数（本机 1,639 / 3,856），而 `setEntityKeys` 的调用侧
+   * 显式跳过了 `kind === 'none'`，于是「无归属」的行**永远**保持 NULL、永远重算 ——
+   * 打开概览、每点一次分组都要再扫一遍全量历史并逐行查 tasks/chat_sessions。
+   *
+   * 这条查询把「已判定归属」（含判定为无归属的 `entity_id = ''`）交给索引；只有真正
+   * 未判定的 NULL 行走 `getUnindexed()` 兜底一次，解析后落库，第二次起就只剩 SQL。
+   */
+  getEntityGroups(
+    agentId: string,
+    opts?: { limit?: number; offset?: number; status?: string },
+  ): Array<{ kind: string; id: string; count: number; units: number; latestAt: string }> {
+    const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 500);
+    const offset = Math.max(opts?.offset ?? 0, 0);
+    // 状态筛选在 SQL 里就要做：否则「筛选后的分组数字」不随筛选变化，与列表互相矛盾。
+    // 归一口径与读路径一致：历史 `dropped` 与当前 `bounced` 是同一个事实。
+    const statusClause = opts?.status
+      ? ` AND (CASE WHEN status IN ('bounced','dropped') THEN 'bounced' ELSE status END) = ?`
+      : '';
+    const params: (string | number)[] = [agentId];
+    if (opts?.status) params.push(opts.status);
+    params.push(limit, offset);
+    const rows = this.db
+      .prepare(
+        `SELECT entity_kind AS kind, entity_id AS id, COUNT(*) AS cnt,
+                COUNT(DISTINCT work_unit_ref) AS units, MAX(queued_at) AS latest,
+                (SELECT x.id FROM mailbox_items x
+                  WHERE x.agent_id = m.agent_id AND x.entity_kind = m.entity_kind
+                    AND x.entity_id = m.entity_id
+                  ORDER BY x.queued_at DESC LIMIT 1) AS sample_id
+           FROM mailbox_items m
+          WHERE agent_id = ? AND entity_id IS NOT NULL
+            AND source_type <> 'heartbeat'
+            AND NOT (entity_id = '' AND source_type = 'callback_result')${statusClause}
+          GROUP BY entity_kind, entity_id
+          ORDER BY latest DESC
+          LIMIT ? OFFSET ?`,
+      )
+      .all(...params) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      // 空串是「已判定为无归属」的哨兵（见 setEntityKeys 注释），对外统一叫 none。
+      kind: String(r['kind'] ?? '') === '' ? 'none' : String(r['kind'] ?? 'none'),
+      id: String(r['id'] ?? ''),
+      count: Number(r['cnt'] ?? 0),
+      units: Number(r['units'] ?? 0),
+      latestAt: String(r['latest'] ?? ''),
+      // 该组最新一行的 id：调用方用它过一遍 `resolveEntity` 取**实体名**。
+      // 名字只能有这一个来源 —— 在这里按 kind 各写一套取名逻辑，就会与
+      // worklog-entity.ts 的判据分叉（本仓库已经踩过一次：channel 组丢了标题）。
+      sampleId: r['sample_id'] == null ? '' : String(r['sample_id']),
+    }));
+  }
+
+  /** 工作记录左栏：实体分组总数（`hasNext` 与翻页用）。 */
+  countEntityGroups(agentId: string, status?: string): number {
+    const statusClause = status
+      ? ` AND (CASE WHEN status IN ('bounced','dropped') THEN 'bounced' ELSE status END) = ?`
+      : '';
+    const params: (string | number)[] = [agentId];
+    if (status) params.push(status);
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM (
+           SELECT 1 FROM mailbox_items
+            WHERE agent_id = ? AND entity_id IS NOT NULL
+              AND source_type <> 'heartbeat'
+              AND NOT (entity_id = '' AND source_type = 'callback_result')${statusClause}
+            GROUP BY entity_kind, entity_id)`,
+      )
+      .get(...params) as Record<string, unknown> | undefined;
+    return Number(row?.['c'] ?? 0);
+  }
+
+  /**
+   * 工作记录：按实体类别计数（左栏筛选片上的数字），SQL 层聚合。
+   *
+   * 工作记录**不收录**的两类遥测在 SQL 里就要排掉，否则「筛选片数字」与
+   * 「列表内容」来自两个宇宙：`heartbeat` 是旧调度器节拍（全库 16 万+，不回答
+   * 「这是哪件事」）；无归属的 `callback_result` 只说明命令跑完了。
+   */
+  countWorklogByEntityKind(agentId: string): Record<string, number> {
+    const rows = this.db
+      .prepare(
+        `SELECT CASE WHEN entity_kind IS NULL OR entity_kind = '' THEN 'none' ELSE entity_kind END AS k,
+                COUNT(*) AS c
+           FROM mailbox_items
+          WHERE agent_id = ?
+            AND source_type <> 'heartbeat'
+            AND NOT ((entity_kind IS NULL OR entity_kind = '') AND source_type = 'callback_result')
+          GROUP BY k`,
+      )
+      .all(agentId) as Array<Record<string, unknown>>;
+    const out: Record<string, number> = {};
+    for (const r of rows) out[String(r['k'] ?? 'none')] = Number(r['c'] ?? 0);
+    return out;
+  }
+
+  /** 工作记录：按状态计数（状态筛选片上的数字），原始 status 返回，归一在调用侧。 */
+  countWorklogByStatus(agentId: string): Record<string, number> {
+    const rows = this.db
+      .prepare(
+        `SELECT status AS s, COUNT(*) AS c
+           FROM mailbox_items
+          WHERE agent_id = ?
+            AND source_type <> 'heartbeat'
+            AND NOT ((entity_kind IS NULL OR entity_kind = '') AND source_type = 'callback_result')
+          GROUP BY s`,
+      )
+      .all(agentId) as Array<Record<string, unknown>>;
+    const out: Record<string, number> = {};
+    for (const r of rows) out[String(r['s'] ?? '')] = Number(r['c'] ?? 0);
+    return out;
   }
 
   /** 工作记录：尚未回填实体键的行（旧数据），读路径兼底用。 */
