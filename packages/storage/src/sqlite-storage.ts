@@ -5383,8 +5383,12 @@ export class SqliteMailboxRepo {
     const rows = this.db
       .prepare(
         `SELECT entity_kind AS kind, entity_id AS id, COUNT(*) AS cnt,
-                COUNT(DISTINCT work_unit_ref) AS units, MAX(queued_at) AS latest
-           FROM mailbox_items
+                COUNT(DISTINCT work_unit_ref) AS units, MAX(queued_at) AS latest,
+                (SELECT x.id FROM mailbox_items x
+                  WHERE x.agent_id = m.agent_id AND x.entity_kind = m.entity_kind
+                    AND x.entity_id = m.entity_id
+                  ORDER BY x.queued_at DESC LIMIT 1) AS sample_id
+           FROM mailbox_items m
           WHERE agent_id = ? AND entity_id IS NOT NULL
             AND source_type <> 'heartbeat'
             AND NOT (entity_id = '' AND source_type = 'callback_result')${statusClause}
@@ -5400,6 +5404,10 @@ export class SqliteMailboxRepo {
       count: Number(r['cnt'] ?? 0),
       units: Number(r['units'] ?? 0),
       latestAt: String(r['latest'] ?? ''),
+      // 该组最新一行的 id：调用方用它过一遍 `resolveEntity` 取**实体名**。
+      // 名字只能有这一个来源 —— 在这里按 kind 各写一套取名逻辑，就会与
+      // worklog-entity.ts 的判据分叉（本仓库已经踩过一次：channel 组丢了标题）。
+      sampleId: r['sample_id'] == null ? '' : String(r['sample_id']),
     }));
   }
 

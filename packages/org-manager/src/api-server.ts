@@ -6890,26 +6890,29 @@ export class APIServer {
             statusCounts[n] = (statusCounts[n] ?? 0) + Number(c);
           }
           // 分组数 = 实体数（远小于行数）；一次取全（上限 500）再按类别筛 + 分页。
-          type EntityGroup = { kind: string; id: string; count: number; units: number; latestAt: string };
+          type EntityGroup = { kind: string; id: string; count: number; units: number; latestAt: string; sampleId: string };
           const allGroups = repo.getEntityGroups(agentId, { limit: 500, offset: 0, status: statusWanted }) as EntityGroup[];
           const kindScoped = entityKindFilter ? allGroups.filter((g: EntityGroup) => g.kind === entityKindFilter) : allGroups;
           const groups = kindScoped
-            .map((g: EntityGroup) => ({
-              key: g.kind === 'none' ? 'none:' : `${g.kind}:${g.id}`,
-              kind: g.kind,
-              id: g.id,
-              // 名字从实体表取，与 worklog-entity.ts 同一来源；取不到就留空，
-              // 前端用 key 生成标签 —— 不再逐行反解派生键。
-              name:
-                g.kind === 'task'
-                  ? (this.taskService?.getTask(g.id)?.title ?? '')
-                  : g.kind === 'requirement'
-                    ? ((this.storage?.requirementRepo?.findById?.(g.id) as { title?: string } | undefined)?.title ?? '')
-                    : '',
-              count: g.count,
-              units: g.units,
-              latestAt: g.latestAt,
-            }))
+            .map((g: EntityGroup) => {
+              // 实体名只有一个来源：`resolveEntity`（worklog-entity.ts 是唯一写者）。
+              // 在这里按 kind 各写一套取名逻辑必然分叉 —— channel 组就是这样丢掉
+              // 会话标题的：`cs_*` 在 chat_sessions 里明明有 title，SQL 聚合却拿不到。
+              // 取该组最新一行过一遍解析器，名字就回到与旧实现同一条判据上。
+              const sample = g.sampleId
+                ? (repo.getById(g.sampleId) as unknown as Record<string, unknown> | undefined)
+                : undefined;
+              const ent = sample ? resolveEntity(sample as never) : null;
+              return {
+                key: g.kind === 'none' ? 'none:' : `${g.kind}:${g.id}`,
+                kind: g.kind,
+                id: g.id,
+                name: ent?.name ?? '',
+                count: g.count,
+                units: g.units,
+                latestAt: g.latestAt,
+              };
+            })
             .sort((a, b) => (b.latestAt > a.latestAt ? 1 : b.latestAt < a.latestAt ? -1 : 0));
           // ③ 仍未判定的行（超过单次解析上限的老库）：实体未知，只能归「历史记录」。
           //    它们必须出现在**数字**里 —— 让历史显示得比实际少，比卡顿更糟。
