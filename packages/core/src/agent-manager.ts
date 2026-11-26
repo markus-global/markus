@@ -3914,7 +3914,8 @@ export class AgentManager {
     const port = this.trustBoundaryPort;
     if (!port) return;
     agent.setTrustBoundaryPort({
-      selfInitiationCeiling: (senderAgentIds) => port.selfInitiationCeiling(agent.config.orgId, senderAgentIds),
+      selfInitiationCeiling: (senderAgentIds, unverifiedExternal) =>
+        port.selfInitiationCeiling(agent.config.orgId, senderAgentIds, unverifiedExternal),
     });
   }
 

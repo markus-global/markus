@@ -1923,7 +1923,68 @@ mailbox item and one `work_units` row. External work units are identity anchors
 address-tools) plus `bind_address` lets an agent self-bind and register a source; full
 autonomous next-step observation is the post-B L5 gate.
 
-### 29.6 Boundaries
+### 29.6 Worklog entity: the envelope is the declaration
+
+Owner-visible defect (2026-11-26): every C10 signal landed in the overview's "history"
+bucket instead of a conversation. Root cause was **not** the frontend and **not** a missing
+field at ingest — the delivery address was *already* written by the single ingest point into
+`mailbox_items.envelope` (`to.address`). The resolver (`org-manager/worklog-entity.ts`,
+branch ⑥) only read `payload.extra.channelKey`, which is the **IM gateway's** declaration;
+C10 never writes that key, so resolution returned `null` → frontend "history".
+
+Contract: **one fact, one writer, one reader.** Two entrances declare the conversation key
+in their own shape, and the resolver reads whichever is present:
+
+| Entrance | Declaration | Stable across messages |
+| --- | --- | --- |
+| IM gateway (Feishu/Telegram/…) | `payload.extra.channelKey` (`im:<bot>:<scope>:<chat>`) | yes |
+| C10 external source (webhook/RSS) | `envelope.to.address` (`kind='markus'`) | yes — one address = one conversation |
+
+Do **not** "fix" this by also writing `channelKey` at the C10 ingest point: that would be a
+second writer for a fact the envelope already carries, and the two would drift.
+`workUnitRef` is a **per-message** idempotency key and can never be reverse-parsed into a
+conversation — reading a declaration is the only correct path.
+
+Two semantics that look like defects but are contracts (both cost a wrong defect report):
+
+1. **`catch_all` rows carry NULL `work_unit_ref` / `message_id` projections.** The envelope
+   retains both. Evidence queries must therefore go by `envelope` (or by the returned
+   `itemId`) — a `work_unit_ref LIKE …` probe reports a false zero.
+2. **Bounced rows do not occupy the `messageId` unique key** (predicate `status <> 'bounced'`,
+   pinned by `storage/test/mailbox-envelope.test.ts`). Replaying one `messageId` against an
+   unbound address legitimately appends another bounce row: once the address is later bound,
+   the same `messageId` must still be deliverable. A bounce row holding the key would block
+   that redelivery forever.
+
+Real-instance readings (2026-11-26, live DB, agent `agt_b56cd…`): 30 `external_signal` rows →
+**0 unresolved**, grouped into 2 address conversations (23 + 7). Unbound-address path: 20
+webhook posts → 20 `bounced/no_active_target` rows collected under
+`bounce_target=catchall:agt_b56cd…`, each retaining its own `messageId` in the envelope.
+Note the HTTP status is only an ACK — `200` with `{"status":"bounced"}` in the body is a
+bounce, not an ingest; discarding the body (`curl -o /dev/null`) reads it as success.
+
+**L5 end-to-end gate: all five conditions PASS** (verified 2026-11-26 on the live
+instance). The gate needs: self-bind without UI, first real signal received, a
+**proposed next step**, a `work_units` row, and a `facts` row. Conditions 1/2/4 were
+confirmed in the first round; conditions 3 and 5 were confirmed in a second round
+with a signal that actually demanded a next step. The agent did not restate the
+input — it **rejected it on evidence**: the incoming item claimed "15s single take,
+cost −40%", the vendor's own pages say "30s single take, up to 50 omni-modal
+references, region-level editing" with no official 40% figure, and the release date
+conflicts (official 2026-07-31 vs the Seed Chinese homepage 2026.11.16). It named
+the next step ("verify first-party sources before the item enters the topic
+pipeline") and wrote `fact_d1c34d0a461491a2981fb36c`, whose `work_unit_ref` is
+exactly the signal's ref. Turn telemetry: ≈70 s, 340 `execution_stream_logs` rows.
+Signals also group into one address conversation instead of "history", whose newest
+row remains 2026-11-14.
+
+Caveat, recorded rather than glossed: the receiving agent was `Secretary`, not a
+"content agent" as the gate's wording asks — the content agents are stopped and the
+platform refuses to wake them. The structural conditions are agent-agnostic and were
+genuinely exercised; the content-agent qualifier is not satisfied by this run.
+Readings: `docs/records/c10-l5-gate-verification-2026-11-26.md`.
+
+### 29.7 Boundaries
 
 No mail send/receive, no DNS/MX/SPF/DKIM/DMARC (C10-D). `verified=false` is observe-only;
 the envelope `auth` slot stays `null` until an adapter verifies. Real-instance probe

@@ -2321,9 +2321,13 @@ export class APIServer {
     // 'auto' (human-approved, audited) lifts the ceiling; same-org senders never
     // feed it. Storage absent ⇒ no ceiling (documented fail-open for embedded).
     manager.setTrustBoundaryPort({
-      selfInitiationCeiling: (receiverOrgId, senderAgentIds) => {
+      selfInitiationCeiling: (receiverOrgId, senderAgentIds, unverifiedExternal) => {
         const org = storage?.orgRepo.findOrgById(receiverOrgId);
         if ((org?.crossOrgPolicy ?? 'observe') === 'auto') return undefined;
+        // A: an external address has no agent row, so the lookup below can never
+        // see it. Decide it explicitly — unverified external input is at least as
+        // untrusted as a cross-org peer, never silently exempt.
+        if (unverifiedExternal) return 'observe';
         for (const senderId of senderAgentIds) {
           const sender = storage?.agentRepo.findById(senderId);
           if (sender && sender.orgId !== receiverOrgId) return 'observe';
@@ -2986,9 +2990,9 @@ export class APIServer {
    *
    * 旧写法是 `openChatTurnWorkUnit(agentId, senderId, item.id)`：入队后再异步查会话、
    * 算 round、再回写 `mailbox_items.work_unit_ref`。但 agent 可能在这一行入队后立刻
-   * 开始处理它 —— 那一刻 `item.workUnitRef` 还是 null，于是
-   * `agent.currentTurnWorkUnitRef` 为 null，本回合内的 `spawn_subagents` 拿不到父 ref，
-   * 子 WU 只能落 `delegation:root:…`（父链断）。
+   * 开始处理它 —— 那一刻 `item.workUnitRef` 还是 null，于是本回合的
+   * `agent.turnWorkUnitRef()` 为 null（身份由 `processMailboxItemInternal` 的 ALS 携带），
+   * 回合内的 `spawn_subagents` 拿不到父 ref，子 WU 只能落 `delegation:root:…`（父链断）。
    *
    * 现在改回正确的因果方向：**身份先于消息存在**，ref 作为入队参数一起落地。
    */
@@ -4676,6 +4680,32 @@ export class APIServer {
         return;
       }
       const out = svc.setSourceEnabled({ orgId: authUser.orgId, agentId, sourceId: path.split('/')[3]!, enabled });
+      this.json(res, out.status === 'forbidden' ? 403 : 200, out);
+      return;
+    }
+
+    // B（Owner 2026-11-25）：鉴权运营投递入口。成员门槛由上面的 /api/external-sources
+    // 前缀闸门覆盖；orgId 取会话身份，归属裁决仍只在 service（唯一写者）。
+    // 与公开 webhook 入口的区别：这里可以指定**目标地址**（无人认领的地址也有入站口），
+    // 而公开入口结构上拿不到这个能力 —— 外部方不能重定向。
+    if (path.match(/^\/api\/external-sources\/[^/]+\/deliver$/) && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req, res);
+      if (!authUser) return;
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      const body = await this.readBody(req);
+      const agentId = typeof body['agentId'] === 'string' ? body['agentId'] : '';
+      const address = typeof body['address'] === 'string' ? body['address'] : '';
+      const payload = body['payload'];
+      // payload 必须显式给出：不从控制字段里「剩下的就当载荷」推断结构。
+      if (!agentId || !address || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        this.json(res, 400, { error: 'agentId (string), address (string) and payload (object) are required' });
+        return;
+      }
+      const out = svc.deliverAsOperator({
+        orgId: authUser.orgId, agentId, sourceId: path.split('/')[3]!, address, body: payload,
+      });
+      // status 字段是唯一判决；退信是合法结果（与 webhook 入口同口径：200 + status）。
       this.json(res, out.status === 'forbidden' ? 403 : 200, out);
       return;
     }

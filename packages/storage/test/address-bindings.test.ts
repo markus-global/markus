@@ -14,6 +14,7 @@ import {
   openSqlite,
   closeSqlite,
   SqliteAddressBindingRepo,
+  SqliteExternalSourceRepo,
   SqliteUserRepo,
 } from '../src/sqlite-storage.js';
 
@@ -45,6 +46,65 @@ const A1 = 'agt_alice';
 const A2 = 'agt_bob';
 const ORG1 = 'acme';
 const ORG2 = 'globex';
+
+/**
+ * M1 —— 源不得比路由活得久。
+ *
+ * `registerSource` 已经要求「地址先绑给自己」（external-source-service.ts），所以源不可能
+ * 生来无路由；唯一能破坏这条不变量的操作是 `revoke()` —— 它此前只写 `revoked_at`，
+ * 不碰 `external_sources`，于是启用中的源继续轮询一个已无归属的地址。
+ * 修在唯一能破坏它的地方，而不是在下游为「无路由的源」再加一套处置机制。
+ */
+describe('M1 · 撤销地址连带禁用该地址上的源', () => {
+  function bindAndRegister(local: string) {
+    const { db, repo } = open();
+    const sources = new SqliteExternalSourceRepo(db);
+    const address = `${local}.${ORG1}@markus.global`;
+    expect(repo.bind({ orgId: ORG1, agentId: A1, address })).toMatchObject({ status: 'bound' });
+    const reg = sources.register({ orgId: ORG1, agentId: A1, kind: 'webhook', address });
+    expect(reg.status).toBe('registered');
+    const id = reg.status === 'registered' ? reg.source.id : '';
+    return { db, repo, sources, address, id };
+  }
+
+  it('revoke ⇒ 该地址上的源被禁用，并记下原因', () => {
+    const { repo, sources, address, id } = bindAndRegister('alice');
+    expect(sources.get(id)!.enabled).toBe(true);
+
+    expect(repo.revoke({ orgId: ORG1, agentId: A1, address })).toMatchObject({ status: 'revoked' });
+
+    const after = sources.get(id)!;
+    expect(after.enabled).toBe(false);
+    expect(after.lastError).toContain('address_revoked');
+  });
+
+  it('只动这个地址：别的地址上的源照常启用', () => {
+    const { db, repo, sources, address, id } = bindAndRegister('alice');
+    const other = `bob.${ORG1}@markus.global`;
+    repo.bind({ orgId: ORG1, agentId: A2, address: other });
+    const reg2 = sources.register({ orgId: ORG1, agentId: A2, kind: 'rss', address: other });
+    const id2 = reg2.status === 'registered' ? reg2.source.id : '';
+    expect(db).toBeTruthy();
+
+    repo.revoke({ orgId: ORG1, agentId: A1, address });
+
+    expect(sources.get(id)!.enabled).toBe(false);
+    expect(sources.get(id2)!.enabled).toBe(true);
+    expect(sources.get(id2)!.lastError).toBeNull();
+  });
+
+  it('撤销没成功（not_bound）⇒ 一个源都不许动', () => {
+    const { repo, sources } = bindAndRegister('alice');
+    const orphan = `carol.${ORG1}@markus.global`;
+    const reg = sources.register({ orgId: ORG1, agentId: A1, kind: 'webhook', address: orphan });
+    const id = reg.status === 'registered' ? reg.source.id : '';
+
+    expect(repo.revoke({ orgId: ORG1, agentId: A1, address: orphan })).toMatchObject({ status: 'not_bound' });
+
+    expect(sources.get(id)!.enabled).toBe(true);
+    expect(sources.get(id)!.lastError).toBeNull();
+  });
+});
 
 describe('C1 数据模型：可空列 / 全局部分唯一索引 / 视图（存量库按形状升级）', () => {
   it('既有库（无 address 列）打开后自动补列，旧行保持 NULL，且不丢数据', () => {

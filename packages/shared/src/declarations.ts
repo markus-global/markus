@@ -182,7 +182,7 @@ export const DECLARATIONS = {
     // in OrganizationService.setCrossOrgPolicy — the repo writer is its
     // instrument, not a public path.
     witness: { type: 'reader', at: 'selfInitiationCeiling' },
-    note: "Reader chain: api-server trust port (org/policy lookup) → Agent.selfInitiationCeiling (INPUT derivation) → the maySelfInitiate predicate, single.",
+    note: "Reader chain: api-server trust port (org/policy lookup) → Agent.selfInitiationCeiling (INPUT derivation) → the maySelfInitiate predicate, single. A (2026-11-25): unverified EXTERNAL origins also feed this input — they have no agent row, so the port decides them explicitly rather than by lookup.",
   },
 } as const satisfies Record<string, Declaration>;
 

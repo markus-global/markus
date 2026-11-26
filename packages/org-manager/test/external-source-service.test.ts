@@ -3,7 +3,8 @@
  *
  * 判据：
  *   · ref 由唯一构造器 WORK_UNIT_REF.external 建，入队即带身份（refOrigin entity）；
- *   · 未验证外部信号 intent 封顶 deliver（信号级天花板，唯一消费点）；
+ *   · A（Owner 2026-11-25）：外部事件一律欠一个回合（action_required）—— 欠回合由平台判定；
+ *     发送者只能升权（trigger_execution 须已验证），权威侧执行点在 agent 级天花板；
  *   · kill switch **现读 DB**（第二个写者直接 UPDATE enabled 也立刻生效 = 无内存缓存）；
  *   · 同 messageId 重投 → duplicate_message_id 退信回声，queued 信号行不增（真库）；
  *   · 无绑定 → no_active_target 退信回声进源主 mailbox，身份保留（C10-0A）；
@@ -128,7 +129,9 @@ describe('C10-B：唯一 ingest 点', () => {
     const env = JSON.parse(row.envelope);
     expect(env.from).toEqual({ kind: 'external', address: 'sender@external.example' });
     expect(env.fromVerified).toBe(false);
-    expect(env.intent).toBe('deliver');
+    // A：未验证不等于「不值得一个回合」。平台判定外部事件欠回合 → action_required，
+    // routeMailboxItem 据此 invokesLLM=true。旧值是 deliver（事件被静默存档）。
+    expect(env.intent).toBe('action_required');
     expect(env.externalThreadRef).toBe('thread-9');
     expect(db.prepare('SELECT ref FROM work_units WHERE ref=?').get(ref)).toBeDefined();
   });
@@ -144,15 +147,103 @@ describe('C10-B：唯一 ingest 点', () => {
     expect((db.prepare('SELECT COUNT(*) c FROM work_units').get() as { c: number }).c).toBe(1);
   });
 
-  it('信号级天花板：trigger_execution / action_required 一律封顶 deliver（唯一消费点）', () => {
+  it('A 天花板：未验证发送者只能升权不能夺权 —— trigger_execution 降为 action_required，deliver 抬为 action_required', () => {
     bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
     const srcId = registerWebhook();
-    for (const intent of ['trigger_execution', 'action_required'] as const) {
-      const out = service.ingest(srcId, event({ messageId: `m-${intent}` }), { intent });
+    // 三个方向各咬一件事：
+    //  · trigger_execution → action_required：未验证来源拿不到权威 FSM 待遇（判据 14 守）。
+    //  · action_required → action_required：平台判定本就欠回合，原样保留。
+    //  · deliver → action_required：**发送者无权让事件消失**。旧实现把这里当「封顶」，
+    //    实际是让外部事件静默存档、agent 永不决策 —— A 要修的就是这一条。
+    const expected: Record<string, string> = {
+      trigger_execution: 'action_required',
+      action_required: 'action_required',
+      deliver: 'action_required',
+    };
+    for (const [requested, want] of Object.entries(expected)) {
+      const out = service.ingest(srcId, event({ messageId: `m-${requested}` }), {
+        intent: requested as never,
+      });
       expect(out.status).toBe('ingested');
       const row = db.prepare('SELECT envelope FROM mailbox_items WHERE id=?').get((out as any).itemId) as any;
-      expect(JSON.parse(row.envelope).intent, intent).toBe('deliver');
+      const env = JSON.parse(row.envelope);
+      expect(env.intent, `requested=${requested}`).toBe(want);
+      expect(env.fromVerified, 'B 不做认证，恒 false').toBe(false);
     }
+  });
+
+  // ── B（Owner 2026-11-25 裁决）：鉴权运营投递入口 ──────────────────────────
+  // 注册闸门原样不动（防「先注册后绑定」自助绕过）。运营者用**自己已注册的源**当出处，
+  // 只额外指定目标地址 ⇒ ref 仍是真实体 external:<真源id>:<msgId>，不造伪源 id。
+  const UNCLAIMED = 'nobody.acme@markus.global';
+
+  it('B 运营投递：自己的源 + 无人认领地址 ⇒ 信号落源主 mailbox（当前为退信归集态，M2 才把它变决策）', () => {
+    bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
+    const srcId = registerWebhook();
+    const out = service.deliverAsOperator({
+      orgId: ORG, agentId: OWNER, sourceId: srcId, address: UNCLAIMED,
+      body: { messageId: 'op-1', content: 'unclaimed address signal', subject: 'S' },
+    });
+    // 诚实断言当前行为：唯一解析器对无 active 绑定的地址判 no_active_target，
+    // 信号以 catch_all 归集态落源主 mailbox。**入站口已存在**（这就是 B 的交付）；
+    // 把「回声」变成「一次决策」是 M2 的活，不在本入口里偷偷改路由语义。
+    expect(out.status).toBe('bounced');
+    expect((out as any).dropReason).toBe('no_active_target');
+    const row = db.prepare('SELECT * FROM mailbox_items WHERE id=?').get((out as any).itemId) as any;
+    expect(row.agent_id).toBe(OWNER);
+    expect(row.source_type).toBe('external_signal');
+    expect(row.status).toBe('catch_all');
+    const env = JSON.parse(row.envelope);
+    // markus ref 的真实形状是四字段（local/orgSlug 由解析器给出，不自己拼）。
+    expect(env.to).toEqual({ kind: 'markus', address: UNCLAIMED, local: 'nobody', orgSlug: 'acme' });
+    expect(env.fromVerified).toBe(false);
+    // A：intent 仍是 action_required（平台判定欠回合）—— 退信是路由结果，不是把 intent 擦掉。
+    expect(env.intent).toBe('action_required');
+    // ref 用真实源 id，不是伪 id（判据 15 + 唯一构造器都不动）。
+    expect(row.work_unit_ref).toBe(WORK_UNIT_REF.external(srcId, 'op-1'));
+  });
+
+  it('B 归属门：别人的源 ⇒ forbidden(not_your_source)，且不落库（拒绝无副作用）', () => {
+    bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
+    const srcId = registerWebhook();
+    const before = queuedSignals();
+    const out = service.deliverAsOperator({
+      orgId: ORG, agentId: OTHER, sourceId: srcId, address: UNCLAIMED,
+      body: { messageId: 'op-x', content: 'steal' },
+    });
+    expect(out.status).toBe('forbidden');
+    expect((out as any).reason).toBe('not_your_source');
+    expect(queuedSignals()).toBe(before);
+  });
+
+  it('B 路由跟绑定走：目标地址已绑给 OTHER ⇒ 进 OTHER 的 mailbox（不是源主）', () => {
+    bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
+    bindings.bind({ orgId: ORG, agentId: OTHER, address: UNCLAIMED });
+    const srcId = registerWebhook();
+    const out = service.deliverAsOperator({
+      orgId: ORG, agentId: OWNER, sourceId: srcId, address: UNCLAIMED,
+      body: { messageId: 'op-2', content: 'bound elsewhere' },
+    });
+    expect(out.status).toBe('ingested');
+    const row = db.prepare('SELECT agent_id FROM mailbox_items WHERE id=?').get((out as any).itemId) as any;
+    expect(row.agent_id).toBe(OTHER);
+  });
+
+  it('B 安全边界：公开 webhook 入口不得接受目标地址覆写（外部方不能重定向）', () => {
+    bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
+    bindings.bind({ orgId: ORG, agentId: OTHER, address: UNCLAIMED });
+    const srcId = registerWebhook();
+    // 外部方在 payload 里塞 targetAddress —— 必须被忽略，仍按源自己的地址路由。
+    const out = service.receiveWebhook(srcId, {
+      messageId: 'wh-redirect', content: 'redirect attempt', targetAddress: UNCLAIMED,
+    }, null);
+    expect(out.http).toBe(200);
+    const row = db.prepare('SELECT agent_id, envelope FROM mailbox_items WHERE id=?')
+      .get((out.body as any).itemId) as any;
+    expect(row.agent_id).toBe(OWNER);
+    expect(JSON.parse(row.envelope).to).toEqual({
+      kind: 'markus', address: ADDR, local: 'hook', orgSlug: 'acme',
+    });
   });
 
   it('kill switch 现读 DB：第二写者直接 UPDATE enabled=0 立刻生效（无内存缓存），恢复后照常', () => {

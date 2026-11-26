@@ -2,11 +2,15 @@
  * C10-B —— 信号级 observe 天花板（计划 §B「verified=false 只能 observe」）。
  *
  * 两个事实、两个所有者，不撞 C10-C：
- *   · 本卡（信号级）：一条未验证外部信号**能要求什么** —— 唯一谓词
+ *   · 本卡（信号级）：一条未验证外部信号**能升到什么权威** —— 唯一谓词
  *     mayExternalSignalDemandAction，唯一消费者 = ExternalSourceService 的唯一
- *     ingest 点（intent 封顶 deliver）。信号自身永不 spawning 动作回合
- *     （注册表 invokesLLM=false，record 类）。
- *   · C10-C（agent 级）：maySelfInitiate 重建 —— agent 能否自主发起动作。
+ *     ingest 点。A（Owner 2026-11-25）后它守的是**升权**：未验证来源请求
+ *     trigger_execution 会被降为 action_required（拿不到权威 FSM 待遇），
+ *     但**回合本身不被剥夺** —— 外部事件一律欠一个回合，由平台判定。
+ *     注册表缺省仍是 record/invokesLLM=false，真实路由由 intent 上调（M0）。
+ *   · C10-C（agent 级）：maySelfInitiate —— agent 能否自主发起动作。A 后未验证
+ *     外部来源**也**喂这个天花板（它没有 agent 行，端口显式判定），这才是
+ *     发送者权威的执行点。
  *
  * base（37c817aa）上必须红：谓词与注册表条目都不存在。
  */

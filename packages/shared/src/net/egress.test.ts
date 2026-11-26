@@ -279,10 +279,10 @@ describe('createSystemProxyWatcher', () => {
     // with no proxy, the user turned one on in System Settings, nothing happened.
     vi.useFakeTimers();
     try {
-      let current: string | undefined;
+      const state: { current: string | undefined } = { current: undefined };
       let fired = 0;
       const stop = createSystemProxyWatcher({
-        read: () => current,
+        read: () => state.current,
         onChange: () => { fired += 1; },
         intervalMs: 1000,
       });
@@ -290,7 +290,7 @@ describe('createSystemProxyWatcher', () => {
       await vi.advanceTimersByTimeAsync(1000);
       expect(fired).toBe(0);
 
-      current = 'http://127.0.0.1:7890';
+      state.current = 'http://127.0.0.1:7890';
       await vi.advanceTimersByTimeAsync(1000);
       expect(fired).toBe(1);
       stop();

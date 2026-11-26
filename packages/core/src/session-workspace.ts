@@ -114,6 +114,14 @@ export interface SessionWorkspace {
   chainDepth?: number;
   /** Scheme A: per-turn volatile state (time, mailbox, status, memories…) */
   volatileState?: string;
+  /**
+   * C8-B：本回合轮内 delta 已读到哪个插入序号（**读游标**，事实本身只在邮箱队列里）。
+   *
+   * 必须住在工作区：放 Agent 实例上时 5 个并发 worker 共用一个数字，A 回合推进
+   * watermark 会让 B 回合跳过它还没读到的事实。唯一写者 `injectTurnDelta()`，
+   * 唯一重置点 `processMailboxItemCore()` 开头。
+   */
+  turnDeltaCursor?: number;
   /** Buffered user messages injected while tool calls are in-flight. */
   pendingInjections: Map<string, string[]>;
   activeStreamToken?: { cancelled: boolean; userStopped?: boolean };

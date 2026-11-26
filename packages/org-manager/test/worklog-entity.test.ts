@@ -10,6 +10,8 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   createWorklogEntityResolver,
   declaredConversationKey,
+  declaredExternalAddress,
+  externalAddressLabel,
   imConversationLabel,
   type WorklogEntityDeps,
 } from '../src/worklog-entity.js';
@@ -166,5 +168,112 @@ describe('imConversationLabel —— 仅显示美化，不动身份', () => {
   it('非 im 形状 / 段数不足 → undefined（退回短 id 标签）', () => {
     expect(imConversationLabel('cs_xyz')).toBeUndefined();
     expect(imConversationLabel('im:bot:dm')).toBeUndefined();
+  });
+});
+
+// ── C10 外部源（webhook / RSS）────────────────────────────────────────────
+//
+// 回归根因（2026-11-26 Owner 实测）：概览「运行与注意力」里 C10 外部信号**全部**
+// 落「历史记录」。真机取证 mbx_b7eb7dd4443bb4eebbca3ad1：payload 只有
+// {summary,content}（无 extra）、metadata 为 {}，但 **envelope 列已写着投递地址**
+// `to.address = sigprobe.jsyqrt@markus.global`。
+// 即：事实早已由唯一 ingest 点写下，只是解析器没读它 → ⑥ 拿不到声明 → null。
+// 修法刻意**不**在 ingest 补 channelKey（那会是同一事实的第二个写者）。
+const EXT_ADDR = 'sigprobe.jsyqrt@markus.global';
+
+/** 真机形状：envelope 是**JSON 字符串**（DB TEXT 列原样），payload 无 extra。 */
+function externalItem(messageId: string, address = EXT_ADDR) {
+  return {
+    sourceType: 'external_signal',
+    workUnitRef: `external:src_e0d3f02796f14316:${messageId}`,
+    payload: { summary: 'probe', content: 'probe' },
+    metadata: {},
+    envelope: JSON.stringify({
+      from: { kind: 'external', address: 'webhook' },
+      to: { kind: 'markus', address, local: address.split('@')[0], orgSlug: 'jsyqrt' },
+      messageId,
+      intent: 'action_required',
+      fromVerified: false,
+    }),
+  };
+}
+
+describe('C10 外部信号 → 投递地址会话实体（核心修复）', () => {
+  it('envelope 声明的 markus 地址 → channel，id 是完整地址，名字可读', () => {
+    const resolve = createWorklogEntityResolver(makeDeps());
+    const ent = resolve(externalItem('live-e2e-115527'));
+    expect(ent).not.toBeNull();
+    expect(ent!.kind).toBe('channel');
+    expect(ent!.id).toBe(EXT_ADDR);
+    expect(ent!.name).toBe('外部地址 · sigprobe.jsyqrt');
+  });
+
+  it('同一地址的多条信号（不同 messageId）聚成一个桶 —— 不是每条一桶、也不落历史记录', () => {
+    const resolve = createWorklogEntityResolver(makeDeps());
+    const keys = ['m1', 'm2', 'm3'].map(m => {
+      const e = resolve(externalItem(m));
+      return e ? `${e.kind}:${e.id}` : 'none:';
+    });
+    expect(new Set(keys).size).toBe(1);
+    expect(keys[0]).toBe(`channel:${EXT_ADDR}`);
+  });
+
+  it('不同地址 → 不同实体（地址是会话身份，不能糊成一桶）', () => {
+    const resolve = createWorklogEntityResolver(makeDeps());
+    const a = resolve(externalItem('m1', 'a.jsyqrt@markus.global'));
+    const b = resolve(externalItem('m2', 'b.jsyqrt@markus.global'));
+    expect(a!.id).not.toBe(b!.id);
+  });
+
+  it('envelope 已是对象（非字符串）也能读 —— 不绑定调用方的序列化形态', () => {
+    const resolve = createWorklogEntityResolver(makeDeps());
+    const item = externalItem('m1');
+    const ent = resolve({ ...item, envelope: JSON.parse(item.envelope) });
+    expect(ent!.id).toBe(EXT_ADDR);
+  });
+
+  it('结构身份仍然优先：带 taskId 的外部信号归任务，不被地址分支劫持', () => {
+    const resolve = createWorklogEntityResolver(makeDeps());
+    const item = externalItem('m1');
+    const ent = resolve({ ...item, payload: { ...item.payload, taskId: 'tsk_x' } });
+    expect(ent!.kind).toBe('task');
+    expect(ent!.id).toBe('tsk_x');
+  });
+
+  it('IM 声明优先于 envelope：两者都在时读 channelKey（入口各写各的，不互相覆盖）', () => {
+    const resolve = createWorklogEntityResolver(makeDeps());
+    const item = externalItem('m1');
+    const ent = resolve({
+      ...item,
+      payload: { ...item.payload, extra: { channelKey: FEISHU_KEY } },
+    });
+    expect(ent!.id).toBe(FEISHU_KEY);
+  });
+});
+
+describe('declaredExternalAddress —— 只读声明，解不出返回空串', () => {
+  it('坏 JSON / 空串 / null / 非对象 → 空串（不抛）', () => {
+    for (const bad of ['{not json', '', '   ', null, undefined, 42, 'null']) {
+      expect(declaredExternalAddress(bad)).toBe('');
+    }
+  });
+  it('缺 to / to 非对象 / address 非字符串 → 空串', () => {
+    expect(declaredExternalAddress({})).toBe('');
+    expect(declaredExternalAddress({ to: 'x' })).toBe('');
+    expect(declaredExternalAddress({ to: { kind: 'markus', address: 7 } })).toBe('');
+    expect(declaredExternalAddress({ to: { kind: 'markus', address: '  ' } })).toBe('');
+  });
+  it('非 markus 地址空间 → 空串（IM 地址走 channelKey，不在这里认）', () => {
+    expect(declaredExternalAddress({ to: { kind: 'im', address: 'im:feishu:ou_x' } })).toBe('');
+  });
+});
+
+describe('externalAddressLabel —— 仅显示美化，不动身份', () => {
+  it('取 @ 前 local part', () => {
+    expect(externalAddressLabel(EXT_ADDR)).toBe('外部地址 · sigprobe.jsyqrt');
+  });
+  it('无 @ / @ 开头 → undefined（退回短 id 标签，不猜）', () => {
+    expect(externalAddressLabel('webhook')).toBeUndefined();
+    expect(externalAddressLabel('@markus.global')).toBeUndefined();
   });
 });

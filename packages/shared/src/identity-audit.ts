@@ -200,15 +200,22 @@ export function makeIdentityGates(options: IdentityGateOptions): IdentityGate[] 
                     OR TRIM(json_extract(verification_json, '$.verified_by')) = '')`,
     },
     {
-      // C10-B：信号级天花板违规 —— 未验证外部信号带权威 intent。读信封 JSON（事实源），
-      // 不读 intent 投影列（投影是读侧便利，不是第二事实源；夹具也无该列）。
+      // C10-B → A（Owner 2026-11-25 收窄）：未验证外部信号不得拿到**权威 FSM 待遇**。
+      // 读信封 JSON（事实源），不读 intent 投影列（投影是读侧便利，不是第二事实源）。
+      //
+      // 为什么不再咬 action_required：A 把「欠回合」判给平台，action_required 现在
+      // 表示**平台判定这条事件值得一个回合**，不再表示「发送者有权要求动作」。两者
+      // 同名不同义，继续咬它就是把新契约判成违规。trigger_execution 仍然禁止 ——
+      // 它给的是 strictState/权威重试待遇，那是发送者权威，未验证来源拿不到。
+      // 发送者权威的新执行点在 agent 级天花板（selfInitiationCeiling → maySelfInitiate），
+      // 由 autonomy-heartbeat-admission 的行为测试守，不由本 SQL 判据守。
       id: 14,
-      name: '未验证外部信号带权威 intent（天花板违规）',
+      name: '未验证外部信号拿到权威 FSM 待遇（trigger_execution）',
       sql: `SELECT COUNT(*) AS c FROM mailbox_items
              WHERE source_type = 'external_signal' AND queued_at >= '${epoch}'
                AND json_valid(envelope)
                AND json_extract(envelope, '$.fromVerified') = 0
-               AND json_extract(envelope, '$.intent') IN ('trigger_execution', 'action_required')`,
+               AND json_extract(envelope, '$.intent') = 'trigger_execution'`,
     },
     {
       // C10-B：external_signal 行的 ref 不是唯一构造器形状（第二建造点的库内证据）。

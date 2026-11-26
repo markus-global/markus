@@ -22,6 +22,7 @@ function fakeService(overrides: Partial<Record<keyof ExternalSourceService, unkn
     listSources: vi.fn(() => [{ id: 'src_1', kind: 'webhook', address: 'hook.acme@markus.global', enabled: true }]),
     registerSource: vi.fn(() => ({ status: 'registered', source: { id: 'src_1' } })),
     setSourceEnabled: vi.fn(() => ({ status: 'toggled', enabled: false })),
+    deliverAsOperator: vi.fn(() => ({ status: 'ingested', itemId: 'mbx_9', workUnitRef: 'external:src_1:op-1' })),
     ...overrides,
   };
   return svc as unknown as ExternalSourceService & typeof svc;
@@ -99,10 +100,15 @@ describe('C10-B：/api/external-sources 自助面（member 门槛 + 会话身份
     const list = await request(ctx.server, 'GET', '/api/external-sources?agentId=agent-a');
     const reg = await request(ctx.server, 'POST', '/api/external-sources', { agentId: 'agent-a', kind: 'webhook', address: 'hook.acme@markus.global' });
     const toggle = await request(ctx.server, 'POST', '/api/external-sources/src_1/toggle', { agentId: 'agent-a', enabled: false });
+    // B 运营投递口同样不在公开前缀里：能指定目标地址的能力必须带身份。
+    const deliver = await request(ctx.server, 'POST', '/api/external-sources/src_1/deliver', {
+      agentId: 'agent-a', address: 'nobody.acme@markus.global', payload: { content: 'x' },
+    });
 
     expect(list.status).toBe(401);
     expect(reg.status).toBe(401);
     expect(toggle.status).toBe(401);
+    expect(deliver.status).toBe(401);
   });
 
   describe('会话可用时（AUTH_ENABLED=false → 本机 owner 会话）', () => {
@@ -149,6 +155,57 @@ describe('C10-B：/api/external-sources 自助面（member 门槛 + 会话身份
       });
       expect(res.status).toBe(201);
       expect(res.json).toEqual({ status: 'registered', source: { id: 'src_1' } });
+    });
+
+    it('B POST deliver：orgId 取会话身份（不采信 body 冒充值），payload 原样搬运', async () => {
+      const svc = fakeService();
+      ctx.server.setExternalSourceService(svc);
+
+      const res = await request(ctx.server, 'POST', '/api/external-sources/src_1/deliver', {
+        agentId: 'agent-a', address: 'nobody.acme@markus.global',
+        payload: { messageId: 'op-1', content: 'unclaimed' },
+        orgId: 'org_impostor',
+      });
+
+      expect(svc.deliverAsOperator).toHaveBeenCalledWith({
+        orgId: 'default', agentId: 'agent-a', sourceId: 'src_1',
+        address: 'nobody.acme@markus.global',
+        body: { messageId: 'op-1', content: 'unclaimed' },
+      });
+      expect(res.status).toBe(200);
+      expect(res.json).toMatchObject({ status: 'ingested', itemId: 'mbx_9' });
+    });
+
+    it('B POST deliver 服务判 forbidden ⇒ 403（归属裁决只在服务，路由只映射）', async () => {
+      ctx.server.setExternalSourceService(fakeService({
+        deliverAsOperator: vi.fn(() => ({ status: 'forbidden', reason: 'not_your_source' })),
+      }));
+
+      const res = await request(ctx.server, 'POST', '/api/external-sources/src_1/deliver', {
+        agentId: 'agent-a', address: 'nobody.acme@markus.global', payload: { content: 'x' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.json).toMatchObject({ status: 'forbidden', reason: 'not_your_source' });
+    });
+
+    it('B POST deliver 缺 payload ⇒ 400（不从「剩下的字段」推断载荷）', async () => {
+      const svc = fakeService();
+      ctx.server.setExternalSourceService(svc);
+
+      const res = await request(ctx.server, 'POST', '/api/external-sources/src_1/deliver', {
+        agentId: 'agent-a', address: 'nobody.acme@markus.global', content: 'x',
+      });
+
+      expect(res.status).toBe(400);
+      expect(svc.deliverAsOperator).not.toHaveBeenCalled();
+    });
+
+    it('B POST deliver 未接线 ⇒ 503（不假装收下了）', async () => {
+      const res = await request(ctx.server, 'POST', '/api/external-sources/src_1/deliver', {
+        agentId: 'agent-a', address: 'nobody.acme@markus.global', payload: { content: 'x' },
+      });
+      expect(res.status).toBe(503);
     });
 
     it('POST 注册服务判 forbidden ⇒ 403（判决仍只在服务：路由只映射）', async () => {

@@ -50,7 +50,14 @@ export function maySelfInitiate(
  * the autonomy axis itself still bites).
  */
 export interface TrustBoundaryPort {
-  selfInitiationCeiling(senderAgentIds: string[]): AgentAutonomy | undefined;
+  /**
+   * `unverifiedExternal` (A, Owner 2026-11-25): an unverified external origin is
+   * queued. It has no agent row and no org, so it can never be resolved through
+   * `senderAgentIds` — passing it as an id would silently resolve to nothing and
+   * grant it MORE trust than a known cross-org peer. It is a separate structural
+   * fact: untrusted by construction, capped unless policy says 'auto'.
+   */
+  selfInitiationCeiling(senderAgentIds: string[], unverifiedExternal: boolean): AgentAutonomy | undefined;
 }
 
 /**
@@ -59,7 +66,11 @@ export interface TrustBoundaryPort {
  * stays (senderAgentIds) => ceiling.
  */
 export interface OrgTrustBoundaryPort {
-  selfInitiationCeiling(receiverOrgId: string, senderAgentIds: string[]): AgentAutonomy | undefined;
+  selfInitiationCeiling(
+    receiverOrgId: string,
+    senderAgentIds: string[],
+    unverifiedExternal: boolean,
+  ): AgentAutonomy | undefined;
 }
 
 export interface AgentConfig {

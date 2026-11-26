@@ -1,6 +1,6 @@
 // ─── Mailbox Types ──────────────────────────────────────────────────────────
 
-import type { DeliveryEnvelope, SignalClass } from '../mail.js';
+import { isAuthoritativeIntent, type DeliveryEnvelope, type SignalClass } from '../mail.js';
 import { entityKeysOfWorkUnitRef, taskIdOfWorkUnitRef } from '../work-unit.js';
 
 export type MailboxItemType =
@@ -267,9 +267,12 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
   memory_consolidation: { label: 'Memory Consolidation', category: 'system',       icon: '🧠', signalClass: 'system',           policy: { priority: 4, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
   workflow_update:      { label: 'Workflow Update',      category: 'task',         icon: '🔄', signalClass: 'governance_event', policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: true } },
   callback_result:      { label: 'Callback Result',      category: 'system',       icon: '↩',  signalClass: 'callback',         policy: { priority: 1, invokesLLM: true,  affinity: ['conversation', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
-  // C10-B：外部信号（webhook / RSS）是 record 类、invokesLLM=false —— 信号自身永不
-  // spawning 动作回合（observe 的结构表达）；内容经 delta 进 agent 自己的下一回合。
-  // 实体维度 workunit（每事件即实体 wu:<ref>），intent 在唯一 ingest 点封顶 deliver。
+  // 外部信号（webhook / RSS）的**注册表缺省**是 record 类、invokesLLM=false。
+  // A（Owner 2026-11-25）：唯一 ingest 点把 intent 定为 action_required（平台判定
+  // 外部事件欠一个回合），routeMailboxItem 据此把 invokesLLM **上调**为 true ——
+  // 缺省值仍是 record，真实路由由 intent 决定，两处不是第二写者（M0：只上调不下调）。
+  // 未验证发送者的权威在 agent 级天花板受封（selfInitiationCeiling → maySelfInitiate），
+  // 不再靠把 intent 擦成 deliver 来「限制」它。实体维度 workunit（每事件即 wu:<ref>）。
   external_signal:      { label: 'External Signal',      category: 'notification', icon: '📡', signalClass: 'record',           policy: { priority: 2, invokesLLM: false, affinity: ['workunit', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
 };
 
@@ -373,7 +376,17 @@ export function routeMailboxItem(item: MailboxItemLite): MailboxRoute {
     type: item.sourceType,
     signalClass: descriptor.signalClass,
     priority: p.priority,
-    invokesLLM: p.invokesLLM,
+    // M0：「欠不欠一个 LLM 回合」= 类型默认 **或** 本条结构 intent 明确要求动作。
+    //
+    // 方向是**只上调、不下调**，这不是保守，是必需：`mailbox.enqueue` 把每条 item 的 intent
+    // 缺省成 `deliver`（`options?.intent ?? 'deliver'`），若让 `deliver` 反向关掉回合，
+    // human_chat / a2a_message 会全部失去回合 —— 等于把整个平台静音。
+    //
+    // 修的是实测根因（2026-11-25）：`external_signal` 注册为 record + invokesLLM:false，
+    // 于是外部信号永远不欠回合 —— 收件 agent 的 execution_stream_logs / agent_activities
+    // 双双为 0（没有模型调用），只有 pick 决策、work_unit 停 idle、邮箱行 1ms 内 completed。
+    // 权威态判据复用唯一谓词 isAuthoritativeIntent，不在此另写一份 intent 比较。
+    invokesLLM: p.invokesLLM || isAuthoritativeIntent(item.envelope?.intent),
     affinity: p.affinity,
     strictState,
     triageStaleDrop: p.triageStaleDrop,
