@@ -59,6 +59,12 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # API 文档漂移守卫（issue #283）：把「服务器有哪些路由 / 文档写了哪些」变成可执行不变量。
+      # 两个方向都咬：文档漏了真实路由（棘轮只许收紧），以及文档写了服务器已不服务的路径
+      # （死文档比缺失更坏 —— 它会教客户端去调一个不存在的端点）。
+      - name: API docs drift check
+        run: pnpm api:doc-coverage --check
+
       - name: Architecture guard
         run: node scripts/architecture-guard.mjs
 

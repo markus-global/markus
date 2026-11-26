@@ -148,8 +148,6 @@ interface NotebookEntry {
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/system/status` | Global status (paused/emergency mode) |
-| POST | `/api/system/pause-all` | Pause all agents |
-| POST | `/api/system/resume-all` | Resume all agents |
 | POST | `/api/system/emergency-stop` | Emergency stop |
 | GET | `/api/system/storage` | Disk usage: org breakdown + per-agent buckets (see note) |
 | GET | `/api/system/storage/orphans` | Detect orphaned agent/team directories |
