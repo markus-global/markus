@@ -6967,7 +6967,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             onShowArchivedChange={setShowClosed}
             onTaskClick={(task) => handleSelectTask(task)}
             onReqClick={(req) => handleSelectReq(req)}
-            onCollapseDAG={() => { setSelectedTask(null); setSelectedReq(null); setDagExpandReqId(null); setDagFocusReq(null); setDagFocusTasks([]); }}
+            onCollapseDAG={() => { setDagExpandReqId(null); setDagFocusReq(null); setDagFocusTasks([]); }}
             onDependencyChange={refreshBoard}
             selectedTaskId={selectedTask?.id}
             selectedReqId={selectedReq?.id}
