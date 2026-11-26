@@ -4,6 +4,7 @@ import {
   isRequirementNode,
   reqNodeId,
   visibleIdsInFocus,
+  defaultGroupsFor,
 } from '../src/lib/dagFocus.ts';
 
 const ACTIVE = new Set(['pending', 'in_progress', 'blocked', 'review']);
@@ -61,6 +62,38 @@ describe('依赖图卡片点击：身份只由「任务/需求」决定，不由
     expect(isRequirementNode(REQ_A)).toBe(true);
     expect(isRequirementNode('tsk_1')).toBe(false);
     expect(REQ_A.slice(4)).toBe('rq_a');
+  });
+});
+
+describe('筛选项按层作用域：概览与聚焦各有默认值', () => {
+  const ALL = ['todo', 'in_progress', 'review', 'done'];
+
+  it('概览层默认不勾「已完成」（已完成的需求可能成百上千，全铺会把图淹没）', () => {
+    const groups = defaultGroupsFor('overview', ALL);
+    expect(groups.has('done')).toBe(false);
+    expect(groups.has('todo')).toBe(true);
+    expect(groups.has('in_progress')).toBe(true);
+    expect(groups.has('review')).toBe(true);
+  });
+
+  it('聚焦层默认勾上「已完成」（进去就是看这个需求整体做到哪一步）', () => {
+    const groups = defaultGroupsFor('focus', ALL);
+    expect(groups.has('done')).toBe(true);
+    expect(groups.size).toBe(ALL.length);
+  });
+
+  it('两层的差异**只有** done，不是顺手把别的组也关掉', () => {
+    const overview = defaultGroupsFor('overview', ALL);
+    const focus = defaultGroupsFor('focus', ALL);
+    const onlyInFocus = [...focus].filter(id => !overview.has(id));
+    expect(onlyInFocus).toEqual(['done']);
+    expect([...overview].filter(id => !focus.has(id))).toEqual([]);
+  });
+
+  it('每组返回新集合，互不共享引用（否则改一层会串到另一层）', () => {
+    const a = defaultGroupsFor('focus', ALL);
+    a.delete('done');
+    expect(defaultGroupsFor('focus', ALL).has('done')).toBe(true);
   });
 });
 

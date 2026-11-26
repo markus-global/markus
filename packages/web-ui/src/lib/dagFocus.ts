@@ -64,6 +64,25 @@ export function resolveDagNodeClick(
   return { type: 'focus', nodeId };
 }
 
+/**
+ * 依赖图的两层作用域。两层回答的是**不同问题**，所以筛选项的默认值不同：
+ *
+ *   overview（"哪些需求还活着"）—— 已完成的需求可能成百上千，全铺上去图就废了，
+ *                                   默认**不勾**「已完成」。
+ *   focus   （"这个需求整体做到哪一步"）—— 已完成的任务正是进来看的东西，
+ *                                   默认**勾上**「已完成」。
+ *
+ * 这也是两层各自持有勾选状态的理由：`Enter/Exit` 不是重置，而是切到另一层的视图。
+ */
+export type DagFilterLayer = 'overview' | 'focus';
+
+/** 该层的默认勾选分组。`allGroupIds` 由调用方传入（分组定义属于 UI 层）。 */
+export function defaultGroupsFor(layer: DagFilterLayer, allGroupIds: readonly string[]): Set<string> {
+  return layer === 'focus'
+    ? new Set(allGroupIds)
+    : new Set(allGroupIds.filter(id => id !== 'done'));
+}
+
 export interface FocusVisibilityInput {
   /** 当前聚焦的需求节点 id（`req-<requirementId>`）。 */
   focusedNodeId: string;

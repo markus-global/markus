@@ -23,7 +23,7 @@ import dagre from '@dagrejs/dagre';
 import type { TaskInfo, AgentInfo, RequirementInfo } from '../api.ts';
 import { api } from '../api.ts';
 import { TERMINAL_REQUIREMENT_STATUSES, TERMINAL_STATUSES } from '../lib/taskStatus.ts';
-import { resolveDagNodeClick, visibleIdsInFocus, isArchivedTask, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
+import { resolveDagNodeClick, visibleIdsInFocus, defaultGroupsFor, isArchivedTask, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   pending:     { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
@@ -318,7 +318,7 @@ const DAG_FILTER_GROUPS = [
   { id: 'done',        statuses: new Set<string>(TERMINAL_STATUSES),     color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
 ] as const;
 
-const DEFAULT_DAG_GROUP_FILTER = new Set(DAG_FILTER_GROUPS.filter(g => g.id !== 'done').map(g => g.id));
+const ALL_DAG_GROUP_IDS = DAG_FILTER_GROUPS.map(g => g.id);
 
 
 export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
@@ -326,8 +326,16 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
-  const [groupFilter, setGroupFilter] = useState<Set<string>>(() => new Set(DEFAULT_DAG_GROUP_FILTER));
+  // 筛选项按**层**作用域：概览与聚焦回答的是不同问题，所以默认勾选不同，
+  // 且各自记住自己的勾选（进/出聚焦 = 切到另一层的视图，不是重置）。
+  // 规则本体在 lib/dagFocus.ts#defaultGroupsFor（纯函数、可测）。
+  const [overviewFilter, setOverviewFilter] = useState<Set<string>>(() => defaultGroupsFor('overview', ALL_DAG_GROUP_IDS));
+  const [focusFilter, setFocusFilter] = useState<Set<string>>(() => defaultGroupsFor('focus', ALL_DAG_GROUP_IDS));
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(defaultExpandedNodeId ?? null);
+  const isFocusLayer = expandedNodeId !== null;
+  const groupFilter = isFocusLayer ? focusFilter : overviewFilter;
+  const setGroupFilter = isFocusLayer ? setFocusFilter : setOverviewFilter;
+  const layerDefaultFilter = defaultGroupsFor(isFocusLayer ? 'focus' : 'overview', ALL_DAG_GROUP_IDS);
   const [localShowArchived, setLocalShowArchived] = useState(showArchivedProp ?? false);
   const showArchived = showArchivedProp ?? localShowArchived;
   const setShowArchived = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
@@ -371,12 +379,16 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   }, [tasks, requirements]);
 
   const toggleGroup = useCallback((groupId: string) => {
+    // `setGroupFilter` is layer-scoped (overview vs focus), so it MUST be a dep:
+    // with an empty dep array this closure kept the setter of the layer that was
+    // active at mount, and a chip click after entering/leaving the focus mutated
+    // the other layer's state — the chips would look stuck.
     setGroupFilter(prev => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId); else next.add(groupId);
       return next;
     });
-  }, []);
+  }, [setGroupFilter]);
 
   const showToast = useCallback((msg: string, type: 'success' | 'error' = 'success') => {
     setToast({ msg, type });
@@ -479,13 +491,9 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
 
     // Overview: filtered by status groups
     const filteredTasks = tasks.filter(t => allowedStatuses.has(t.status) && (showArchived || !isArchivedTask(t)));
-    const allowedGroupIds = new Set<string>();
-    for (const g of DAG_FILTER_GROUPS) {
-      if (groupFilter.has(g.id)) allowedGroupIds.add(g.id);
-    }
     const filteredReqs = requirements.filter(r => {
       const gid = REQ_GROUP_MAP[r.status];
-      return gid && allowedGroupIds.has(gid);
+      return gid && groupFilter.has(gid);
     });
 
     // Requirement-anchored tasks: for any VISIBLE requirement that is still in
@@ -763,8 +771,8 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     );
   }
 
-  const isDefaultFilter = groupFilter.size === DEFAULT_DAG_GROUP_FILTER.size
-    && [...DEFAULT_DAG_GROUP_FILTER].every(id => groupFilter.has(id))
+  const isDefaultFilter = groupFilter.size === layerDefaultFilter.size
+    && [...layerDefaultFilter].every(id => groupFilter.has(id))
     && !showArchived;
 
   const sourceTask = pendingDelete ? taskMap.get(pendingDelete.source) : null;
@@ -834,7 +842,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
             </button>
           )}
           {!isDefaultFilter && (
-            <button onClick={() => { setGroupFilter(new Set(DEFAULT_DAG_GROUP_FILTER)); setShowArchived(false); }} className="text-[10px] text-fg-tertiary hover:text-fg-secondary px-1">{t('work:dag.reset')}</button>
+            <button onClick={() => { setGroupFilter(new Set(layerDefaultFilter)); setShowArchived(false); }} className="text-[10px] text-fg-tertiary hover:text-fg-secondary px-1">{t('work:dag.reset')}</button>
           )}
         </div>
         <div className="text-[10px] text-fg-tertiary select-none flex items-center gap-2">
