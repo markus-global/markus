@@ -133,7 +133,13 @@ export function ExternalSourcesSection() {
       const out = await api.externalSignals.rotateSecret(agentId, source.id);
       if (out.status === 'rotated' && out.secret) {
         setMintedSecret({ sourceId: source.id, value: out.secret });
-        setSources((prev) => prev.map((s) => (s.id === source.id ? { ...s, hasSecret: true } : s)));
+        // The preview is the server's projection, not ours: deriving it here
+        // from the minted value would be a second writer of "what is the
+        // current secret", and it drifted once already (the row kept showing
+        // the previous tail until the page was reloaded).
+        setSources((prev) => prev.map((s) => (s.id === source.id
+          ? { ...s, hasSecret: true, secretPreview: out.secretPreview ?? s.secretPreview }
+          : s)));
       } else {
         setError(out.hint ?? out.status);
       }

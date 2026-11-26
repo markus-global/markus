@@ -65,7 +65,19 @@ interface OllamaDetectResult {
 
 type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'external-sources' | 'license';
 
-interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
+interface SettingsTabDef {
+  id: SettingsTab;
+  labelKey: string;
+  adminOnly?: boolean;
+  /**
+   * Only exposed by a development build (`import.meta.env.DEV`).
+   *
+   * C10-F（Owner 2026-11-26）：外部信号暂时不在正式发版里开放。这个字段是那道门的
+   * **唯一声明点** —— 侧边栏、L1 键盘顺序与深链归一化全读它，所以“隐藏”不会因为
+   * 某个调用点忘了判而漏掉一条路（深链就是第二条路）。
+   */
+  devOnly?: boolean;
+}
 
 /** Module-scoped — used by Settings page and CollapsibleAvailableModels. */
 export const SETTINGS_TABS: SettingsTabDef[] = [
@@ -79,7 +91,11 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
   // C10-F: whether the platform accepts input from outside at all, and what an
   // accepted signal may do. Admin-only like the other connection surfaces — it
   // is an access decision, not a preference.
-  { id: 'external-sources', labelKey: 'nav.externalSignals', adminOnly: true },
+  //
+  // 暂不在正式发版开放（Owner 2026-11-26）：只在 dev 构建 / 8057 开发实例出现。
+  // 后端入口仍在，但组织级总闸默认 `off` —— 见 external-source-service 的
+  // `ingressPolicy ?? 'off'`（失败关闭），所以“没入口”不等于“无门禁”。
+  { id: 'external-sources', labelKey: 'nav.externalSignals', adminOnly: true, devOnly: true },
   { id: 'network', labelKey: 'nav.network', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
   { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
@@ -97,6 +113,21 @@ export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] 
   // 属于诊断/取证，不该夹在日常偏好设置中间（Owner 2026-11-15）。
   { labelKey: 'nav.group.data', tabs: ['storage', 'facts'] },
 ];
+
+/** The build's own dev signal — the same single source `InstancesSection` reads. */
+export const DEV_BUILD: boolean = import.meta.env.DEV;
+
+/**
+ * Which tabs this build/role exposes. Pure, and the only place that decides.
+ *
+ * The rail, the keyboard order and the deep-link normaliser all read this one
+ * answer; asking the question twice is how "hidden" grows a second door.
+ */
+export function visibleSettingsTabs(opts: { dev: boolean; canManageOrg: boolean }): SettingsTabDef[] {
+  return SETTINGS_TABS.filter(
+    (tab) => (!tab.adminOnly || opts.canManageOrg) && (!tab.devOnly || opts.dev),
+  );
+}
 
 /** Data each settings tab needs the first time it is opened (pure, testable). */
 export type SettingsLoadKey = 'llm' | 'network' | 'oauth' | 'authProfiles' | 'agent' | 'browser' | 'storage';
@@ -148,7 +179,11 @@ const STORAGE_SAFETY_LEVEL: Record<string, 'safe' | 'caution' | 'keep'> = {
 };
 
 // Leading icons for the settings nav (stroke-based lucide paths, one or more subpaths).
-const SETTINGS_TAB_ICONS: Record<string, string> = {
+// Exported so the "every registered tab is fully described" guard can assert that
+// a tab has its own mark — a missing entry silently falls back to `_default` (a
+// dot), which is the visual equivalent of the raw-i18n-key bug: the item renders,
+// so nothing looks broken enough to report.
+export const SETTINGS_TAB_ICONS: Record<string, string> = {
   appearance: 'M21 4H14 M10 4H3 M21 12H12 M8 12H3 M21 20H16 M12 20H3 M14 2v4 M8 10v4 M16 18v4',
   storage: 'M12 8c4.418 0 8-1.343 8-3s-3.582-3-8-3-8 1.343-8 3 3.582 3 8 3Z M4 5v6c0 1.657 3.582 3 8 3s8-1.343 8-3V5 M4 11v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6',
   // 事实审计：带核验勾的卷宗（不是放大镜——这是"已核验的记录"，不是"搜索"）
@@ -159,6 +194,9 @@ const SETTINGS_TAB_ICONS: Record<string, string> = {
   'coding-tools': 'M16 18l6-6-6-6 M8 6l-6 6 6 6',
   search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3',
   integrations: 'M9 17H7A5 5 0 0 1 7 7h2 M15 7h2a5 5 0 1 1 0 10h-2 M8 12h8',
+  // 外部信号：朝向天空的接收碟 + 两道入站波弧。刻意不复用 wifi 弧线——那已经是「网络与
+  // 访问」与「远程访问」的记号；两只碟+两弧在 16px 下与它们可区分。
+  'external-sources': 'M4 10a7.31 7.31 0 0 0 10 10Z M9 15l3-3 M17 13a6 6 0 0 0-6-6 M21 13A10 10 0 0 0 11 3',
   remote: 'M2 8.5a15 15 0 0 1 20 0 M5 12a10 10 0 0 1 14 0 M8.5 15.5a5 5 0 0 1 7 0 M12 19h.01',
   network: 'M2 8.5a15 15 0 0 1 20 0 M5 12a10 10 0 0 1 14 0 M8.5 15.5a5 5 0 0 1 7 0 M12 19h.01',
   account: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2 M12 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z',
@@ -191,8 +229,25 @@ export function resolveSettingsTab(hash: string): SettingsTab | null {
   return null;
 }
 
+/**
+ * A tab that this build does not expose must not be reachable by URL either.
+ *
+ * `resolveSettingsTab` answers "which tab does this URL name"; this answers "is
+ * that name open in this build". Keeping them separate means the hash parser
+ * stays a registry question and a dev-only surface cannot be entered by typing
+ * `#settings/external-sources` into a production build.
+ */
+export function normalizeSettingsTab(
+  tab: SettingsTab | null,
+  dev: boolean = DEV_BUILD,
+): SettingsTab | null {
+  if (!tab) return null;
+  const def = SETTINGS_TABS.find((t) => t.id === tab);
+  return def?.devOnly && !dev ? null : tab;
+}
+
 function getSettingsTab(): SettingsTab | null {
-  return resolveSettingsTab(window.location.hash);
+  return normalizeSettingsTab(resolveSettingsTab(window.location.hash));
 }
 
 export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdated }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser; onLogout?: () => void; onUserUpdated?: (u: AuthUser) => void } = {}) {
@@ -1173,7 +1228,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   const canManageOrgSettings = authUser?.role === 'owner' || authUser?.role === 'admin';
 
-  const visibleTabs = SETTINGS_TABS.filter(tab => !tab.adminOnly || canManageOrgSettings);
+  const visibleTabs = visibleSettingsTabs({ dev: DEV_BUILD, canManageOrg: canManageOrgSettings });
   /** Flat tab order matching the L1 sidebar visual order (grouped). */
   const navigableTabs = useMemo(() => {
     const out: SettingsTabDef[] = [];
