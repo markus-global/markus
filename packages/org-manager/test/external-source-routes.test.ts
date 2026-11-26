@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ExternalSourceService } from '../src/external-source-service.js';
+import { DEFAULT_MAX_BODY_BYTES, WEBHOOK_MAX_BODY_BYTES, maxBodyBytesForPath } from '../src/api-server.js';
 import { createTestServer, request, type TestContext } from './api-server-test-helpers.js';
 
 let ctx: TestContext;
@@ -234,5 +235,33 @@ describe('C10-B：/api/external-sources 自助面（member 门槛 + 会话身份
       expect(ok.status).toBe(200);
       expect(ok.json).toEqual({ status: 'toggled', enabled: false });
     });
+  });
+});
+
+/**
+ * C10 开源默认：请求体必须有硬上限。
+ *
+ * 为什么这是安全项而不是优化：`readBody` 是不可信请求体进入内存的唯一关口，
+ * 而 `/api/webhooks/*` 是**公开**前缀 —— 没有上限时，一个未知调用者不需要任何凭据
+ * 就能用一次 POST 把进程内存吃满。开源用户不可能自己加反向代理，默认值就是实际配置。
+ */
+describe('C10 开源默认：对外请求体硬上限', () => {
+  it('按路径分派：对外 webhook 64 KB，平台内 10 MB（分派点唯一）', () => {
+    expect(maxBodyBytesForPath('/api/webhooks/src_1')).toBe(WEBHOOK_MAX_BODY_BYTES);
+    expect(maxBodyBytesForPath('/api/external-sources')).toBe(DEFAULT_MAX_BODY_BYTES);
+    // 对外入口必须显著小于平台内，否则这条限制对外部攻击面没有意义
+    expect(WEBHOOK_MAX_BODY_BYTES).toBeLessThan(DEFAULT_MAX_BODY_BYTES / 10);
+  });
+
+  it('超过上限的 webhook body ⇒ 413，且服务层根本没被调用（未入内存即未入决策）', async () => {
+    const svc = fakeService();
+    ctx.server.setExternalSourceService(svc);
+
+    const res = await request(ctx.server, 'POST', '/api/webhooks/src_1', {
+      content: 'x'.repeat(WEBHOOK_MAX_BODY_BYTES + 4096),
+    });
+
+    expect(res.status).toBe(413);
+    expect(svc.receiveWebhook).not.toHaveBeenCalled();
   });
 });

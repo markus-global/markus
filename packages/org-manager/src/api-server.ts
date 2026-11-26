@@ -446,6 +446,26 @@ const EMPTY_REMOTE_STATUS = {
  */
 export const DEFAULT_BIND_HOST = '0.0.0.0';
 
+/**
+ * 请求体硬上限（字节）。
+ *
+ * 为什么需要：`readBody` 是**不可信请求体进入内存的唯一关口**，而它原先无上限 ——
+ * 一个未登录的外部调用者就能把整个进程的内存吃满（markus 现在要给大量开源用户
+ * 部署，默认值即实际配置，不能指望运维去加反向代理）。
+ *
+ * 两条值分开，是因为两类入口的“合理大小”差两个量级：
+ *  - 平台内 API：UI 一次性提交的 JSON（批量导入/设置）可能不小，给 10 MB；
+ *  - `/api/webhooks/*`：对外公开、无会话、共享密钥就是全部凭据。外部系统需要投递的
+ *    只是一个事件信封，64 KB 足够；再大就是攻击面（提示注入 + 烧 token）。
+ */
+export const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
+export const WEBHOOK_MAX_BODY_BYTES = 64 * 1024;
+
+/** 按路径选上限 —— 唯一分派点，路由里不要再写第二份判断。 */
+export function maxBodyBytesForPath(path: string): number {
+  return path.startsWith('/api/webhooks/') ? WEBHOOK_MAX_BODY_BYTES : DEFAULT_MAX_BODY_BYTES;
+}
+
 export class APIServer {
   /**
    * A2A 投递/回复的**唯一**执行点（docs/architecture/a2a-communication.md §11.1.1–§11.1.4）。
@@ -3730,6 +3750,8 @@ export class APIServer {
       } else {
         if (msg.startsWith('CONTENT_TYPE_ERROR:')) {
           this.json(res, 415, { error: 'Content-Type must be application/json' });
+        } else if (msg.startsWith('BODY_TOO_LARGE:')) {
+          this.json(res, 413, { error: 'Request body too large' });
         } else if (msg.startsWith('BODY_PARSE_ERROR:')) {
           this.json(res, 400, { error: 'Invalid request body' });
         } else {
@@ -3756,7 +3778,7 @@ export class APIServer {
       || (req.method === 'DELETE' && Number(req.headers['content-length'] ?? 0) > 0)) {
       const ct = String(req.headers['content-type'] ?? '').toLowerCase();
       if (!ct.includes('multipart/form-data')) {
-        await this.readBody(req);
+        await this.readBody(req, { maxBytes: maxBodyBytesForPath(path) });
       }
     }
 
@@ -16139,7 +16161,11 @@ EXPLANATION_END`;
     res.end(payload);
   }
 
-  readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  readBody(
+    req: IncomingMessage,
+    opts: { maxBytes?: number } = {},
+  ): Promise<Record<string, unknown>> {
+    const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BODY_BYTES;
     // Return cached body if already pre-read at route level (BUG-003/005)
     const cached: unknown = (req as any).__parsedBody__;
     if (cached !== undefined) {
@@ -16162,8 +16188,27 @@ EXPLANATION_END`;
       }
 
       const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      // 超限后**继续排水但不缓冲**：既不把内存交给调用者，也不用 destroy 掐掉连接
+      // （掐连接会让 413 根本发不出去，调用方只看到 connection reset）。
+      let received = 0;
+      let tooLarge = false;
+      req.on('data', (chunk: Buffer) => {
+        received += chunk.length;
+        if (tooLarge) return;
+        if (received > maxBytes) {
+          tooLarge = true;
+          chunks.length = 0;
+          return;
+        }
+        chunks.push(chunk);
+      });
       req.on('end', () => {
+        if (tooLarge) {
+          const err = new Error(`BODY_TOO_LARGE: request body exceeds ${maxBytes} bytes`);
+          (req as any).__parsedBody__ = err;
+          reject(err);
+          return;
+        }
         try {
           const raw = Buffer.concat(chunks).toString();
           const parsed = JSON.parse(raw);

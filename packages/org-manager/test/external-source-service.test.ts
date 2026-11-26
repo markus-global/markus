@@ -40,6 +40,14 @@ let bindings: storage.SqliteAddressBindingRepo;
 let mbRepo: storage.SqliteMailboxRepo;
 let service: ExternalSourceService;
 let boxes: Map<string, AgentMailbox>;
+/**
+ * 入队时**原始**载荷（外置存储之前的形态）。
+ *
+ * 为什么要记：mailbox payload > 8 KB 会由 `projectJsonForStorage` 外置成 blob 引用，
+ * 直接读列拿到的是 `$blob` 引用而不是正文。断言「截断后的正文」必须看入口这一层，
+ * 而不是去看一个被外置过的列。
+ */
+let recordedPayloads: Array<Record<string, unknown>> = [];
 
 function persistenceFor(repo: storage.SqliteMailboxRepo) {
   const row = (item: any, status: string, messageId: string | null, dropReason: string | null) => ({
@@ -56,7 +64,7 @@ function persistenceFor(repo: storage.SqliteMailboxRepo) {
     workUnitRef: item.workUnitRef ?? null,
   });
   return {
-    save: (item: any, dedupKey?: string) => repo.save({ ...row(item, item.status, item.envelope?.messageId ?? null, item.dropReason ?? null), dedupKey }),
+    save: (item: any, dedupKey?: string) => { recordedPayloads.push(item.payload as Record<string, unknown>); return repo.save({ ...row(item, item.status, item.envelope?.messageId ?? null, item.dropReason ?? null), dedupKey }); },
     updateStatus: (id: string, status: string, extra?: Record<string, unknown>) => repo.updateStatus(id, status, extra),
     findByMessageId: (aid: string, mid: string) => repo.findByMessageId(aid, mid),
     saveBounced: (item: any, dropReason: string) => { repo.save(row(item, 'bounced', null, dropReason)); },
@@ -232,11 +240,14 @@ describe('C10-B：唯一 ingest 点', () => {
   it('B 安全边界：公开 webhook 入口不得接受目标地址覆写（外部方不能重定向）', () => {
     bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
     bindings.bind({ orgId: ORG, agentId: OTHER, address: UNCLAIMED });
-    const srcId = registerWebhook();
+    // C10 开源默认值后：源必须带密钥才能入站，这里显式给一个。
+    const srcId = service.registerSource({
+      orgId: ORG, agentId: OWNER, kind: 'webhook', address: ADDR, config: { token: 's3cret' },
+    }).source!.id;
     // 外部方在 payload 里塞 targetAddress —— 必须被忽略，仍按源自己的地址路由。
     const out = service.receiveWebhook(srcId, {
       messageId: 'wh-redirect', content: 'redirect attempt', targetAddress: UNCLAIMED,
-    }, null);
+    }, 's3cret');
     expect(out.http).toBe(200);
     const row = db.prepare('SELECT agent_id, envelope FROM mailbox_items WHERE id=?')
       .get((out.body as any).itemId) as any;
@@ -453,14 +464,20 @@ describe('C10-B：receiveWebhook 入口（路由层只搬运，判决全在这�
     expect(out.body).toEqual({ status: 'bounced', reason: 'not_a_webhook_source' });
   });
 
-  it('无 token 的公开源 ⇒ 不需要 token 也收（token 是可选共享密钥）', () => {
+  it('旧契约已废止：不给密钥的调用 ⇒ 401（用现铸密钥才能入站）', () => {
     bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
-    const srcId = service.registerSource({ orgId: ORG, agentId: OWNER, kind: 'webhook', address: ADDR }).source!.id;
+    const reg = service.registerSource({ orgId: ORG, agentId: OWNER, kind: 'webhook', address: ADDR });
+    const srcId = reg.source!.id;
 
-    const out = service.receiveWebhook(srcId, { content: 'open', messageId: 'wh-open' }, null);
+    // 不给密钥：即使源是本次注册刚铸的密钥，也不能免验入站
+    const denied = service.receiveWebhook(srcId, { content: 'open', messageId: 'wh-open' }, null);
+    expect(denied.http).toBe(401);
+    expect(denied.body['status']).toBe('unauthorized');
 
-    expect(out.http).toBe(200);
-    expect(out.body['status']).toBe('ingested');
+    // 拿注册时回显的密钥 ⇒ 照常收
+    const ok = service.receiveWebhook(srcId, { content: 'open', messageId: 'wh-open' }, reg.secret);
+    expect(ok.http).toBe(200);
+    expect(ok.body['status']).toBe('ingested');
   });
 });
 
@@ -478,4 +495,107 @@ describe('C10-B：RSS 单 timer + cursor 水位', () => {
     db.prepare('UPDATE external_sources SET enabled=0 WHERE id=?').run(srcId);
     expect(await service.pollRss(srcId)).toEqual({ fetched: 0, ingested: 0 });
   });
+});
+
+/**
+ * C10 开源默认值（Owner 2026-11-26）：markus 要给大量开源用户部署，默认值即实际配置。
+ *
+ * 三条判据都必须**结构性**成立，不能靠用户记得配：
+ *   ① webhook 源必然带共享密钥（不传就现铸）→ 「无鉴权入站口」不可表达；
+ *   ② 没有密钥的源拒绝入站（fail-closed），而不是「等于放行」；
+ *   ③ content 有硬上限 → 一条外部请求不能烧掉一天上下文。
+ */
+describe('C10 开源默认值：密钥必铸 / 入站 fail-closed / 内容必有界', () => {
+  const TOKEN = 's3cret';
+
+  function tokenSource(): string {
+    bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
+    return service.registerSource({
+      orgId: ORG, agentId: OWNER, kind: 'webhook', address: ADDR, config: { token: TOKEN },
+    }).source!.id;
+  }
+
+  const lastPayload = () => recordedPayloads[recordedPayloads.length - 1]!;
+
+  it('超长 content ⇒ 落库截断到 32KB + contentTruncated 标记', () => {
+    const srcId = tokenSource();
+    recordedPayloads = [];
+
+    const out = service.receiveWebhook(srcId, { content: 'x'.repeat(200_000), messageId: 'big-1' }, TOKEN);
+
+    expect(out.http).toBe(200);
+    const payload = lastPayload();
+    expect(payload['contentTruncated']).toBe(true);
+    expect(String(payload['content']).length).toBeLessThan(33_000);
+    expect(payload['content']).toContain('[truncated: original 200000 chars]');
+    // 截断只砍尾巴，不重排内容
+    expect(String(payload['content']).startsWith('xxxx')).toBe(true);
+  });
+
+  it('恰好等于上限的内容不截断（边界不多也不少）', () => {
+    const srcId = tokenSource();
+    recordedPayloads = [];
+
+    service.receiveWebhook(srcId, { content: 'y'.repeat(32 * 1024), messageId: 'edge-1' }, TOKEN);
+
+    const payload = lastPayload();
+    expect(String(payload['content']).length).toBe(32 * 1024);
+    expect(payload['contentTruncated']).toBeUndefined();
+  });
+  it('注册 webhook 源不给 token ⇒ 现铸密钥、只回显一次、落库一致，列表面不回显', () => {
+    bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
+
+    const out = service.registerSource({ orgId: ORG, agentId: OWNER, kind: 'webhook', address: ADDR });
+
+    expect(out.status).toBe('registered');
+    expect(typeof out.secret).toBe('string');
+    const secret = out.secret!;
+    // 真随机、足够长（16 字节 base64url ≥ 22 字符），且给的是可放进 header 的字符集
+    expect(secret.length).toBeGreaterThanOrEqual(22);
+    expect(secret).toMatch(/^[A-Za-z0-9_-]+$/);
+
+    // 落库的就是回显的那个 —— 否则用户拿着密钥永远打不通（回显与存储两个口径 = 缺陷）
+    // 注：`ExternalSourceRecord.config` 是 JSON **字符串**，不是对象。
+    expect(JSON.parse(sources.get(out.source!.id)!.config)['token']).toBe(secret);
+
+    // 显式传了 token 就不得被覆盖，也不该再回显一个「新密钥」误导用户
+    bindings.bind({ orgId: ORG, agentId: OTHER, address: 'hook2.acme@markus.global' });
+    const explicit = service.registerSource({
+      orgId: ORG, agentId: OTHER, kind: 'webhook',
+      address: 'hook2.acme@markus.global', config: { token: TOKEN },
+    });
+    expect(explicit.secret).toBeUndefined();
+
+    // 列表面不回显密钥（避免二次扩散到日志/UI）
+    expect(JSON.stringify(service.listSources(ORG, OWNER))).not.toContain(secret);
+
+    // 闭环：用铸出来的密钥真的能入站
+    const wh = service.receiveWebhook(out.source!.id, { content: 'hi', messageId: 'mint-1' }, secret);
+    expect(wh.http).toBe(200);
+    expect(wh.body['status']).toBe('ingested');
+  });
+
+  it('历史源（config 无 token）⇒ 401 secret_required + 可行动提示，且零入队', () => {
+    bindings.bind({ orgId: ORG, agentId: OWNER, address: ADDR });
+    const srcId = registerWebhook(); // 直落库、无 token —— 旧库里的历史行形态
+
+    const out = service.receiveWebhook(srcId, { content: 'hi', messageId: 'legacy-1' }, null);
+
+    expect(out.http).toBe(401);
+    expect(out.body['status']).toBe('secret_required');
+    // 拒绝必须可行动：告诉调用者怎么修，而不是一个空洞的 401
+    expect(String(out.body['hint'])).toContain('external_source_register');
+    expect(queuedSignals()).toBe(0);
+  });
+
+  it('等长但错误的 token ⇒ 401 unauthorized（恒定时间比较，不走长度捷径）', () => {
+    const srcId = tokenSource();
+
+    const out = service.receiveWebhook(srcId, { content: 'hi', messageId: 'eqlen-1' }, 'x'.repeat(TOKEN.length));
+
+    expect(out.http).toBe(401);
+    expect(out.body).toEqual({ status: 'unauthorized' });
+    expect(queuedSignals()).toBe(0);
+  });
+
 });

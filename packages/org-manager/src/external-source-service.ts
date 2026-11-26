@@ -16,7 +16,7 @@
  * 适配器只翻译（@markus/comms external-source）；本服务不解析 XML、不读 payload 推断
  * 结构（R3'）。messageId 缺省 = 平台 mbx_* id（诚实：无幂等声明 = 每次新事件）。
  */
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   WORK_UNIT_REF,
   mayExternalSignalDemandAction,
@@ -53,6 +53,39 @@ interface RssCursor {
 }
 
 const RSS_SEEN_LIMIT = 200;
+
+/**
+ * 外部内容落库前的硬上限（32 KB）。
+ *
+ * 为什么必须有：webhook 的 `content` 会**整段进入提示词**（agent 侧「有 content 就跳过
+ * 2000 字截断」）。没有上限时，一个几 MB 的 body = 一次超大上下文调用 —— 对开源用户
+ * 就是「一条请求烧掉一整天的额度」，而且能用来把系统提示里的约束冲掉（提示注入面）。
+ *
+ * 上限放在**唯一 ingest 点**：webhook / RSS / 运营投递三条路共用同一个执行点，
+ * 不靠每个适配器自己记得截断（那是三个写者）。
+ */
+const EXTERNAL_CONTENT_LIMIT = 32 * 1024;
+
+/**
+ * 给 webhook 源铸造共享密钥。
+ *
+ * 第一性原理：**「无鉴权的入站口」不应该是一种可选状态**。旧实现把 token 当可选项，
+ * 于是「不安全」是默认态、「安全」要靠用户记得配 —— 对开源产品的绝大多数用户，
+ * 默认值就是实际配置。现在注册时必然产出密钥（不传就生成），入站时无密钥一律拒收。
+ */
+function mintWebhookSecret(): string {
+  return randomBytes(24).toString('hex');
+}
+
+/** 恒定时间比较；长度不同直接 false（timingSafeEqual 长度不等会抛）。 */
+function secretEquals(provided: string | null, expected: string): boolean {
+  if (typeof provided !== 'string') return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
 
 function safeJson(raw: string): Record<string, unknown> {
   try {
@@ -134,11 +167,21 @@ export class ExternalSourceService {
           ? (typeof config['feedUrl'] === 'string' ? (config['feedUrl'] as string) : 'rss')
           : 'webhook';
 
+    // 内容上限：所有适配器共用这一个执行点（webhook / RSS / 运营投递）。
+    // 没有它时，一条几 MB 的外部 body 会整段进入提示词 —— 对开源用户就是
+    // 「一条请求烧掉一天额度」，而且能冲掉系统提示里的约束（提示注入面）。
+    const rawContent = typeof event.content === 'string' ? event.content : '';
+    const contentTruncated = rawContent.length > EXTERNAL_CONTENT_LIMIT;
+    const boundedContent = contentTruncated
+      ? `${rawContent.slice(0, EXTERNAL_CONTENT_LIMIT)}\n\n[truncated: original ${rawContent.length} chars]`
+      : rawContent;
+
     const item = mailbox.enqueue(
       'external_signal',
       {
-        summary: event.subject || event.content.slice(0, 120),
-        content: event.content,
+        summary: event.subject || boundedContent.slice(0, 120),
+        content: boundedContent,
+        ...(contentTruncated ? { contentTruncated: true } : {}),
       },
       {
         intent,
@@ -173,7 +216,7 @@ export class ExternalSourceService {
    */
   registerSource(input: {
     orgId: string; agentId: string; kind: string; address: string; config?: Record<string, unknown>;
-  }): { status: string; source?: { id: string }; reason?: string; hint?: string } {
+  }): { status: string; source?: { id: string }; secret?: string; reason?: string; hint?: string } {
     const parsed = parseAddress(input.address);
     if (!parsed.ok || parsed.value.kind !== 'markus') {
       return {
@@ -188,11 +231,36 @@ export class ExternalSourceService {
         hint: 'The address is not actively bound to you. Bind it to yourself (bind_address) before registering a source on it.',
       };
     }
-    const out = this.deps.sources.register({ ...input, address: parsed.value.address });
+    // 安全默认值（开源产品关键）：webhook 源**必然**带共享密钥。
+    // 不传就现铸一个 —— 让「无鉴权的入站口」在结构上不可表达，而不是靠用户记得配。
+    // 密钥只在注册响应里返回一次（调用方自己保管）；listSources 不回显，避免二次扩散。
+    let mintedSecret: string | undefined;
+    let config = input.config;
+    if (input.kind === 'webhook') {
+      const next = { ...(input.config ?? {}) };
+      const existing = next['token'];
+      if (typeof existing !== 'string' || existing.trim().length === 0) {
+        mintedSecret = mintWebhookSecret();
+        next['token'] = mintedSecret;
+      }
+      config = next;
+    }
+    const out = this.deps.sources.register({ ...input, address: parsed.value.address, config });
     if (out.status === 'bounced') {
       return { status: 'bounced', reason: out.reason, hint: out.hint };
     }
-    return { status: 'registered', source: { id: out.source.id } };
+    return {
+      status: 'registered',
+      source: { id: out.source.id },
+      ...(mintedSecret
+        ? {
+            secret: mintedSecret,
+            hint:
+              'Store this secret now — it is shown once. The endpoint requires it in the x-webhook-token header; ' +
+              'losing it means re-registering the source.',
+          }
+        : {}),
+    };
   }
 
   /**
@@ -271,7 +339,21 @@ export class ExternalSourceService {
     if (source.kind !== 'webhook') return { http: 400, body: { status: 'bounced', reason: 'not_a_webhook_source' } };
     const config = safeJson(source.config);
     const token = typeof config['token'] === 'string' && (config['token'] as string).length > 0 ? (config['token'] as string) : null;
-    if (token && providedToken !== token) return { http: 401, body: { status: 'unauthorized' } };
+    // 失败关闭（fail-closed）：没有密钥的源**不接受**入站，而不是「等于放行」。
+    // 旧库里的历史行（token 可选时代的产物）因此立即停止接受输入；错误体给可行动提示，
+    // 因为「悄悄拒收」会让运维无从下手。
+    if (!token) {
+      return {
+        http: 401,
+        body: {
+          status: 'secret_required',
+          hint:
+            'This webhook source has no shared secret, so it cannot accept input. Re-register it ' +
+            '(external_source_register) — a secret is minted automatically — or set config.token.',
+        },
+      };
+    }
+    if (!secretEquals(providedToken, token)) return { http: 401, body: { status: 'unauthorized' } };
     const event = webhookAdapter.translate(body);
     if (!event || Array.isArray(event)) return { http: 200, body: { status: 'bounced', dropReason: 'payload_invalid' } };
     const out = this.ingest(sourceId, event);
