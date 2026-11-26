@@ -163,7 +163,7 @@ packages/
 | `pnpm install` reports a peer conflict | Use `pnpm install --fix-lockfile` (do not delete the lockfile) |
 | Development data got dirty | Delete and recreate the corresponding database file under `~/.markus/` (acceptable during development; back up production data first) |
 | Want to connect a real LLM | Configure a provider key in `~/.markus/markus.json` or on the Web UI settings page |
-| Debugging the API | `curl http://localhost:8056/api/health` to check liveness; for REST endpoints see `docs/api/api.md` |
+| Debugging the API | `curl http://localhost:8056/api/health` to check liveness; for REST endpoints see `docs/api/reference.md` (generated from the route table) |
 
 ---
 

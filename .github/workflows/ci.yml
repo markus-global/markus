@@ -59,6 +59,11 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # API 文档是构建产物（issue #283）：docs/api/reference.md 由 buildRouteTable() + ROLE_RULES
+      # 生成。这一步不是「检查文档写得对不对」，而是「检查产物是否过期」——代码改了没重生成就红。
+      - name: API reference is current
+        run: pnpm api:docs --check
+
       - name: Architecture guard
         run: node scripts/architecture-guard.mjs
 

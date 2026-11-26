@@ -155,7 +155,7 @@ The internals are documented properly — start at the **[documentation index](d
 | --- | --- |
 | [Architecture](docs/architecture/architecture.md) | How the pieces fit, and why |
 | [Agent runtime](docs/architecture/agent-runtime.md) · [Memory](docs/architecture/memory-system.md) · [Tools](docs/architecture/tool-system.md) | The three subsystems people ask about most |
-| [API reference](docs/api/api.md) · [User guide](docs/guides/guide.md) | Build against it, or just use it |
+| [API reference](docs/api/reference.md) · [User guide](docs/guides/guide.md) | Build against it, or just use it |
 | [Engineering records](docs/records/) | Dated audits and post-mortems, published unfiltered |
 
 ---
