@@ -18,6 +18,7 @@ import {
   externalIngressUrl,
   isExternalIngressPolicy,
   sourceDeliveryState,
+  tunnelStateFor,
 } from './externalSources.ts';
 
 describe('externalIngressUrl', () => {
@@ -47,6 +48,29 @@ describe('policy narrowing', () => {
   it('never invents a state from junk', () => {
     for (const junk of ['auto', 'ON', '', null, undefined, 1, {}]) {
       expect(isExternalIngressPolicy(junk)).toBe(false);
+    }
+  });
+});
+
+describe('tunnelStateFor', () => {
+  it('separates "no tunnel" (a fact) from "could not ask" (no fact)', () => {
+    // The defect this guards: the screen printed "no tunnel is configured" for
+    // BOTH. A failed request must not become a claim about the user's machine.
+    expect(tunnelStateFor(null)).toEqual({ kind: 'unknown' });
+    expect(tunnelStateFor(undefined)).toEqual({ kind: 'unknown' });
+    expect(tunnelStateFor({ publicUrl: null })).toEqual({ kind: 'none' });
+    expect(tunnelStateFor({ publicUrl: '' })).toEqual({ kind: 'none' });
+    expect(tunnelStateFor({ publicUrl: '   ' })).toEqual({ kind: 'none' });
+    expect(tunnelStateFor({ publicUrl: ' https://abc.trycloudflare.com ' })).toEqual({
+      kind: 'url',
+      url: 'https://abc.trycloudflare.com',
+    });
+  });
+
+  it('flattens "no tunnel" to a local-only URL base, never to a fake host', () => {
+    for (const state of [{ kind: 'none' as const }, { kind: 'unknown' as const }, { kind: 'url' as const, url: '' }]) {
+      const base = state.kind === 'url' ? state.url : null;
+      expect(externalIngressUrl(base, '/api/webhooks/src_1').external).toBe(false);
     }
   });
 });

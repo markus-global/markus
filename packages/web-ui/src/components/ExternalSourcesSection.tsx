@@ -32,8 +32,10 @@ import {
   externalIngressUrl,
   isExternalIngressPolicy,
   sourceDeliveryState,
+  tunnelStateFor,
   type ExternalIngressPolicy,
   type ExternalSourceView,
+  type TunnelState,
 } from '../lib/externalSources.ts';
 
 interface AgentOption { id: string; name: string }
@@ -45,7 +47,8 @@ export function ExternalSourcesSection() {
   const [agentId, setAgentId] = useState('');
   const [policy, setPolicy] = useState<ExternalIngressPolicy>('off');
   const [sources, setSources] = useState<ExternalSourceView[]>([]);
-  const [publicUrl, setPublicUrl] = useState<string | null>(null);
+  /** `null` = not asked yet; never renders a claim before the answer arrives. */
+  const [tunnel, setTunnel] = useState<TunnelState | null>(null);
   const [busyPolicy, setBusyPolicy] = useState<ExternalIngressPolicy | null>(null);
   const [busySourceId, setBusySourceId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -66,12 +69,13 @@ export function ExternalSourcesSection() {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }
       // The tunnel address is optional: without it every URL is local-only, which
-      // the UI states explicitly rather than hiding.
+      // the UI states explicitly rather than hiding. "No tunnel" and "could not
+      // ask" are different answers — see `tunnelStateFor`.
       try {
         const remote = await api.settings.getRemoteV2();
-        if (!cancelled) setPublicUrl(remote?.publicUrl ?? null);
+        if (!cancelled) setTunnel(tunnelStateFor(remote));
       } catch {
-        if (!cancelled) setPublicUrl(null);
+        if (!cancelled) setTunnel({ kind: 'unknown' });
       }
     })();
     return () => { cancelled = true; };
@@ -150,7 +154,7 @@ export function ExternalSourcesSection() {
     }
   }, [t]);
 
-  const noTunnel = useMemo(() => publicUrl === null, [publicUrl]);
+  const publicUrl = useMemo(() => (tunnel?.kind === 'url' ? tunnel.url : null), [tunnel]);
 
   return (
     <div className="space-y-5">
@@ -201,9 +205,14 @@ export function ExternalSourcesSection() {
           </select>
         </SettingRow>
 
-        {noTunnel && (
+        {tunnel?.kind === 'none' && (
           <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 text-[12px] leading-relaxed text-fg-secondary" data-testid="external-sources-no-tunnel">
             {t('externalSignals.noTunnel')}
+          </p>
+        )}
+        {tunnel?.kind === 'unknown' && (
+          <p className="mt-3 rounded-lg border border-border-default px-3 py-2 text-[12px] leading-relaxed text-fg-secondary" data-testid="external-sources-tunnel-unknown">
+            {t('externalSignals.tunnelUnknown')}
           </p>
         )}
 

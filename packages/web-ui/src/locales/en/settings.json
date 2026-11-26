@@ -10,7 +10,8 @@
     "integrations": "Connect external messaging platforms",
     "network": "Access scope, proxy and egress routing",
     "account": "Your account, organization and license",
-    "external-sources": "Who may reach your agents from outside, and what an outside signal may do"
+    "external-sources": "Who may reach your agents from outside, and what an outside signal may do",
+    "facts": "The audit trail of conclusions and the evidence behind them"
   },
   "nav": {
     "appearance": "General",
@@ -25,6 +26,7 @@
     "remote": "Remote Access",
     "network": "Network & Access",
     "integrations": "Integrations",
+    "externalSignals": "External Signals",
     "license": "License",
     "organization": "Organization",
     "account": "Account",
@@ -1568,6 +1570,7 @@
     "agentFilter": "Agent",
     "agentFilterHint": "Pick an agent to see the inbound paths registered for it.",
     "noTunnel": "No tunnel is configured, so the URLs below are local-only paths. Start remote access (Settings → Account → Remote access) before an outside system tries to deliver.",
+    "tunnelUnknown": "The tunnel status could not be read, so the URLs below may be local-only. Confirm in Settings → Account → Remote access before handing one to an outside system.",
     "empty": "This agent has no external sources yet. It can create one itself in chat (webhook or RSS) and it will appear here.",
     "state": {
       "delivering": "delivering",
