@@ -12,49 +12,81 @@ const ACTIVE = new Set(['pending', 'in_progress', 'blocked', 'review']);
 const REQ_A = reqNodeId('rq_a');
 const REQ_B = reqNodeId('rq_b');
 
-describe('依赖图卡片点击：身份只由「任务/需求」决定，不由图的拓扑决定', () => {
-  it('任务卡片在概览态只选中，不改变图', () => {
-    expect(resolveDagNodeClick('tsk_1', null, null)).toEqual({ type: 'selectTask' });
-  });
+describe('卡片点击：含义由「点的是不是面板里那个」决定，与拓扑、与谁是聚焦根无关', () => {
+  const click = (
+    nodeId: string,
+    opts: { focus?: string | null; selected?: string | null; taskRequirement?: string | null } = {},
+  ) =>
+    resolveDagNodeClick({
+      nodeId,
+      focusedNodeId: opts.focus ?? null,
+      selectedEntityId: opts.selected ?? null,
+      requirementIdOfTask: opts.taskRequirement ?? null,
+    });
 
-  it('任务卡片即使无人阻塞它（旧实现里的 topLevel）也只选中', () => {
-    // 这是旧实现的真 bug：孤儿任务曾被当成 topLevel，点一下把整张图切成只剩它自己。
-    // 断言咬的是"任务卡片永远不换图"，与它有没有上游无关。
-    expect(resolveDagNodeClick('tsk_orphan', null, null)).toEqual({ type: 'selectTask' });
-  });
-
-  it('任务卡片在聚焦态里也只选中，不会退出聚焦', () => {
-    expect(resolveDagNodeClick('tsk_1', REQ_A, 'rq_a')).toEqual({ type: 'selectTask' });
-    expect(resolveDagNodeClick('tsk_1', REQ_A, null)).toEqual({ type: 'selectTask' });
-  });
-
-  it('概览态点需求卡片 = 进入聚焦', () => {
-    expect(resolveDagNodeClick(REQ_A, null, null)).toEqual({ type: 'focus', nodeId: REQ_A });
-  });
-
-  it('聚焦 A 时点关联需求 B = 换焦到 B（不是只换右侧面板）', () => {
-    expect(resolveDagNodeClick(REQ_B, REQ_A, 'rq_a')).toEqual({ type: 'focus', nodeId: REQ_B });
-  });
-
-  it('再点聚焦根 = 退出聚焦，且面板正显示这张需求时一并关闭', () => {
-    expect(resolveDagNodeClick(REQ_A, REQ_A, 'rq_a')).toEqual({
-      type: 'unfocus',
-      closeRequirementPanel: true,
+  it('概览：点需求 = 进入该需求，面板显示需求', () => {
+    expect(click(REQ_A)).toEqual({
+      type: 'focusRequirement',
+      requirementNodeId: REQ_A,
+      select: { kind: 'requirement', requirementId: 'rq_a' },
     });
   });
 
-  it('再点聚焦根时，若面板显示的是聚焦内的任务，任务详情保留', () => {
-    // 面板此刻没有在展示需求（selectedReqId=null），所以退出聚焦不碰它。
-    expect(resolveDagNodeClick(REQ_A, REQ_A, null)).toEqual({
-      type: 'unfocus',
-      closeRequirementPanel: false,
+  it('概览：点该需求下的任意任务 = 进入该需求，但面板显示被点的任务', () => {
+    expect(click('tsk_1', { taskRequirement: 'rq_a' })).toEqual({
+      type: 'focusRequirement',
+      requirementNodeId: REQ_A,
+      select: { kind: 'task', taskId: 'tsk_1' },
     });
   });
 
-  it('再点聚焦根时，若面板显示的是另一个需求，也不关它', () => {
-    expect(resolveDagNodeClick(REQ_A, REQ_A, 'rq_b')).toEqual({
-      type: 'unfocus',
-      closeRequirementPanel: false,
+  it('概览：孤儿任务没有可进的层，只开面板', () => {
+    expect(click('tsk_orphan')).toEqual({ type: 'selectTask', taskId: 'tsk_orphan' });
+  });
+
+  it('概览：即使它已被选中，点它仍然进入聚焦（退出只在聚焦态成立）', () => {
+    expect(click(REQ_A, { selected: 'rq_a' })).toEqual({
+      type: 'focusRequirement',
+      requirementNodeId: REQ_A,
+      select: { kind: 'requirement', requirementId: 'rq_a' },
+    });
+  });
+
+  it('聚焦：再点面板里那个需求 = 整体退出聚焦', () => {
+    expect(click(REQ_A, { focus: REQ_A, selected: 'rq_a' })).toEqual({ type: 'exitFocus' });
+  });
+
+  it('聚焦：再点面板里那个**任务** = 也整体退出聚焦（不区分需求/任务）', () => {
+    expect(click('tsk_1', { focus: REQ_A, selected: 'tsk_1', taskRequirement: 'rq_a' })).toEqual({
+      type: 'exitFocus',
+    });
+  });
+
+  it('聚焦、面板显示任务时点需求 = 只切面板，不退出聚焦（Owner 报的那个 bug）', () => {
+    expect(click(REQ_A, { focus: REQ_A, selected: 'tsk_1' })).toEqual({
+      type: 'selectRequirement',
+      requirementId: 'rq_a',
+    });
+  });
+
+  it('聚焦、面板显示需求时点任务 = 只切面板，不退出聚焦', () => {
+    expect(click('tsk_1', { focus: REQ_A, selected: 'rq_a', taskRequirement: 'rq_a' })).toEqual({
+      type: 'selectTask',
+      taskId: 'tsk_1',
+    });
+  });
+
+  it('聚焦：点同需求内的另一个任务 = 只切面板', () => {
+    expect(click('tsk_2', { focus: REQ_A, selected: 'tsk_1', taskRequirement: 'rq_a' })).toEqual({
+      type: 'selectTask',
+      taskId: 'tsk_2',
+    });
+  });
+
+  it('聚焦：点别的需求（跨需求依赖带进来的引用卡）= 只切面板，不换焦', () => {
+    expect(click(REQ_B, { focus: REQ_A, selected: 'rq_a' })).toEqual({
+      type: 'selectRequirement',
+      requirementId: 'rq_b',
     });
   });
 

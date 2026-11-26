@@ -23,7 +23,7 @@ import dagre from '@dagrejs/dagre';
 import type { TaskInfo, AgentInfo, RequirementInfo } from '../api.ts';
 import { api } from '../api.ts';
 import { TERMINAL_REQUIREMENT_STATUSES, TERMINAL_STATUSES } from '../lib/taskStatus.ts';
-import { resolveDagNodeClick, visibleIdsInFocus, defaultGroupsFor, isArchivedTask, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
+import { resolveDagNodeClick, visibleIdsInFocus, defaultGroupsFor, isArchivedTask, isRequirementNode, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   pending:     { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
@@ -302,6 +302,8 @@ interface TaskDAGProps {
   onShowArchivedChange?: (show: boolean) => void;
   onTaskClick?: (task: TaskInfo) => void;
   onReqClick?: (req: RequirementInfo) => void;
+  /** Close the right-hand detail panel (used when a click means "leave the focus"). */
+  onCloseDetail?: () => void;
   onCollapseDAG?: () => void;
   onDependencyChange?: () => void;
   selectedTaskId?: string | null;
@@ -321,7 +323,7 @@ const DAG_FILTER_GROUPS = [
 const ALL_DAG_GROUP_IDS = DAG_FILTER_GROUPS.map(g => g.id);
 
 
-export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
+export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onCloseDetail, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
   const { t } = useTranslation(['work', 'common']);
   const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
@@ -594,37 +596,55 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   }, []);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    // One decision point, one rule — the graph's behaviour must not depend on
-    // topology (see lib/dagFocus.ts for why that was confusing).
-    const action = resolveDagNodeClick(node.id, expandedNodeId, selectedReqId ?? null);
+    // One decision point, one rule: what the click MEANS depends on whether it
+    // hits the entity the panel already shows — not on which node is the focus
+    // root, and not on the graph's topology. See lib/dagFocus.ts.
+    const clickedTask = isRequirementNode(node.id) ? null : taskMap.get(node.id);
+    // A task can only lower the view into a requirement we actually hold; when
+    // the requirement is filtered out or not loaded there is no layer to enter,
+    // so the click degrades to "open the panel".
+    const taskRequirementId = clickedTask?.requirementId && reqMap.has(clickedTask.requirementId)
+      ? clickedTask.requirementId
+      : null;
 
-    if (action.type === 'selectTask') {
-      const task = taskMap.get(node.id);
-      if (task) onTaskClick?.(task);
-      return;
-    }
+    const action = resolveDagNodeClick({
+      nodeId: node.id,
+      focusedNodeId: expandedNodeId,
+      selectedEntityId: selectedReqId ?? selectedTaskId ?? null,
+      requirementIdOfTask: taskRequirementId,
+    });
 
-    if (action.type === 'focus') {
-      userHasInteracted.current = false;
-      setExpandedNodeId(action.nodeId);
-      const req = reqMap.get(action.nodeId.slice(REQ_NODE_PREFIX.length));
-      if (req) onReqClick?.(req);
-      return;
+    switch (action.type) {
+      case 'exitFocus':
+        // The click hit the entity the panel already shows: leave the focus AND
+        // close that panel (one gesture, one meaning).
+        collapseDAG();
+        onCloseDetail?.();
+        return;
+      case 'focusRequirement': {
+        userHasInteracted.current = false;
+        setExpandedNodeId(action.requirementNodeId);
+        if (action.select.kind === 'requirement') {
+          const req = reqMap.get(action.select.requirementId);
+          if (req) onReqClick?.(req);
+        } else {
+          const task = taskMap.get(action.select.taskId);
+          if (task) onTaskClick?.(task);
+        }
+        return;
+      }
+      case 'selectRequirement': {
+        const req = reqMap.get(action.requirementId);
+        if (req) onReqClick?.(req);
+        return;
+      }
+      case 'selectTask': {
+        const task = taskMap.get(action.taskId);
+        if (task) onTaskClick?.(task);
+        return;
+      }
     }
-
-    // Second click on the focused requirement = leave the focus. This is the
-    // ONLY exit: there is no "back to overview" button anymore, so the way in
-    // and the way out are the same gesture.
-    collapseDAG();
-    if (action.closeRequirementPanel) {
-      // Route through the page's existing "click the same card again =
-      // deselect" toggle; that closes the requirement panel and nothing else —
-      // a task opened inside the focus is the user's reading position, not this
-      // layer's state, so it survives the exit.
-      const req = reqMap.get(node.id.slice(REQ_NODE_PREFIX.length));
-      if (req) onReqClick?.(req);
-    }
-  }, [taskMap, reqMap, onTaskClick, onReqClick, expandedNodeId, selectedReqId, collapseDAG]);
+  }, [taskMap, reqMap, onTaskClick, onReqClick, onCloseDetail, expandedNodeId, selectedReqId, selectedTaskId, collapseDAG]);
 
   // Drag from source (blocker) → target (dependent): source blocks target
   const handleConnect = useCallback(async (connection: Connection) => {
