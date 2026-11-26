@@ -302,8 +302,6 @@ interface TaskDAGProps {
   onShowArchivedChange?: (show: boolean) => void;
   onTaskClick?: (task: TaskInfo) => void;
   onReqClick?: (req: RequirementInfo) => void;
-  /** Close the right-hand detail panel (used when a click means "leave the focus"). */
-  onCloseDetail?: () => void;
   onCollapseDAG?: () => void;
   onDependencyChange?: () => void;
   selectedTaskId?: string | null;
@@ -323,7 +321,7 @@ const DAG_FILTER_GROUPS = [
 const ALL_DAG_GROUP_IDS = DAG_FILTER_GROUPS.map(g => g.id);
 
 
-export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onCloseDetail, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
+export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
   const { t } = useTranslation(['work', 'common']);
   const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
@@ -616,10 +614,11 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
 
     switch (action.type) {
       case 'exitFocus':
-        // The click hit the entity the panel already shows: leave the focus AND
-        // close that panel (one gesture, one meaning).
+        // Leave the focus ONLY. The panel keeps showing whatever it was showing:
+        // "is the graph focused" and "is the inspector open" are independent
+        // states, so backing out of a layer must not make the user lose what they
+        // were just reading (and must not silently close an unrelated task).
         collapseDAG();
-        onCloseDetail?.();
         return;
       case 'focusRequirement': {
         userHasInteracted.current = false;
@@ -644,7 +643,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
         return;
       }
     }
-  }, [taskMap, reqMap, onTaskClick, onReqClick, onCloseDetail, expandedNodeId, selectedReqId, selectedTaskId, collapseDAG]);
+  }, [taskMap, reqMap, onTaskClick, onReqClick, expandedNodeId, selectedReqId, selectedTaskId, collapseDAG]);
 
   // Drag from source (blocker) → target (dependent): source blocks target
   const handleConnect = useCallback(async (connection: Connection) => {

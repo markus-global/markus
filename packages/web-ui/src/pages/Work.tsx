@@ -6966,14 +6966,13 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             showArchived={showClosed}
             onShowArchivedChange={setShowClosed}
             // The graph owns the click semantics (see lib/dagFocus.ts), so it gets
-            // *idempotent* selectors plus an explicit closer — not the board's
-            // "click the same card again = deselect" toggles. With a toggle, a
-            // click that the graph means as "select" would close a panel that is
-            // already showing that entity, and "re-click = leave the focus"
-            // could never be told apart from "re-click = deselect".
+            // *idempotent* selectors instead of the board's "click the same card
+            // again = deselect" toggles. With a toggle, a click that the graph
+            // means as "select" would close a panel that already shows that
+            // entity, and "re-click = leave the focus" could never be told apart
+            // from "re-click = deselect".
             onTaskClick={forceOpenTask}
             onReqClick={forceOpenReq}
-            onCloseDetail={handleCloseDetail}
             onCollapseDAG={() => { setDagExpandReqId(null); setDagFocusReq(null); setDagFocusTasks([]); }}
             onDependencyChange={refreshBoard}
             selectedTaskId={selectedTask?.id}

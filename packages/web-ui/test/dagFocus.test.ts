@@ -90,6 +90,14 @@ describe('卡片点击：含义由「点的是不是面板里那个」决定，�
     });
   });
 
+  it('退出聚焦不携带任何面板指令：聚焦与面板开关互相独立', () => {
+    const action = click(REQ_A, { focus: REQ_A, selected: 'rq_a' });
+    expect(action.type).toBe('exitFocus');
+    // 只有 `type` 一个字段。谁想在这里顺手关面板（加 closePanel / select），
+    // 这条断言立即变红 —— 那两个状态属于两个主人，不能由一个动作发两个命令。
+    expect(Object.keys(action)).toEqual(['type']);
+  });
+
   it('节点 id 约定：需求前缀可判定、可往返', () => {
     expect(isRequirementNode(REQ_A)).toBe(true);
     expect(isRequirementNode('tsk_1')).toBe(false);
