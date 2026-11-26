@@ -23,7 +23,7 @@ import dagre from '@dagrejs/dagre';
 import type { TaskInfo, AgentInfo, RequirementInfo } from '../api.ts';
 import { api } from '../api.ts';
 import { TERMINAL_REQUIREMENT_STATUSES, TERMINAL_STATUSES } from '../lib/taskStatus.ts';
-import { resolveDagNodeClick, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
+import { resolveDagNodeClick, visibleIdsInFocus, isArchivedTask, REQ_NODE_PREFIX } from '../lib/dagFocus.ts';
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   pending:     { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
@@ -102,10 +102,11 @@ const REQ_GROUP_MAP: Record<string, string> = {
   rejected: 'done', cancelled: 'done', archived: 'done',
 };
 
-function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean; focused?: boolean } }) {
+function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean; focused?: boolean; direction?: 'TB' | 'LR' } }) {
   const { t } = useTranslation(['work', 'common']);
-  const { req, selected, focused } = data;
+  const { req, selected, focused, direction = 'TB' } = data;
   const colors = REQ_STATUS_COLORS[req.status] ?? REQ_STATUS_COLORS['pending']!;
+  const sourcePos = direction === 'LR' ? Position.Right : Position.Bottom;
   return (
     <div className={`relative rounded-lg border-2 ${focused ? 'border-solid' : 'border-dashed'} px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border} ${selected || focused ? 'ring-2 ring-brand-500 shadow-brand-500/25' : ''}`}>
       <div className="flex items-center gap-1.5 mb-1">
@@ -122,6 +123,14 @@ function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: bo
           {t('work:dag.taskCount', { count: req.taskIds.length })}
         </div>
       )}
+      {/* The requirement -> task membership edge is the only edge that leaves a
+          requirement, so this source handle MUST exist: ReactFlow resolves an
+          edge through its endpoint handles and silently drops the edge when the
+          source node has none (that is exactly how these lines disappeared).
+          It is `isConnectable={false}` because a requirement is not a dependency
+          endpoint — dependencies live on tasks only — and a handle you can drag
+          but that never connects is a lie. */}
+      <Handle type="source" position={sourcePos} isConnectable={false} className="!bg-border-default !w-2 !h-2" />
     </div>
   );
 }
@@ -302,8 +311,6 @@ interface TaskDAGProps {
   previewMode?: boolean;
 }
 
-const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
-
 const DAG_FILTER_GROUPS = [
   { id: 'todo',        statuses: new Set(['pending']),                                           color: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', text: 'text-blue-500' } },
   { id: 'in_progress', statuses: new Set(['in_progress', 'blocked']),                           color: { bg: 'bg-amber-500/10', border: 'border-amber-500/30', text: 'text-amber-600' } },
@@ -311,40 +318,8 @@ const DAG_FILTER_GROUPS = [
   { id: 'done',        statuses: new Set<string>(TERMINAL_STATUSES),     color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
 ] as const;
 
-const ALL_DAG_GROUP_IDS = new Set(DAG_FILTER_GROUPS.map(g => g.id));
 const DEFAULT_DAG_GROUP_FILTER = new Set(DAG_FILTER_GROUPS.filter(g => g.id !== 'done').map(g => g.id));
 
-const isArchivedTask = (t: TaskInfo) => t.status === 'archived';
-
-function collectTransitiveDeps(nodeId: string, taskMap: Map<string, TaskInfo>, reqMap: Map<string, RequirementInfo>, allTasks: TaskInfo[]): Set<string> {
-  const visited = new Set<string>();
-  const stack = [nodeId];
-  while (stack.length > 0) {
-    const id = stack.pop()!;
-    if (visited.has(id)) continue;
-    visited.add(id);
-    if (id.startsWith('req-')) {
-      const req = reqMap.get(id.slice(4));
-      if (req) {
-        for (const tid of req.taskIds) stack.push(tid);
-      }
-    } else {
-      const task = taskMap.get(id);
-      if (task?.blockedBy) {
-        for (const dep of task.blockedBy) stack.push(dep);
-      }
-      if (task?.requirementId) {
-        stack.push(`req-${task.requirementId}`);
-      }
-    }
-  }
-  for (const task of allTasks) {
-    if (task.requirementId && visited.has(task.id)) {
-      visited.add(`req-${task.requirementId}`);
-    }
-  }
-  return visited;
-}
 
 export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
   const { t } = useTranslation(['work', 'common']);
@@ -560,9 +535,19 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       return { initialNodes: withDir, initialEdges: overviewEdges };
     }
 
-    // Expanded: use ALL tasks/requirements regardless of status filter
+    // Focused: exactly the requirement the user lowered into, plus its own
+    // tasks — and those tasks obey the same status-group chips as the overview.
+    // One rule, no exceptions: cross-requirement dependencies no longer drag
+    // other requirements into a "focused" view, and the requirement anchoring
+    // that used to make "uncheck done" a silent no-op does not apply here.
     const { allNodes, allEdges } = allData;
-    const visible = collectTransitiveDeps(expandedNodeId, taskMap, reqMap, tasks);
+    const visible = visibleIdsInFocus({
+      focusedNodeId: expandedNodeId,
+      requirementTaskIds: reqMap.get(expandedNodeId.slice(REQ_NODE_PREFIX.length))?.taskIds ?? [],
+      tasks,
+      allowedStatuses,
+      showArchived,
+    });
     const visibleNodes = allNodes.filter(n => visible.has(n.id)).map(n =>
       n.id === expandedNodeId ? { ...n, data: { ...n.data, focused: true } } : n
     );
@@ -571,21 +556,11 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     const { nodes: layouted, direction: layoutDir } = layoutNodes(visibleNodes, visibleEdges);
     const withDir: Node[] = layouted.map(n => ({ ...n, data: { ...n.data, direction: layoutDir } }));
     return { initialNodes: withDir, initialEdges: visibleEdges };
-  }, [tasks, requirements, agentMap, taskMap, reqMap, makeEdge, allowedStatuses, groupFilter, showArchived, selectedTaskId, selectedReqId, expandedNodeId]);
+  }, [tasks, requirements, agentMap, reqMap, makeEdge, allowedStatuses, groupFilter, showArchived, selectedTaskId, selectedReqId, expandedNodeId]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const rfRef = useRef<ReactFlowInstance | null>(null);
-  const prevFilterRef = useRef({ groupFilter, showArchived });
-
-  useEffect(() => {
-    const prev = prevFilterRef.current;
-    if (prev.groupFilter !== groupFilter || prev.showArchived !== showArchived) {
-      userHasInteracted.current = false;
-      setExpandedNodeId(null);
-      prevFilterRef.current = { groupFilter, showArchived };
-    }
-  }, [groupFilter, showArchived]);
 
   useEffect(() => {
     setNodes(initialNodes);
@@ -648,12 +623,12 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     const { source, target } = connection;
     if (!source || !target || source === target) return;
 
-    // Requirement nodes are containers, not connectable endpoints: they carry no
-    // handles, so a requirement never reaches this handler. If that guard is ever
-    // removed, a connection into a requirement has no meaning (dependencies live
-    // on tasks only) — do not resurrect it by accident.
+    // Only tasks are dependency endpoints. A requirement node keeps a
+    // non-connectable source handle purely so its membership edges render; guard
+    // here anyway so a future UI change cannot write `req-…` into `blockedBy`.
+    const sourceTask = taskMap.get(source);
     const targetTask = taskMap.get(target);
-    if (!targetTask) return;
+    if (!sourceTask || !targetTask) return;
 
     if (targetTask.blockedBy?.includes(source)) {
       showToast(t('work:dag.toast.dependencyExists'), 'error');
@@ -795,12 +770,6 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   const sourceTask = pendingDelete ? taskMap.get(pendingDelete.source) : null;
   const targetTask = pendingDelete ? taskMap.get(pendingDelete.target) : null;
 
-  // Text instead of a "back to overview" button: the exit gesture is the card
-  // itself, and the only thing it needs is to be discoverable.
-  const focusedReqTitle = expandedNodeId && expandedNodeId.startsWith(REQ_NODE_PREFIX)
-    ? (reqMap.get(expandedNodeId.slice(REQ_NODE_PREFIX.length))?.title ?? '')
-    : '';
-
   return (
     <div ref={rootRef} className="doc-scroll-viewport flex-1 min-h-0 relative" style={{ height: docViewportHeight ?? '100%' }}>
       <ReactFlow
@@ -869,10 +838,12 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
           )}
         </div>
         <div className="text-[10px] text-fg-tertiary select-none flex items-center gap-2">
-          <span>{focusedReqTitle
-            ? t('work:dag.focusedHint', { name: focusedReqTitle })
-            : t('work:dag.expandHint')}</span>
-          <span className="text-fg-tertiary/50">·</span>
+          {!expandedNodeId && (
+            <>
+              <span>{t('work:dag.expandHint')}</span>
+              <span className="text-fg-tertiary/50">·</span>
+            </>
+          )}
           <span>{t('work:dag.dragHint')}</span>
         </div>
       </div>

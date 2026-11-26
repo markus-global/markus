@@ -38,6 +38,12 @@ export const reqNodeId = (requirementId: string): string => `${REQ_NODE_PREFIX}$
 export const isRequirementNode = (nodeId: string): boolean => nodeId.startsWith(REQ_NODE_PREFIX);
 
 /**
+ * 「已归档」判定。概览分支与聚焦分支必须用**同一个谓词** —— 这个谓词原先只活在
+ * 组件里，两个分支各写一次就是两份真相。
+ */
+export const isArchivedTask = (task: { status: string }): boolean => task.status === 'archived';
+
+/**
  * @param nodeId         被点击的节点 id（需求节点形如 `req-<requirementId>`）
  * @param focusedNodeId  当前聚焦的节点 id；`null` = 处于概览
  * @param selectedReqId  右侧详情面板当前展示的需求 id；`null` = 面板没在展示需求
@@ -56,4 +62,43 @@ export function resolveDagNodeClick(
 
   // 未聚焦 → 进入；已聚焦别的需求 → 换焦。两者对使用者是同一个动作。
   return { type: 'focus', nodeId };
+}
+
+export interface FocusVisibilityInput {
+  /** 当前聚焦的需求节点 id（`req-<requirementId>`）。 */
+  focusedNodeId: string;
+  /** 该需求的 `taskIds`（需求对象上的成员表）。 */
+  requirementTaskIds: readonly string[];
+  /** 图里拿到的全部任务。 */
+  tasks: readonly { id: string; requirementId?: string; status: string }[];
+  /** 状态分组筛选展开后的允许状态集合（与概览用的是同一套 chip）。 */
+  allowedStatuses: ReadonlySet<string>;
+  showArchived: boolean;
+}
+
+/**
+ * 聚焦态可见的节点 id：**只有当前聚焦的需求 + 它自己的任务**，而这些任务还要
+ * 通过同一套状态分组筛选。
+ *
+ * 这条规则一次删掉了三个旧行为（都属于“聚焦态里有两套真相”）：
+ *   ① 跨需求依赖把别的需求连同它的任务拉进聚焦图（“不要显示其他需求或任务”）；
+ *   ② 聚焦时一改筛选项就被踢回概览（现在就地生效，chip 的选中状态不变）；
+ *   ③ 需求锚定让“取消勾已完成”在聚焦里静默失效。
+ *
+ * 任务归属取 `requirement.taskIds` 与 `task.requirementId` 的**并集**：归档 /
+ * 分页场景下两者可能各缺一部分，取并集才不会漏任务。
+ */
+export function visibleIdsInFocus(input: FocusVisibilityInput): Set<string> {
+  const visible = new Set<string>([input.focusedNodeId]);
+  if (!isRequirementNode(input.focusedNodeId)) return visible;
+
+  const requirementId = input.focusedNodeId.slice(REQ_NODE_PREFIX.length);
+  const memberIds = new Set(input.requirementTaskIds);
+  for (const task of input.tasks) {
+    if (!memberIds.has(task.id) && task.requirementId !== requirementId) continue;
+    if (!input.allowedStatuses.has(task.status)) continue;
+    if (!input.showArchived && isArchivedTask(task)) continue;
+    visible.add(task.id);
+  }
+  return visible;
 }

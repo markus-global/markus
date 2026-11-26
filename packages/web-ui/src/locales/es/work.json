@@ -685,7 +685,6 @@
     "reset": "Restablecer",
     "archivedToggle": "{{count}} archivado",
     "expandHint": "Haga clic en una tarjeta de requisito para abrir ese requisito",
-    "focusedHint": "Enfocado: {{name}} · Haga clic de nuevo en la tarjeta para volver a la vista general",
     "dragHint": "Arrastre desde el bloqueador hasta la tarea bloqueada · Pulse el borde para eliminar",
     "noTasks": "No hay tareas que mostrar",
     "reqLabel": "REQ",

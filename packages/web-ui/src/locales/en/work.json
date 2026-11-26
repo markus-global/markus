@@ -687,7 +687,6 @@
     "reset": "Reset",
     "archivedToggle": "{{count}} archived",
     "expandHint": "Click a requirement card to open that requirement",
-    "focusedHint": "Focused: {{name}} · Click the card again to return to the overview",
     "dragHint": "Drag from the blocker to the blocked task · Click an edge to remove",
     "noTasks": "No tasks to display",
     "reqLabel": "REQ",
