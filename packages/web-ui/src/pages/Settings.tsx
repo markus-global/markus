@@ -148,7 +148,11 @@ const STORAGE_SAFETY_LEVEL: Record<string, 'safe' | 'caution' | 'keep'> = {
 };
 
 // Leading icons for the settings nav (stroke-based lucide paths, one or more subpaths).
-const SETTINGS_TAB_ICONS: Record<string, string> = {
+// Exported so the "every registered tab is fully described" guard can assert that
+// a tab has its own mark — a missing entry silently falls back to `_default` (a
+// dot), which is the visual equivalent of the raw-i18n-key bug: the item renders,
+// so nothing looks broken enough to report.
+export const SETTINGS_TAB_ICONS: Record<string, string> = {
   appearance: 'M21 4H14 M10 4H3 M21 12H12 M8 12H3 M21 20H16 M12 20H3 M14 2v4 M8 10v4 M16 18v4',
   storage: 'M12 8c4.418 0 8-1.343 8-3s-3.582-3-8-3-8 1.343-8 3 3.582 3 8 3Z M4 5v6c0 1.657 3.582 3 8 3s8-1.343 8-3V5 M4 11v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6',
   // 事实审计：带核验勾的卷宗（不是放大镜——这是"已核验的记录"，不是"搜索"）
@@ -159,6 +163,9 @@ const SETTINGS_TAB_ICONS: Record<string, string> = {
   'coding-tools': 'M16 18l6-6-6-6 M8 6l-6 6 6 6',
   search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3',
   integrations: 'M9 17H7A5 5 0 0 1 7 7h2 M15 7h2a5 5 0 1 1 0 10h-2 M8 12h8',
+  // 外部信号：朝向天空的接收碟 + 两道入站波弧。刻意不复用 wifi 弧线——那已经是「网络与
+  // 访问」与「远程访问」的记号；两只碟+两弧在 16px 下与它们可区分。
+  'external-sources': 'M4 10a7.31 7.31 0 0 0 10 10Z M9 15l3-3 M17 13a6 6 0 0 0-6-6 M21 13A10 10 0 0 0 11 3',
   remote: 'M2 8.5a15 15 0 0 1 20 0 M5 12a10 10 0 0 1 14 0 M8.5 15.5a5 5 0 0 1 7 0 M12 19h.01',
   network: 'M2 8.5a15 15 0 0 1 20 0 M5 12a10 10 0 0 1 14 0 M8.5 15.5a5 5 0 0 1 7 0 M12 19h.01',
   account: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2 M12 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z',

@@ -23,7 +23,7 @@ import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SETTINGS_TABS, SETTINGS_TAB_GROUPS } from '../src/pages/Settings.tsx';
+import { SETTINGS_TABS, SETTINGS_TAB_GROUPS, SETTINGS_TAB_ICONS } from '../src/pages/Settings.tsx';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const localesDir = join(here, '..', 'src', 'locales');
@@ -78,4 +78,16 @@ describe('settings tabs are named in every locale', () => {
       expect(undescribed, `missing tabDesc in ${locale}`).toEqual([]);
     });
   }
+
+  it('every tab carries its own mark, not the default dot', () => {
+    // Same invariant as above, one layer down: `_default` is a fallback that
+    // renders *something*, so a tab with no icon looks slightly bland rather
+    // than broken — and nobody files a bug for "bland". The external-signals
+    // tab shipped exactly that way.
+    const iconless = SETTINGS_TABS.filter((tab) => {
+      const path = SETTINGS_TAB_ICONS[tab.id];
+      return !path || path === SETTINGS_TAB_ICONS._default;
+    }).map((tab) => tab.id);
+    expect(iconless, 'tab fell back to the default dot').toEqual([]);
+  });
 });
