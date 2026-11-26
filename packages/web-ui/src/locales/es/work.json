@@ -682,6 +682,7 @@
       "review": "En revisión",
       "done": "Hecho"
     },
+    "showAll": "Mostrar todo",
     "reset": "Restablecer",
     "archivedToggle": "{{count}} archivado",
     "expandHint": "Haga clic en una tarjeta de requisito para abrir ese requisito",

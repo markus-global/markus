@@ -18,13 +18,14 @@ const REQ_B = reqNodeId('rq_b');
 describe('卡片点击：含义由「点的是不是面板里那个」决定，与拓扑、与谁是聚焦根无关', () => {
   const click = (
     nodeId: string,
-    opts: { focus?: string | null; selected?: string | null; taskRequirement?: string | null } = {},
+    opts: { focus?: string | null; selected?: string | null; taskRequirement?: string | null; profile?: 'desktop' | 'mobile' } = {},
   ) =>
     resolveDagNodeClick({
       nodeId,
       focusedNodeId: opts.focus ?? null,
       selectedEntityId: opts.selected ?? null,
       requirementIdOfTask: opts.taskRequirement ?? null,
+      profile: opts.profile ?? 'desktop',
     });
 
   it('概览：点需求 = 进入该需求，面板显示需求', () => {

@@ -302,6 +302,8 @@ interface TaskDAGProps {
   onShowArchivedChange?: (show: boolean) => void;
   onTaskClick?: (task: TaskInfo) => void;
   onReqClick?: (req: RequirementInfo) => void;
+  /** 手机端：三级钻取（概览→聚焦→详情），卡片点击不退出聚焦。 */
+  mobile?: boolean;
   onCollapseDAG?: () => void;
   onDependencyChange?: () => void;
   selectedTaskId?: string | null;
@@ -321,7 +323,7 @@ const DAG_FILTER_GROUPS = [
 const ALL_DAG_GROUP_IDS = DAG_FILTER_GROUPS.map(g => g.id);
 
 
-export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
+export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, mobile = false, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
   const { t } = useTranslation(['work', 'common']);
   const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
@@ -625,6 +627,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       focusedNodeId: expandedNodeId,
       selectedEntityId: selectedReqId ?? selectedTaskId ?? null,
       requirementIdOfTask: taskRequirementId,
+      profile: mobile ? 'mobile' : 'desktop',
     });
 
     switch (action.type) {
@@ -638,6 +641,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       case 'focusRequirement': {
         userHasInteracted.current = false;
         setExpandedNodeId(action.requirementNodeId);
+        if (action.select === null) return;
         if (action.select.kind === 'requirement') {
           const req = reqMap.get(action.select.requirementId);
           if (req) onReqClick?.(req);
@@ -658,7 +662,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
         return;
       }
     }
-  }, [taskMap, reqMap, onTaskClick, onReqClick, expandedNodeId, selectedReqId, selectedTaskId, collapseDAG]);
+  }, [taskMap, reqMap, onTaskClick, onReqClick, expandedNodeId, selectedReqId, selectedTaskId, collapseDAG, mobile]);
 
   // Drag from source (blocker) → target (dependent): source blocks target
   const handleConnect = useCallback(async (connection: Connection) => {
@@ -856,6 +860,23 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
           className="!bg-surface-secondary !border-border-default"
         />
       </ReactFlow>
+
+      {/* Mobile-only exit from the focus layer. On a phone the detail panel is a
+          full-screen layer, so "tap the selected card again" is not reachable and
+          cannot be the way out — the drill-down is 概览 → focus → detail, and this
+          button is the only way back up a level. */}
+      {mobile && expandedNodeId && (
+        <button
+          onClick={collapseDAG}
+          className="absolute top-3 left-3 z-20 flex items-center gap-1.5 rounded-full border border-border-default bg-surface-secondary/95 pl-2.5 pr-3 py-1.5 shadow-lg backdrop-blur-sm text-fg-secondary active:bg-surface-overlay"
+          title={t('work:dag.showAll')}
+        >
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 9V5a2 2 0 0 1 2-2h4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M21 15v4a2 2 0 0 1-2 2h-4" />
+          </svg>
+          <span className="text-[11px] font-medium">{t('work:dag.showAll')}</span>
+        </button>
+      )}
 
       {/* Filter + hint bar */}
       <div className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-surface-secondary/90 border border-border-default rounded-lg backdrop-blur-sm z-10 flex flex-col items-center gap-1">

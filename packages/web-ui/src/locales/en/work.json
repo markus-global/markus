@@ -684,6 +684,7 @@
       "review": "In Review",
       "done": "Done"
     },
+    "showAll": "Show all",
     "reset": "Reset",
     "archivedToggle": "{{count}} archived",
     "expandHint": "Click a requirement card to open that requirement",

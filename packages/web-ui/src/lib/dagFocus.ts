@@ -3,23 +3,23 @@
  *
  * 核心原理（Owner 2026-11-26 定调）：
  *
- *   **一次点击的含义，由「点的是不是面板里当前显示的那个东西」决定，
- *     而不是由「在不在聚焦态」决定。**
+ *   一次点击的含义，由「点的是不是面板里当前显示的那个东西」决定，
+ *   而不是由「在不在聚焦态」决定。
  *
- * 展开成三条：
- *   ① 点的是面板里正显示的东西 → **退出聚焦**（这是唯一的退出方式；面板不动）
- *   ② 面板里显示着别的 → **只是切面板**，图与聚焦都不动
- *   ③ 还在概览（没有聚焦）→ 点击需求、或点击该需求的任意任务，都**进入该需求**；
- *      面板显示被点的那个（点任务就显示任务，不显示需求）
+ * 但在**手机上这是另一套钻取模型**，不是同一套的两种尺寸：
  *
- * 为什么之前是错的：旧实现把「退出」绑在"聚焦根节点"上，于是
- *   · 聚焦中、面板显示任务 T 时点需求 R（R 是聚焦根）→ 退了聚焦，面板还留着 T，
- *     图回概览而面板指向另一个实体 —— 用户报的就是这个；
- *   · 而"任务卡片点击"是否换图，当年还取决于该任务是不是任何边的终点（拓扑），
- *     长得一样的两张卡后果不同。
+ *   desktop —— 详情面板常驻右侧 ⇒「再点一次选中的东西 = 退出聚焦」可行。
+ *   mobile  —— 详情是盖在画布上的全屏层 ⇒ 三级钻取：概览 → 聚焦 → 详情；
+ *              返回键逐级回退；卡片点击**永不**代表退出聚焦，出口只有左上角的
+ *              浮动按钮（「显示所有」）。所以手机上概览点卡片只聚焦、不开详情，
+ *              否则会越过"聚焦"这一级。
  *
- * 现在的判定与拓扑、与"谁是不是根"全都无关：只看**点的是谁 / 面板里是谁 / 在不在聚焦**。
- * 纯函数、无副作用，`test/dagFocus.test.ts` 把上面每一条都钉住了。
+ * 桌面三条：
+ *   ① 点的是面板里正显示的东西 → 退出聚焦（唯一出口，与"是不是聚焦根"无关）
+ *   ② 面板里显示着别的 → 只是切面板，图与聚焦都不动
+ *   ③ 还在概览 → 点需求、或点该需求名下任意任务，都进入该需求；面板显示被点的那个
+ *
+ * 纯函数、无副作用，`test/dagFocus.test.ts` 把每一行都钉住了。
  */
 
 /** 卡片点击之后，组件该做的唯一一件事。 */
@@ -28,19 +28,21 @@ export type DagNodeClick =
   | { type: 'selectTask'; taskId: string }
   /** 面板切到该需求（聚焦态内换面板） */
   | { type: 'selectRequirement'; requirementId: string }
-  /** 进入某个需求的聚焦，并把面板切到被点的那个实体 */
+  /** 进入某个需求的聚焦，并把面板切到被点的实体（手机端 `null` = 只聚焦、不开详情） */
   | {
       type: 'focusRequirement';
       requirementNodeId: string;
-      select: { kind: 'requirement'; requirementId: string } | { kind: 'task'; taskId: string };
+      select:
+        | { kind: 'requirement'; requirementId: string }
+        | { kind: 'task'; taskId: string }
+        | null;
     }
   /**
    * 再次点击面板里正显示的东西：**只退出聚焦**。
    *
-   * 它**不携带任何面板指令** —— “是否聚焦”与“面板是否开着”是两个独立状态
-   * （Owner 2026-11-26）：退出聚焦后面板继续显示刚才看的东西，用户不会
-   * 忘记自己刚才看过啥。类型里没有 select / close 字段，谁想在这里关面板，
-   * 就是在往模型里塞一条不存在的规则。
+   * 它不携带任何面板指令 —— "是否聚焦"与"面板是否开着"是两个独立状态。
+   * 类型里没有 select / close 字段：谁想在这里关面板，就是在往模型里塞一条
+   * 不存在的规则。
    */
   | { type: 'exitFocus' };
 
@@ -61,32 +63,56 @@ export interface DagClickInput {
   nodeId: string;
   /** 当前聚焦的需求节点 id；`null` = 处于概览。 */
   focusedNodeId: string | null;
-  /** 右侧面板当前展示的实体 id（需求 id 或任务 id）；`null` = 面板没开。 */
+  /** 面板当前展示的实体 id（需求 id 或任务 id）；`null` = 面板没开。 */
   selectedEntityId: string | null;
   /**
    * 被点的是任务时，它所属需求的 id —— **仅当该需求当前可聚焦**时给值。
-   * 需求被筛掉/没加载时给 `null`：那样就没有可进的层，点击降级为"只开面板"。
+   * 需求被筛掉/没加载时给 `null`：没有可进的层，点击降级为"只开面板"。
    */
   requirementIdOfTask: string | null;
+  /** 交互形态：桌面与手机是两套钻取模型（见文件头注释）。 */
+  profile: 'desktop' | 'mobile';
 }
 
 export function resolveDagNodeClick(input: DagClickInput): DagNodeClick {
-  const { nodeId, focusedNodeId, selectedEntityId, requirementIdOfTask } = input;
+  const { nodeId, focusedNodeId, selectedEntityId, requirementIdOfTask, profile } = input;
   const clickedRequirementNode = isRequirementNode(nodeId);
   // 需求节点用需求 id 参与比较，任务节点用任务 id —— 两者共用一个"当前选中"。
   const ownId = clickedRequirementNode ? nodeId.slice(REQ_NODE_PREFIX.length) : nodeId;
 
-  // ① 再次点击面板里正显示的东西 → 整体退出聚焦。唯一出口，与"是不是聚焦根"无关。
+  if (profile === 'mobile') {
+    // 聚焦层：点任何卡片都只是"打开详情"，详情层用返回键回到这一层。
+    if (focusedNodeId !== null) {
+      return clickedRequirementNode
+        ? { type: 'selectRequirement', requirementId: ownId }
+        : { type: 'selectTask', taskId: ownId };
+    }
+    // 概览层：点需求、或点它名下任意任务，都是"进入该需求"，不顺带开详情。
+    if (clickedRequirementNode) {
+      return { type: 'focusRequirement', requirementNodeId: nodeId, select: null };
+    }
+    if (requirementIdOfTask) {
+      return {
+        type: 'focusRequirement',
+        requirementNodeId: reqNodeId(requirementIdOfTask),
+        select: null,
+      };
+    }
+    // 孤儿任务：没有可进的层，只能开详情。
+    return { type: 'selectTask', taskId: ownId };
+  }
+
+  // ① 再次点击面板里正显示的东西 → 退出聚焦。
   if (focusedNodeId !== null && selectedEntityId === ownId) return { type: 'exitFocus' };
 
-  // ② 已在聚焦态、点的是别的东西 → 只换面板（需求↔任务都算换面板）。
+  // ② 已在聚焦态、点的是别的东西 → 只换面板。
   if (focusedNodeId !== null) {
     return clickedRequirementNode
       ? { type: 'selectRequirement', requirementId: ownId }
       : { type: 'selectTask', taskId: ownId };
   }
 
-  // ③ 概览态：需求 → 进入它；任务 → 进入它所属需求，但面板显示的是**被点的任务**。
+  // ③ 概览态：需求 → 进入它；任务 → 进入它所属需求，但面板显示**被点的任务**。
   if (clickedRequirementNode) {
     return {
       type: 'focusRequirement',
@@ -113,7 +139,7 @@ export function resolveDagNodeClick(input: DagClickInput): DagNodeClick {
  *   focus   （"这个需求整体做到哪一步"）—— 已完成的任务正是进来看的东西，
  *                                   默认**勾上**「已完成」。
  *
- * 这也是两层各自持有勾选状态的理由：`Enter/Exit` 不是重置，而是切到另一层的视图。
+ * 这也是两层各自持有勾选状态的理由：进/出聚焦不是重置，而是切到另一层的视图。
  */
 export type DagFilterLayer = 'overview' | 'focus';
 
@@ -137,28 +163,11 @@ export interface FocusVisibilityInput {
 }
 
 /**
- * 聚焦态可见的节点 id：**只有当前聚焦的需求 + 它自己的任务**，而这些任务还要
- * 通过同一套状态分组筛选。
- *
- * 这条规则一次删掉了三个旧行为（都属于"聚焦态里有两套真相"）：
- *   ① 跨需求依赖把别的需求连同它的任务拉进聚焦图（"不要显示其他需求或任务"）；
- *   ② 聚焦时一改筛选项就退回概览（现在就地生效，chip 的选中状态不变）；
- *   ③ 需求锚定让"取消勾已完成"在聚焦里静默失效。
- *
- * 任务归属取 `requirement.taskIds` 与 `task.requirementId` 的**并集**：归档 /
- * 分页场景下两者可能各缺一部分，取并集才不会漏任务。
- */
-export interface ArchivedCountScope {
-  requirementId: string;
-  requirementTaskIds: readonly string[];
-}
-
-/**
  * 「哪些任务属于这个需求」——**唯一实现**。
  *
  * 取 `requirement.taskIds` 与 `task.requirementId` 的**并集**：归档 / 分页场景下
- * 两者可能各缺一部分，取并集才不会漏任务。可见集与「N 个已归档」的计数都必须
- * 走这一个谓词，否则两边会对不上（而用户一眼就能看出对不上）。
+ * 两者可能各缺一部分，取并集才不会漏任务。可见集、锚定集、归档计数都必须走
+ * 这一个谓词，否则几处会对不上（而用户一眼就能看出对不上）。
  */
 export function tasksOfRequirement<T extends { id: string; requirementId?: string }>(
   tasks: readonly T[],
@@ -169,12 +178,14 @@ export function tasksOfRequirement<T extends { id: string; requirementId?: strin
   return tasks.filter(task => memberIds.has(task.id) || task.requirementId === requirementId);
 }
 
+export interface ArchivedCountScope {
+  requirementId: string;
+  requirementTaskIds: readonly string[];
+}
+
 /**
- * 概览层的「锚定任务」：可见且未结束的需求，其**全部任务**都要出现（不看任务自身的状态分组）。
- *
- * 归属必须走 `tasksOfRequirement`：只用 `requirement.taskIds` 会让“一个可见需求整体显示”
- * 这句话在概览层与聚焦层得到**不同的任务集合**（归档跑批/需求列表分页时 `taskIds`
- * 可能不全，而 `task.requirementId` 还在）。同一个概念只能有一个实现。
+ * 概览层的「锚定任务」：可见且未结束的需求，其**全部任务**都要出现（不看任务自身的
+ * 状态分组）。归属走 `tasksOfRequirement`，与聚焦层同一个实现。
  */
 export function collectAnchoredTaskIds(
   tasks: readonly { id: string; requirementId?: string }[],
@@ -190,10 +201,7 @@ export function collectAnchoredTaskIds(
 }
 
 /**
- * 当前层里已归档的任务数：`scope` 为 `null` 时是整块图（概览），否则只数该需求自己的。
- *
- * 之前这里是全局 `tasks.filter(isArchivedTask).length`，于是在聚焦态显示的是
- * **整块看板的归档数**——数字看着像本需求的，其实不是。
+ * 当前层里已归档的任务数：`scope` 为 `null` 时是整张图（概览），否则只数该需求自己的。
  */
 export function countArchivedTasks(
   tasks: readonly { id: string; requirementId?: string; status: string }[],
@@ -203,6 +211,10 @@ export function countArchivedTasks(
   return pool.filter(isArchivedTask).length;
 }
 
+/**
+ * 聚焦态可见的节点 id：**只有当前聚焦的需求 + 它自己的任务**，而这些任务还要
+ * 通过同一套状态分组筛选。
+ */
 export function visibleIdsInFocus(input: FocusVisibilityInput): Set<string> {
   const visible = new Set<string>([input.focusedNodeId]);
   if (!isRequirementNode(input.focusedNodeId)) return visible;

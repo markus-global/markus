@@ -6973,6 +6973,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             // from "re-click = deselect".
             onTaskClick={forceOpenTask}
             onReqClick={forceOpenReq}
+            mobile={isMobile}
             onCollapseDAG={() => { setDagExpandReqId(null); setDagFocusReq(null); setDagFocusTasks([]); }}
             onDependencyChange={refreshBoard}
             selectedTaskId={selectedTask?.id}

@@ -682,6 +682,7 @@
       "review": "审核中",
       "done": "已完成"
     },
+    "showAll": "显示所有",
     "reset": "重置",
     "archivedToggle": "{{count}} 个已归档",
     "expandHint": "点击需求卡片进入该需求",
