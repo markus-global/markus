@@ -444,6 +444,8 @@
     "maxToolIterationsDesc": "单次智能体回合中工具调用循环的安全上限（0 表示无限制，适用于所有智能体与子智能体）",
     "maxPendingTasksPerAgent": "任务上限（每个智能体）",
     "maxPendingTasksPerAgentDesc": "每个智能体名下未终结任务数的上限，默认 20。达到上限后新建任务会被拒绝；该值对每个智能体各自独立计数。",
+    "maxPendingRequirementProposals": "待审需求提案上限（每个智能体）",
+    "maxPendingRequirementProposalsDesc": "每个智能体可同时持有多少条待你审批的需求提案，默认 10。达到上限后新的提案会被拒绝，并在错误里告知本设置的位置。",
     "saved": "已保存",
     "failedToSave": "保存失败"
   },

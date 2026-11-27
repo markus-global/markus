@@ -454,6 +454,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   // Agent settings
   const [agentMaxIter, setAgentMaxIter] = useState(200);
   const [agentMaxPending, setAgentMaxPending] = useState(20);
+  // 待审需求提案上限：与任务上限同属「每 agent 待办队列」策略类，默认值与
+  // RequirementService.DEFAULT_MAX_PENDING_PROPOSALS_PER_AGENT 保持一致（10）。
+  const [agentMaxReqProps, setAgentMaxReqProps] = useState(10);
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentMsg, setAgentMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   // Concurrent Processing settings
@@ -559,6 +562,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       .then(d => {
         if (d && typeof d.maxToolIterations === 'number') setAgentMaxIter(d.maxToolIterations);
         if (d && typeof d.maxPendingTasksPerAgent === 'number') setAgentMaxPending(d.maxPendingTasksPerAgent);
+        if (d && typeof d.maxPendingRequirementProposals === 'number') setAgentMaxReqProps(d.maxPendingRequirementProposals);
         if (d?.concurrent) {
           setConcEnabled(d.concurrent.enabled ?? true);
           setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
@@ -2568,6 +2572,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
               />
             </SettingRow>
+            <SettingRow label={t('agentExecution.maxPendingRequirementProposals')} hint={t('agentExecution.maxPendingRequirementProposalsDesc')}>
+              <input
+                type="number"
+                min={1}
+                value={agentMaxReqProps}
+                onChange={e => { setAgentMaxReqProps(Number(e.target.value)); setAgentMsg(null); }}
+                className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
+              />
+            </SettingRow>
             {/* One save for the whole group. The backend applies each field
                 independently (`if (typeof body.x === 'number')`), so a single call
                 persists both. Per-input buttons invited a real failure: save one,
@@ -2581,9 +2594,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     const d = await api.settings.updateAgent({
                       maxToolIterations: agentMaxIter,
                       maxPendingTasksPerAgent: agentMaxPending,
+                      maxPendingRequirementProposals: agentMaxReqProps,
                     });
                     setAgentMaxIter(d.maxToolIterations);
                     setAgentMaxPending(d.maxPendingTasksPerAgent);
+                    setAgentMaxReqProps(d.maxPendingRequirementProposals);
                     setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
                   } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
                   setAgentSaving(false);

@@ -561,6 +561,14 @@ export class AgentManager {
   private _maxToolIterations = Infinity;
   private _concurrentConfig?: AgentConcurrentConfig;
   private _maxPendingTasksPerAgent?: number;
+  /**
+   * 每个 agent 允许同时持有的**待审需求提案**上限。
+   *
+   * 为什么它与 `maxPendingTasksPerAgent` 同形：两者都是「每个 agent 的待办队列上限」
+   * 这一类产品策略，不该一个可配一个硬编码（2026-11-27 Owner 指出：需求配额 3 既看不见
+   * 也改不了，agent 提 3 条就瘫）。`undefined` = 未配置 → RequirementService 回退默认值。
+   */
+  private _maxPendingRequirementProposals?: number;
   private _codingToolsEnabled = false;
   private _codingToolsConfigs?: Record<string, CodingToolConfig>;
   private templateRegistry?: TemplateRegistry;
@@ -852,6 +860,15 @@ export class AgentManager {
 
   set maxPendingTasksPerAgent(value: number | undefined) {
     this._maxPendingTasksPerAgent = value && value > 0 ? value : undefined;
+  }
+
+  /** 每个 agent 的待审需求提案上限；`undefined` = 未配置（回退默认值）。见字段注释。 */
+  get maxPendingRequirementProposals(): number | undefined {
+    return this._maxPendingRequirementProposals;
+  }
+
+  set maxPendingRequirementProposals(value: number | undefined) {
+    this._maxPendingRequirementProposals = value && value > 0 ? value : undefined;
   }
 
   get concurrentConfig(): AgentConcurrentConfig | undefined {

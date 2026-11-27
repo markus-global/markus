@@ -95,7 +95,7 @@ import type { ReportService } from './report-service.js';
 import type { KnowledgeService } from './knowledge-service.js';
 import type { KnowledgeSyncService } from './knowledge-sync-service.js';
 import type { DeliverableService } from './deliverable-service.js';
-import type { RequirementService } from './requirement-service.js';
+import { RequirementService } from './requirement-service.js';
 import type { WorkflowService } from './workflow-service.js';
 import type { WorkflowRunner } from './workflow-runner.js';
 import { WSBroadcaster } from './ws-server.js';
@@ -10603,6 +10603,9 @@ EXPLANATION_END`;
         // TaskService.checkTaskLimits 的实际生效口径保持一致。
         maxPendingTasksPerAgent:
           am.maxPendingTasksPerAgent ?? this.taskService.getGovernancePolicy().maxPendingTasksPerAgent,
+        // 待审需求提案上限：未配置时回显 RequirementService 的默认值。
+        maxPendingRequirementProposals:
+          am.maxPendingRequirementProposals ?? RequirementService.DEFAULT_MAX_PENDING_PROPOSALS_PER_AGENT,
       });
       return;
     }
@@ -10633,6 +10636,12 @@ EXPLANATION_END`;
         am.maxPendingTasksPerAgent = body['maxPendingTasksPerAgent'] as number;
         changed = true;
       }
+      // 每个 agent 的待审需求提案上限：同一条配置链路，写入 AgentManager 单一事实源
+      // 并落库 markus.json。不传则保持原值（与其它字段的独立应用语义一致）。
+      if (typeof body['maxPendingRequirementProposals'] === 'number') {
+        am.maxPendingRequirementProposals = body['maxPendingRequirementProposals'] as number;
+        changed = true;
+      }
       if (changed) {
         try {
           saveConfig({
@@ -10640,6 +10649,7 @@ EXPLANATION_END`;
               maxToolIterations: am.maxToolIterations,
               concurrent: am.concurrentConfig,
               maxPendingTasksPerAgent: am.maxPendingTasksPerAgent,
+              maxPendingRequirementProposals: am.maxPendingRequirementProposals,
             },
           } as any, this.markusConfigPath);
         } catch (e) {
@@ -10663,6 +10673,8 @@ EXPLANATION_END`;
         concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
         maxPendingTasksPerAgent:
           am.maxPendingTasksPerAgent ?? this.taskService.getGovernancePolicy().maxPendingTasksPerAgent,
+        maxPendingRequirementProposals:
+          am.maxPendingRequirementProposals ?? RequirementService.DEFAULT_MAX_PENDING_PROPOSALS_PER_AGENT,
       });
       return;
     }

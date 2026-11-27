@@ -444,6 +444,8 @@
     "maxToolIterationsDesc": "Cap de seguridad en los bucles de llamada de herramienta por agente giro (0 = ilimitado, se aplica a todos los agentes y subagents)",
     "maxPendingTasksPerAgent": "Límite de tareas por agente",
     "maxPendingTasksPerAgentDesc": "Número máximo de tareas no terminales por agente (predeterminado 20). Se rechazan tareas nuevas al alcanzar el límite; se cuenta de forma independiente por agente.",
+    "maxPendingRequirementProposals": "Propuestas de requisito pendientes por agente",
+    "maxPendingRequirementProposalsDesc": "Cuántas propuestas de requisito puede tener un agente esperando tu revisión a la vez (predeterminado 10). Se rechazan las nuevas al superar el límite y el error indica dónde se configura.",
     "saved": "Guardado",
     "failedToSave": "No se pudo guardar"
   },

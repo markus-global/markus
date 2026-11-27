@@ -408,11 +408,25 @@ export class RequirementService implements ApprovalTargetPort {
     return req;
   }
 
-  private static readonly MAX_PENDING_PROPOSALS_PER_AGENT = 3;
+  /**
+   * 待审提案上限的**默认值**（可被 `POST /api/settings/agent` 覆盖）。
+   *
+   * 原值 3 是硬编码的 private static：一个 agent 同时攒到 3 条待审提案就再也提不了，
+   * 而且用户既看不见这个限制、也无处改（2026-11-27 Owner 实遇）。现在：默认 10，
+   * 设置页「智能体配置 → 待审需求提案上限」可改，超限时报错会指路。
+   */
+  static readonly DEFAULT_MAX_PENDING_PROPOSALS_PER_AGENT = 10;
+
+  /** 当前生效的上限：显式配置优先，否则用默认值。 */
+  private maxPendingProposalsPerAgent(): number {
+    return this.agentManager?.maxPendingRequirementProposals
+      ?? RequirementService.DEFAULT_MAX_PENDING_PROPOSALS_PER_AGENT;
+  }
 
   /**
    * Agent proposes a requirement — needs user approval.
-   * Each agent can have at most 3 pending proposals at a time.
+   * Each agent can have at most `maxPendingProposalsPerAgent()` pending proposals at a time
+   * (default 10, configurable in Settings → Execution).
    */
   proposeRequirement(request: CreateRequirementRequest): Requirement {
     const pendingCount = [...this.requirements.values()].filter(
@@ -422,9 +436,12 @@ export class RequirementService implements ApprovalTargetPort {
         r.status === 'pending'
     ).length;
 
-    if (pendingCount >= RequirementService.MAX_PENDING_PROPOSALS_PER_AGENT) {
+    const cap = this.maxPendingProposalsPerAgent();
+    if (pendingCount >= cap) {
       throw new Error(
-        `Agent ${request.createdBy} already has ${pendingCount} pending requirement proposals (max ${RequirementService.MAX_PENDING_PROPOSALS_PER_AGENT}). Wait for existing proposals to be reviewed before proposing more.`
+        `Agent ${request.createdBy} already has ${pendingCount} pending requirement proposals (limit ${cap}). ` +
+        `Waiting for review is one option; the limit itself is configurable — ` +
+        `Settings → Execution → "Pending requirement proposals per agent" (POST /api/settings/agent, field maxPendingRequirementProposals).`
       );
     }
 
