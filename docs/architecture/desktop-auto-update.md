@@ -63,6 +63,27 @@ successful download must not hide an update the user could install right now.
 - Errors are **not** shown to the user as a banner; a background check that fails
   must not nag. They are logged, and the next check clears the state.
 
+### Install path and the quit chain
+
+The app is a tray app: closing the window hides it (`window.ts`), and the process
+only exits through `before-quit`, which prevents the default once, tears down and
+force-exits after 2 s. That makes quitting something the updater must *cooperate*
+with, and the first version did not — pressing "Restart to update" on
+`0.12.5-rc.1` only hid the window and left the process (and tray) alive.
+
+Rules the install path must keep:
+
+1. `installUpdateNow()` marks the app as quitting (`setAppQuitting(true)`) **before**
+   calling `quitAndInstall`, so the window's `close` handler stops hiding it;
+   the flag is rolled back if the installer refuses to start.
+2. `before-quit` arms its force-exit watchdog **first**, then performs each
+   cleanup step inside its own guard. A throwing cleanup used to abort the handler
+   before the watchdog existed, leaving a zombie: no window, tray alive, and
+   `quitting` already `true` so every later Quit returned early.
+3. `MARKUS_UPDATE_DEBUG=1` logs `still alive 5s after quitAndInstall` when the
+   quit path is blocked — a silent failure here looks like "the button does
+   nothing", so it must never be silent.
+
 ### Platform support matrix
 
 `resolveUpdaterSupport()` in `update-policy.ts` is the single decision point. It
