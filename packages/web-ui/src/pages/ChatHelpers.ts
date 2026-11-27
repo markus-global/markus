@@ -674,6 +674,11 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   }
   if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
     base.isError = true;
+    // DB 里存的永远是 **provider 原文**。气泡展示时由这一份原文重新生成用户可读
+    // 的那句（AgentMessageBody → noticeText），所以刷新前后必然是同一句话；
+    // 曾经历史行直接拿 content 当文本，于是“余额不足 + 可点链接”刷新后回退成
+    // provider 原话、链接也没了（老板 2026-11-27 截图）。
+    base.errorRaw = m.content;
   }
   // Authoritative only: the server stamps `emptyReply` on a genuinely empty terminal
   // turn. An assistant row that merely has no content yet (history still loading,

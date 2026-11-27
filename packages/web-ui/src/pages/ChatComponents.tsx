@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { api, isAuthExpiredError, type AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { LinkifiedText } from '../components/LinkifiedText.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
   MemoExecEntryRow,
@@ -1160,6 +1161,20 @@ export const AgentMessageBody = memo(function AgentMessageBody({
 }) {
   const { t } = useTranslation(['team', 'common']);
   const isStopped = msg.isStopped;
+  // 「这条系统注释归谁渲染」只能有一个答案。以前它有两个渲染点：正文兜底
+  // （MarkdownMessage，链接会开内嵌右侧栏）和气泡底部的 ended-early 注释
+  // （纯 <span>，链接是死文本）—— 同一句话在用户眼里可以是可点、不可以点，
+  // 点下去还能去两个不同的地方。这里先用一个判据定归属，两处都读它。
+  const isErrorNotice = !!(msg.isError || (msg.text ?? '').startsWith('⚠'));
+  // 这句系统注释的**唯一**文本：每次展示都从 provider 原文重新生成。
+  // DB 里存的只有原文（`errorRaw`），所以「出错当场」与「翻页回来从历史重建」
+  // 得到的是同一句话 —— 以前后者直接拿 content 当文本，于是“余额不足 + 可点链接”
+  // 刷新后回退成 `CU_EXCEEDED: Credits exhausted…`，链接也没了。
+  const noticeText = useMemo(() => {
+    if (!isErrorNotice) return '';
+    const fromRaw = msg.errorRaw ? friendlyAgentError(msg.errorRaw, t) : '';
+    return (fromRaw || msg.text || '').replace(/^⚠\s*/, '');
+  }, [isErrorNotice, msg.errorRaw, msg.text, t]);
   // 过程（思考/工具）默认折成一行，流式中和结束后**同一套结构** ——
   // 展开状态由每个过程块自己持有（见 ProcessRun）。
   // 这轮结束后，最终结果之前的一切还会再整体折进顶部一行
@@ -1222,7 +1237,10 @@ export const AgentMessageBody = memo(function AgentMessageBody({
   );
 
   if (segments !== undefined && segments.length > 0) {
-    const textSegments = segments.filter(s => s.type === 'text');
+    // ⚠ 文本段是**系统注释的原文**，不是 agent 说的话：它统一由 noticeText 渲染。
+    // 当正文会把它（连同原话里的死链）重复画一遍，而历史行里存的恰好就是这份原文。
+    const isNoticeSegment = (s: MsgSegment) => s.type === 'text' && s.content.startsWith('⚠');
+    const textSegments = segments.filter((s): s is Extract<MsgSegment, { type: 'text' }> => s.type === 'text' && !isNoticeSegment(s));
     // Live segments are the source of truth while streaming too. Gating this on
     // `!isStreaming` left every tool-less reply with an EMPTY bubble mid-stream
     // (the answer only appeared once the turn ended), while tool-using replies
@@ -1238,16 +1256,22 @@ export const AgentMessageBody = memo(function AgentMessageBody({
     // 正文只来自正文分段；正文只存在于 msg.text 的历史消息走第二兜底。
     // 不再拿「思考内容」当正文兜底：过程行现在默认折叠但**始终在**，气泡不会空，
     // 再把 reasoning 当正文渲染一遍只会让同一段内容在气泡里出现两次。
-    const displayText = segmentText || (msg.text ? stripMarkup(msg.text) : null);
+    const displayText = segmentText || (isErrorNotice ? null : (msg.text ? stripMarkup(msg.text) : null));
     // 时间线切成「正文块 / 过程块」：过程块（思考 + 工具）默认折成一行，
     // 顺序完全不动（思考 → 正文 → 执行 → 思考），只是每段过程收起。
-    const blocks = groupProcessRuns(fullLogEntries);
+    const proseEntries = isErrorNotice
+      ? fullLogEntries.filter(e => !(e.type === 'text' && e.content.startsWith('⚠')))
+      : fullLogEntries;
+    const blocks = groupProcessRuns(proseEntries);
     const hasTextBlock = blocks.some(b => b.kind === 'text');
     // 「气泡里渲染哪些块」全在 `visibleTimelineBlocks` 里定（单一执行点）。
     // 关键不变式：**一个气泡最多一行过程** —— 曾经这里流式期间一块不折，
     // 于是「思考→工具→思考→工具」把气泡拉成一列折叠行（老板 2026-10-18 截图）。
     // 中断/异常结束的回合不折叠 —— 见 visibleTimelineBlocks 的说明。
     const interrupted = !!(isStopped || msg.isError);
+    // 注释的落点只有一个判据：**气泡里有正文吗**。
+    //   有正文 → 原因跟在正文下面一行；没正文 → 原因本身就是气泡内容。
+    // 两处都读 hasTextBlock，所以同一句话永远只出现一次。
     const timeline = visibleTimelineBlocks(blocks, {
       isStreaming,
       interrupted,
@@ -1325,9 +1349,15 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           <ActivityIndicator activities={liveActivities} isActive />
         )}
 
-        {/* 没有任何正文块时退回 msg.text（正文只存在 text 字段里的历史消息）。
-            有正文块时绝不重复输出 —— 正文由上面的块负责。 */}
-        {!hasTextBlock && displayText && (
+        {/* 系统注释（错误/告警）：文本由 errorRaw 重新生成，气泡里只出现一次。
+            不走 Markdown —— Markdown 里的外链会开内嵌右侧栏，而「去充值」必须在
+            系统浏览器里带着用户自己的登录态完成。 */}
+        {!hasTextBlock && isErrorNotice && noticeText && (
+          <div className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">
+            <LinkifiedText text={noticeText} />
+          </div>
+        )}
+        {!hasTextBlock && !isErrorNotice && displayText && (
           <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
         )}
 
@@ -1345,9 +1375,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
         {/* Abnormally finished turn → a quiet annotation, never a red warning.
             The reason is a SYSTEM note (kept out of `segments`), so this still shows
             when the timeline only captured tool rows before the stream died. */}
-        {!isStreaming && (msg.isError || msg.text.startsWith('⚠')) && msg.text && !(
-          segments?.some(s => s.type === 'text' && s.content && (s.content === msg.text || s.content.startsWith('⚠')))
-        ) && (
+        {!isStreaming && hasTextBlock && noticeText && (
           <div className="flex items-start gap-1.5 mt-2 text-[11px] text-fg-tertiary leading-relaxed">
             <svg
               className="w-3 h-3 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none"
@@ -1359,7 +1387,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
             <span className="min-w-0">
               <span className="text-fg-secondary">{t('page.endedEarly')}</span>
               <span className="mx-1">·</span>
-              <span>{msg.text.replace(/^⚠\s*/, '')}</span>
+              <span><LinkifiedText text={noticeText} /></span>
             </span>
           </div>
         )}
@@ -1399,7 +1427,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
       )}
       {legacyText
         ? (msg.isError || legacyText.startsWith('⚠')
-          ? <p className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">{legacyText.replace(/^⚠\s*/, '')}</p>
+          ? <p className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap"><LinkifiedText text={noticeText || legacyText.replace(/^⚠\s*/, '')} /></p>
           : <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} />)
         : null}
       {!isStreaming && !legacyText && !hasActivities && !isStopped && msg.sender === 'agent' && msg.emptyReply === true && (

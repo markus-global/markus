@@ -177,6 +177,46 @@ function emphasisRunOpenedBefore(text: string, offset: number, end: string): str
   return before === run ? run : null;
 }
 
+/** Sentence punctuation that follows a URL but is not part of it. */
+const TRAILING_PUNCTUATION_RE = /[.,;:!?\]\)"']+$/;
+
+function trimTrailingPunctuation(url: string): string {
+  return url.replace(TRAILING_PUNCTUATION_RE, '');
+}
+
+/** A plain-text run, or a bare http(s) URL found in it. */
+export type BareUrlPart = { kind: 'text' | 'link'; value: string };
+
+/**
+ * Split plain text on bare http(s) URLs.
+ *
+ * Same boundary definition as {@link autolinkBareUrls} (CJK / full-width
+ * punctuation terminates a URL, trailing sentence punctuation does not belong to
+ * it) — deliberately the **same** `BARE_URL_RE`, because two definitions of
+ * "where does a URL end" is exactly how the markdown path and the plain-text
+ * path would start disagreeing on the same sentence.
+ *
+ * For callers that render text WITHOUT markdown (error notices, plain <p>):
+ * they need anchors, not markdown source.
+ */
+export function splitBareUrls(text: string): BareUrlPart[] {
+  const parts: BareUrlPart[] = [];
+  const re = new RegExp(BARE_URL_RE.source, 'gi');
+  let last = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const url = trimTrailingPunctuation(m[0]);
+    if (!url) continue;
+    const start = m.index;
+    if (start > last) parts.push({ kind: 'text', value: text.slice(last, start) });
+    parts.push({ kind: 'link', value: url });
+    // Anything we trimmed (a period, a closing paren) belongs to the prose that
+    // follows, so the next text run starts right after the URL itself.
+    last = start + url.length;
+  }
+  if (last < text.length) parts.push({ kind: 'text', value: text.slice(last) });
+  return parts;
+}
+
 /** Wrap bare http(s) URLs in prose as explicit `[url](url)` links so GFM
  *  autolink does not swallow trailing CJK / full-width characters. */
 export function autolinkBareUrls(text: string): string {
@@ -184,7 +224,7 @@ export function autolinkBareUrls(text: string): string {
     // Defense in depth: never touch a URL inside a markdown destination `](...)`.
     if (isInsideMarkdownDestination(text, offset)) return url;
     // Trailing sentence punctuation never belongs to the URL.
-    let end = url.replace(/[.,;:!?\]\)"']+$/, '');
+    let end = trimTrailingPunctuation(url);
     if (!end) return url;
     // Nor does a delimiter run that the surrounding markdown opened (2026-10-08:
     // `**https://…/363**` used to become a link whose text AND href ended in `**`,
