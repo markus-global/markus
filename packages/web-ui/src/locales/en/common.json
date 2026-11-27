@@ -599,7 +599,12 @@
   "day": "day",
   "update": {
     "available": "New version available: v{{latest}} (current: v{{current}})",
-    "download": "Download Update"
+    "download": "Download Update",
+    "downloading": "Downloading v{{version}} in the background ({{percent}}%)",
+    "ready": "v{{version}} is ready — restart to apply",
+    "restart": "Restart to update",
+    "restartFailed": "Could not install the update. Try again later, or re-download from the website.",
+    "moveToApplications": "Update downloaded. Move Markus into the Applications folder, then restart to update."
   },
   "llmBanner": {
     "message": "No LLM provider configured — agents cannot process requests.",

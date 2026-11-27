@@ -47,6 +47,7 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [mailbox-system.md](./architecture/mailbox-system.md) | Mailbox priority queue + attention controller (focus, interrupts, yield, cancel); triage, restart recovery, addresses, delivery envelopes and bounce/catch-all (§28) |
 | [a2a-communication.md](./architecture/a2a-communication.md) | Agent-to-agent communication — DM/group channels, one-message-one-delivery-fact invariant, reply sink, entry-point inventory |
 | [remote-access.md](./architecture/remote-access.md) | Remote access refactor — frozen contract v1.0.0 (user-supplied tunnel, Hub as entry/registry/auth gate) |
+| [desktop-auto-update.md](./architecture/desktop-auto-update.md) | Desktop auto-update — single writer per surface (native updater vs store vs npm banner), update FSM, per-platform feed requirements (macOS zip/sign/notarize, Intel+Apple Silicon in one feed), release gate |
 | [notification-delivery.md](./architecture/notification-delivery.md) | Notification delivery to humans — user/IM notification contract, agent→user messages, dedup and context truth |
 | [state-machines.md](./architecture/state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
 | [concurrent-processing.md](./architecture/concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |

@@ -134,14 +134,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ONE mac job builds BOTH arches on purpose: electron-builder writes a
+          # single `latest-mac.yml` per run, so two jobs wrote the same filename
+          # and the last uploader won — which is how the published feed ended up
+          # listing only the arm64 entry and Intel Macs could never auto-update.
+          # electron-updater's MacUpdater filters that one feed by arch
+          # (filterFilesForArch), so a feed containing both zips is correct for
+          # both platforms.
           - os: macos-latest
             platform: darwin
-            arch: arm64
-            electron_args: "--mac --arm64"
-          - os: macos-latest
-            platform: darwin
-            arch: x64
-            electron_args: "--mac --x64"
+            arch: both
+            electron_args: "--mac --arm64 --x64"
           - os: ubuntu-latest
             platform: linux
             arch: x64
@@ -209,58 +212,21 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Verify macOS DMG integrity
+      # One script, runnable locally before cutting a release, and the SAME code
+      # here: asserts 2 DMGs + 2 update ZIPs, per-arch correctness, code
+      # signatures, and that latest-mac.yml is installable by Squirrel.Mac.
+      # See docs/desktop-auto-update.md.
+      - name: Verify macOS artifacts (DMG, ZIP, update feed)
         if: matrix.platform == 'darwin'
+        env:
+          APPLE_CERT_PRESENT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
         run: |
-          set -euo pipefail
-          shopt -s nullglob
-          dmgs=(packages/desktop/dist-electron/*.dmg)
-          if [ "${#dmgs[@]}" -eq 0 ]; then
-            echo "::error::No DMG produced under packages/desktop/dist-electron/"
-            exit 1
+          if [ "${APPLE_CERT_PRESENT}" = "true" ]; then
+            bash scripts/verify-mac-artifacts.sh --require-developer-id
+          else
+            echo "::warning::Apple signing secrets absent — verifying structure only, NOT Developer ID/notarization"
+            bash scripts/verify-mac-artifacts.sh
           fi
-          if [ "${#dmgs[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one DMG for matrix arch ${{ matrix.arch }}, got:"
-            printf '  %s\n' "${dmgs[@]}"
-            exit 1
-          fi
-          dmg="${dmgs[0]}"
-          echo "→ hdiutil verify $dmg"
-          hdiutil verify "$dmg"
-
-          # Volume names contain spaces (e.g. "Markus 0.9.6-rc.3-arm64"); do not
-          # parse hdiutil tabular output with awk $NF. Use a private mountroot.
-          mountroot="$(mktemp -d /tmp/markus-dmg-XXXXXX)"
-          cleanup() {
-            # Detach the volume dir (not the mountroot), then remove the empty root.
-            # Under set -e, a failed rm on a still-mounted RO volume must not fail the job.
-            if [ -d "$mountroot" ]; then
-              while IFS= read -r vol; do
-                hdiutil detach "$vol" -force >/dev/null 2>&1 || true
-              done < <(find "$mountroot" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)
-              hdiutil detach "$mountroot" -force >/dev/null 2>&1 || true
-              rm -rf "$mountroot" 2>/dev/null || true
-            fi
-            return 0
-          }
-          trap cleanup EXIT
-          echo "→ hdiutil attach (smoke) $dmg → $mountroot"
-          hdiutil attach "$dmg" -nobrowse -readonly -mountroot "$mountroot"
-          app="$(find "$mountroot" -maxdepth 2 -name 'Markus.app' -type d | head -n 1)"
-          if [ -z "$app" ]; then
-            echo "::error::Markus.app not found under $mountroot"
-            find "$mountroot" -maxdepth 3 -print
-            exit 1
-          fi
-          arch_out="$(lipo -archs "$app/Contents/MacOS/Markus")"
-          echo "   app: $app"
-          echo "   arch: $arch_out"
-          case "${{ matrix.arch }}" in
-            arm64) echo "$arch_out" | grep -q arm64 ;;
-            x64)   echo "$arch_out" | grep -q x86_64 ;;
-          esac
-          cleanup
-          trap - EXIT
 
       - name: Cleanup Apple keychain
         if: always() && matrix.platform == 'darwin' && env.DESKTOP_KEYCHAIN != ''
@@ -272,8 +238,11 @@ jobs:
           name: markus-desktop-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             packages/desktop/dist-electron/*.dmg
+            packages/desktop/dist-electron/*.zip
             packages/desktop/dist-electron/*.exe
             packages/desktop/dist-electron/*.AppImage
+            packages/desktop/dist-electron/latest-mac.yml
+            packages/desktop/dist-electron/latest.yml
           retention-days: 5
 
   # Windows is built in its own job so the Certum SimplySign signing secrets can

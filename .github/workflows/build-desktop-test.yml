@@ -108,6 +108,11 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      # Guards the one thing a config file cannot prove: that the produced feed is
+      # something Squirrel.Mac can install (zip, both arches, sha512 matches).
+      - name: Verify macOS update feed is installable
+        run: node scripts/verify-mac-update-feed.mjs
+
       - name: Upload app
         uses: actions/upload-artifact@v4
         with:

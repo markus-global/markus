@@ -591,7 +591,12 @@
   "day": "día",
   "update": {
     "available": "Nueva versión disponible: v{{latest}} (actual: v{{current}})",
-    "download": "Actualización"
+    "download": "Actualización",
+    "downloading": "Descargando v{{version}} en segundo plano ({{percent}}%)",
+    "ready": "v{{version}} está lista: reinicia para aplicarla",
+    "restart": "Reiniciar para actualizar",
+    "restartFailed": "No se pudo instalar la actualización. Inténtalo más tarde o vuelve a descargarla desde el sitio web.",
+    "moveToApplications": "Actualización descargada. Mueve Markus a la carpeta Aplicaciones y reinicia para actualizar."
   },
   "llmBanner": {
     "message": "No se configura ningún proveedor de LLM — los agentes no pueden procesar solicitudes.",

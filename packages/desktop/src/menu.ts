@@ -1,4 +1,5 @@
 import { app, Menu, shell, BrowserWindow } from 'electron';
+import { checkForUpdatesNow } from './updater.js';
 
 const IS_MAS = process.env['MARKUS_MAS'] === 'true';
 const isMac = process.platform === 'darwin';
@@ -241,9 +242,11 @@ export function setupMenu(backendUrl: string): void {
           click: () => shell.openExternal('https://markus.global/#download'),
         }] : [{
           label: t['checkForUpdates'],
-          click: async () => {
-            const { autoUpdater } = await import('electron-updater');
-            autoUpdater.checkForUpdatesAndNotify();
+          click: () => {
+            // Route through the updater state machine — importing electron-updater
+            // here would be a second writer of update state (and would bypass the
+            // MAS/unpackaged guards plus the renderer notification).
+            void checkForUpdatesNow();
           },
         }]),
       ],
