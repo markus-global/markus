@@ -16,10 +16,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
+const fx = vi.hoisted(() => {
+  const BILLING_URL = 'https://markus.global/settings?tab=billing';
+  return { BILLING_URL, FRIENDLY_CU: `⚠ 余额不足，请充值或升级计划：${BILLING_URL}` };
+});
+
 vi.mock('react-i18next', () => {
+  // 词条扳手等于 locale 文件里的那一行（真实文案由 locale parity 测试看着）；
+  // 这里只关心「美化后的那句话」能不能真的落在 DOM 里。
+  const DICT: Record<string, string> = { 'team:errors.markusCuExceeded': fx.FRIENDLY_CU };
   const t = (key: string, opts?: unknown) => {
     const fallback = (opts as { defaultValue?: string } | undefined)?.defaultValue;
-    return fallback ?? key;
+    return fallback ?? DICT[key] ?? key;
   };
   return {
     useTranslation: () => ({ t, i18n: { language: 'zh-CN' } }),
@@ -49,10 +57,11 @@ const stub = vi.hoisted(() => {
 import { LinkifiedText } from '../src/components/LinkifiedText.tsx';
 import { splitBareUrls } from '../src/components/markdown-utils.ts';
 import { AgentMessageBody } from '../src/pages/ChatComponents.tsx';
+import { dbMsgToChat } from '../src/pages/ChatHelpers.ts';
 import type { ChatMsg } from '../src/pages/ChatHelpers.ts';
 
-const BILLING_URL = 'https://markus.global/settings?tab=billing';
-const CU_NOTICE = `⚠ 余额不足，请充值或升级计划：${BILLING_URL}`;
+const BILLING_URL = fx.BILLING_URL;
+const CU_NOTICE = fx.FRIENDLY_CU;
 
 function errorMsg(overrides: Partial<ChatMsg> = {}): ChatMsg {
   return {
@@ -147,5 +156,33 @@ describe('错误气泡 — 同一句注释只渲染一次，且链接可点', ()
     const occurrences = (screen.getByText(/余额不足，请充值或升级计划/).textContent ?? '')
       .split('余额不足，请充值或升级计划').length - 1;
     expect(occurrences).toBe(1);
+  });
+});
+
+describe('翻页回来（历史行里只有 provider 原文）', () => {
+  // 老板 2026-11-27：出错当场是“余额不足 + 可点链接”，切走再切回来变成
+  // `CU_EXCEEDED: Credits exhausted…`，链接也没了。DB 里存的永远是原文，
+  // 所以展示层必须从原文重新生成同一句话。
+  const RAW = '⚠ Error: [markus:qwen/qwen4-max] CU_EXCEEDED: Credits exhausted. Please top up or upgrade your plan.';
+  const row = {
+    id: 'm_hist', sessionId: 's1', role: 'assistant', content: RAW,
+    createdAt: '2026-11-27T03:30:00.000Z',
+    metadata: { isError: true, segments: [{ type: 'text', content: RAW, createdAt: '2026-11-27T03:30:00.000Z' }] },
+  } as never;
+
+  it('重新变成同一句中文提醒，且链接可点、去系统浏览器', () => {
+    const msg = dbMsgToChat(row);
+    expect(msg.errorRaw).toBe(RAW);
+
+    const { container } = render(<AgentMessageBody msg={msg} isStreaming={false} liveActivities={[]} />);
+
+    expect(container.textContent).toContain('请充值或升级计划');
+    expect(container.textContent).not.toContain('CU_EXCEEDED');
+    const links = anchors(container);
+    expect(links).toHaveLength(1);
+    expect(links[0]!.getAttribute('href')).toBe(BILLING_URL);
+
+    fireEvent.click(links[0]!);
+    expect(stub.openExternal).toHaveBeenCalledWith(BILLING_URL);
   });
 });
