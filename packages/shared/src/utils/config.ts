@@ -114,6 +114,14 @@ export interface MarkusConfig {
      * 各自独立计数；未配置时 `TaskService.checkTaskLimits` 回退到治理策略默认值。
      */
     maxPendingTasksPerAgent?: number;
+    /**
+     * 每个 agent 的**待审需求提案**上限（智能体设置 → 待审需求提案上限）。
+     *
+     * 与 `maxPendingTasksPerAgent` 同属「每 agent 待办队列」策略族，同一条配置链路：
+     * `POST /api/settings/agent` 写入，启动时读回并灌入
+     * `AgentManager.maxPendingRequirementProposals`；未配置时 RequirementService 回退默认 10。
+     */
+    maxPendingRequirementProposals?: number;
   };
   browser?: {
     /** Backend that drives agent browser automation: 'embedded' = built-in Electron WebContentsView (default), 'system-chrome' = Chrome extension bridge. */

@@ -1,3 +1,4 @@
+import { cpus } from 'node:os';
 import {
   createLogger,
   agentId as genAgentId,
@@ -468,6 +469,23 @@ function firstTaskIdIn(text: string | undefined): string | undefined {
   return m ? m[0] : undefined;
 }
 
+/**
+ * 并发 worker 的**默认值**：由硬件推导，而不是一个魔数。
+ *
+ * 第一性原理：这个上限保护的是本机 CPU / 内存，它的合理值必然随机器规模变化，
+ * 所以默认值只能由硬件决定 —— 写死 3 只对开发者的笔记本成立，在 18 核机器上等于
+ * 让 15 个核空转（本轮 Owner 实遇）。
+ *
+ * `min(8, max(2, cores - 1))`：留一个核给主线程与 UI；上限 8 是因为并发不是免费的 ——
+ * 每个 worker 都是一条独立的 LLM 流，再多也不会更快，只会把 provider 的速率限制
+ * 和本地内存打满。4 核给 3，8 核给 7，16 核及以上封顶 8。
+ *
+ * 显式配置（POST /api/settings/agent → concurrent.maxWorkers）永远优先；本函数只是默认值。
+ */
+export function defaultMaxWorkers(cores: number = cpus().length): number {
+  return Math.min(8, Math.max(2, cores - 1));
+}
+
 export class AgentManager {
   private agents = new Map<string, Agent>();
   private eventBus: EventBus;
@@ -561,6 +579,14 @@ export class AgentManager {
   private _maxToolIterations = Infinity;
   private _concurrentConfig?: AgentConcurrentConfig;
   private _maxPendingTasksPerAgent?: number;
+  /**
+   * 每个 agent 允许同时持有的**待审需求提案**上限。
+   *
+   * 为什么它与 `maxPendingTasksPerAgent` 同形：两者都是「每个 agent 的待办队列上限」
+   * 这一类产品策略，不该一个可配一个硬编码（2026-11-27 Owner 指出：需求配额 3 既看不见
+   * 也改不了，agent 提 3 条就瘫）。`undefined` = 未配置 → RequirementService 回退默认值。
+   */
+  private _maxPendingRequirementProposals?: number;
   private _codingToolsEnabled = false;
   private _codingToolsConfigs?: Record<string, CodingToolConfig>;
   private templateRegistry?: TemplateRegistry;
@@ -854,6 +880,15 @@ export class AgentManager {
     this._maxPendingTasksPerAgent = value && value > 0 ? value : undefined;
   }
 
+  /** 每个 agent 的待审需求提案上限；`undefined` = 未配置（回退默认值）。见字段注释。 */
+  get maxPendingRequirementProposals(): number | undefined {
+    return this._maxPendingRequirementProposals;
+  }
+
+  set maxPendingRequirementProposals(value: number | undefined) {
+    this._maxPendingRequirementProposals = value && value > 0 ? value : undefined;
+  }
+
   get concurrentConfig(): AgentConcurrentConfig | undefined {
     return this._concurrentConfig;
   }
@@ -865,7 +900,7 @@ export class AgentManager {
       try {
         const agent = this.getAgent(info.id);
         if (!agent) continue;
-        const cfg = value ?? { enabled: true, maxWorkers: 3 };
+        const cfg = value ?? { enabled: true, maxWorkers: defaultMaxWorkers() };
         if (agent.config) agent.config.concurrent = cfg;
         // 统一并发闸：worker 数与任务并发上限一起改（applyConcurrency 内部同源计算）。
         // 旧实现只在 `enabled === true` 时下发，导致「运行中关掉并发」不会把

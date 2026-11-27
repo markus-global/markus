@@ -31,6 +31,7 @@ import { FilterableSelect } from '../components/FilterableSelect.tsx';
 import { WebSearchSettings } from './WebSearchSettings.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { Switch } from '../components/Switch.tsx';
+import { useAutoSave } from '../hooks/useAutoSave.ts';
 import { readProviderCatalog } from '../lib/providerCatalogRead.ts';
 import { fetchLlmSettings } from '../lib/llmSettingsCache.ts';
 import { errorMessage } from '../lib/resourceState.ts';
@@ -454,14 +455,39 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   // Agent settings
   const [agentMaxIter, setAgentMaxIter] = useState(200);
   const [agentMaxPending, setAgentMaxPending] = useState(20);
-  const [agentSaving, setAgentSaving] = useState(false);
-  const [agentMsg, setAgentMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  // 待审需求提案上限：与任务上限同属「每 agent 待办队列」策略类，默认值与
+  // RequirementService.DEFAULT_MAX_PENDING_PROPOSALS_PER_AGENT 保持一致（10）。
+  const [agentMaxReqProps, setAgentMaxReqProps] = useState(10);
   // Concurrent Processing settings
   const [concEnabled, setConcEnabled] = useState(false);
   const [concMaxWorkers, setConcMaxWorkers] = useState(3);
   const [concConflictPolicy, setConcConflictPolicy] = useState<'auto' | 'report'>('auto');
-  const [concSaving, setConcSaving] = useState(false);
-  const [concMsg, setConcMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  // 两组策略值改为**自动保存**（Owner 2026-11-27）：两个区块各带一个保存按钮，
+  // 改完上面再改下面、只点了一个必然发生。字段一变就提交，UI 只显示结果。
+  const saveAgentGroup = useCallback(async (v: {
+    maxToolIterations: number;
+    maxPendingTasksPerAgent: number;
+    maxPendingRequirementProposals: number;
+  }) => {
+    const d = await api.settings.updateAgent(v);
+    setAgentMaxIter(d.maxToolIterations);
+    setAgentMaxPending(d.maxPendingTasksPerAgent);
+    setAgentMaxReqProps(d.maxPendingRequirementProposals);
+  }, []);
+  const agentAuto = useAutoSave(saveAgentGroup);
+
+  const saveConcGroup = useCallback(async (v: {
+    enabled: boolean;
+    maxWorkers: number;
+    conflictPolicy: 'auto' | 'report';
+  }) => {
+    const d = await api.settings.updateAgent({ concurrent: v });
+    setConcEnabled(d.concurrent.enabled);
+    setConcMaxWorkers(d.concurrent.maxWorkers ?? 1);
+    setConcConflictPolicy(d.concurrent.conflictPolicy ?? 'auto');
+  }, []);
+  const concAuto = useAutoSave(saveConcGroup);
 
   // Browser automation settings
   const [browserMode, setBrowserMode] = useState<'embedded' | 'system-chrome'>('embedded');
@@ -559,9 +585,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       .then(d => {
         if (d && typeof d.maxToolIterations === 'number') setAgentMaxIter(d.maxToolIterations);
         if (d && typeof d.maxPendingTasksPerAgent === 'number') setAgentMaxPending(d.maxPendingTasksPerAgent);
+        if (d && typeof d.maxPendingRequirementProposals === 'number') setAgentMaxReqProps(d.maxPendingRequirementProposals);
         if (d?.concurrent) {
           setConcEnabled(d.concurrent.enabled ?? true);
-          setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
+          // 后端回显的是**生效值**（未配置时已算好默认）。这里的 1 只是防御性兜底：
+          // 以前写 `?? 3` 等于在前端又立了一份「默认值」，改后端默认时它不会跟着变。
+          setConcMaxWorkers(d.concurrent.maxWorkers ?? 1);
           setConcConflictPolicy(d.concurrent.conflictPolicy ?? 'auto');
         }
         return true;
@@ -2555,7 +2584,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 type="number"
                 min={0}
                 value={agentMaxIter}
-                onChange={e => { setAgentMaxIter(Number(e.target.value)); setAgentMsg(null); }}
+                onChange={e => {
+                  const v = Number(e.target.value);
+                  setAgentMaxIter(v);
+                  agentAuto.schedule({ maxToolIterations: v, maxPendingTasksPerAgent: agentMaxPending, maxPendingRequirementProposals: agentMaxReqProps });
+                }}
                 className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
               />
             </SettingRow>
@@ -2564,36 +2597,44 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 type="number"
                 min={1}
                 value={agentMaxPending}
-                onChange={e => { setAgentMaxPending(Number(e.target.value)); setAgentMsg(null); }}
+                onChange={e => {
+                  const v = Number(e.target.value);
+                  setAgentMaxPending(v);
+                  agentAuto.schedule({ maxToolIterations: agentMaxIter, maxPendingTasksPerAgent: v, maxPendingRequirementProposals: agentMaxReqProps });
+                }}
                 className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
               />
             </SettingRow>
-            {/* One save for the whole group. The backend applies each field
-                independently (`if (typeof body.x === 'number')`), so a single call
-                persists both. Per-input buttons invited a real failure: save one,
-                navigate away, and the other silently stayed at its old value. */}
-            <div className="flex items-center justify-end px-5 py-3.5">
-              <button
-                disabled={agentSaving}
-                onClick={async () => {
-                  setAgentSaving(true); setAgentMsg(null);
-                  try {
-                    const d = await api.settings.updateAgent({
-                      maxToolIterations: agentMaxIter,
-                      maxPendingTasksPerAgent: agentMaxPending,
-                    });
-                    setAgentMaxIter(d.maxToolIterations);
-                    setAgentMaxPending(d.maxPendingTasksPerAgent);
-                    setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
-                  } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
-                  setAgentSaving(false);
+            <SettingRow label={t('agentExecution.maxPendingRequirementProposals')} hint={t('agentExecution.maxPendingRequirementProposalsDesc')}>
+              <input
+                type="number"
+                min={1}
+                value={agentMaxReqProps}
+                onChange={e => {
+                  const v = Number(e.target.value);
+                  setAgentMaxReqProps(v);
+                  agentAuto.schedule({ maxToolIterations: agentMaxIter, maxPendingTasksPerAgent: agentMaxPending, maxPendingRequirementProposals: v });
                 }}
-                className={BTN_PRIMARY}
-              >
-                {agentSaving ? t('common:saving') : t('common:save')}
-              </button>
+                className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
+              />
+            </SettingRow>
+            {/* 自动保存（Owner 2026-11-27）：字段一变就提交，这里只显示结果。
+                原来这一组和一个保存按钮，两组两个按钮 —— 改完上面再改下面、只点一个
+                必然发生，而且没用点的那组会静默丢。 */}
+            <div className="flex items-center justify-end px-5 py-3.5 min-h-[2.75rem]">
+              {agentAuto.state !== 'idle' && (
+                <span
+                  className={`text-xs ${agentAuto.state === 'error' ? 'text-red-500' : 'text-fg-tertiary'}`}
+                  data-testid="agent-autosave-state"
+                >
+                  {agentAuto.state === 'saving'
+                    ? t('common:saving')
+                    : agentAuto.state === 'saved'
+                      ? t('agentExecution.saved')
+                      : t('agentExecution.failedToSave')}
+                </span>
+              )}
             </div>
-            {agentMsg && <div className="px-5 pb-3.5"><Msg type={agentMsg.type} text={agentMsg.text} /></div>}
           </div>
         </Section>
 
@@ -2603,7 +2644,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             <SettingRow label={t('concurrent.enabled')} hint={t('concurrent.enabledDesc')}>
               <Switch
                 checked={concEnabled}
-                onChange={(v) => { setConcEnabled(v); setConcMsg(null); }}
+                onChange={(v) => { setConcEnabled(v); concAuto.schedule({ enabled: v, maxWorkers: concMaxWorkers, conflictPolicy: concConflictPolicy }); }}
                 label={t('concurrent.enabled')}
               />
             </SettingRow>
@@ -2614,7 +2655,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 max={10}
                 disabled={!concEnabled}
                 value={concMaxWorkers}
-                onChange={e => { setConcMaxWorkers(Number(e.target.value)); setConcMsg(null); }}
+                onChange={e => {
+                  const v = Number(e.target.value);
+                  setConcMaxWorkers(v);
+                  concAuto.schedule({ enabled: concEnabled, maxWorkers: v, conflictPolicy: concConflictPolicy });
+                }}
                 className={`${FIELD_INPUT} w-24 text-right tabular-nums disabled:opacity-40`}
               />
             </SettingRow>
@@ -2622,35 +2667,31 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               <select
                 value={concConflictPolicy}
                 disabled={!concEnabled}
-                onChange={e => { setConcConflictPolicy(e.target.value as 'auto' | 'report'); setConcMsg(null); }}
+                onChange={e => {
+                  const v = e.target.value as 'auto' | 'report';
+                  setConcConflictPolicy(v);
+                  concAuto.schedule({ enabled: concEnabled, maxWorkers: concMaxWorkers, conflictPolicy: v });
+                }}
                 className={`${FIELD_INPUT} disabled:opacity-40`}
               >
                 <option value="auto">{t('concurrent.policyAuto')}</option>
                 <option value="report">{t('concurrent.policyReport')}</option>
               </select>
             </SettingRow>
-            <div className="flex items-center justify-end px-5 py-3.5">
-              <button
-                disabled={concSaving}
-                onClick={async () => {
-                  setConcSaving(true); setConcMsg(null);
-                  try {
-                    const d = await api.settings.updateAgent({
-                      concurrent: { enabled: concEnabled, maxWorkers: concMaxWorkers, conflictPolicy: concConflictPolicy },
-                    });
-                    setConcEnabled(d.concurrent.enabled);
-                    setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
-                    setConcConflictPolicy(d.concurrent.conflictPolicy ?? 'auto');
-                    setConcMsg({ type: 'ok', text: t('concurrent.saved') });
-                  } catch { setConcMsg({ type: 'err', text: t('concurrent.failedToSave') }); }
-                  setConcSaving(false);
-                }}
-                className={BTN_PRIMARY}
-              >
-                {concSaving ? t('common:saving') : t('common:save')}
-              </button>
+            <div className="flex items-center justify-end px-5 py-3.5 min-h-[2.75rem]">
+              {concAuto.state !== 'idle' && (
+                <span
+                  className={`text-xs ${concAuto.state === 'error' ? 'text-red-500' : 'text-fg-tertiary'}`}
+                  data-testid="conc-autosave-state"
+                >
+                  {concAuto.state === 'saving'
+                    ? t('common:saving')
+                    : concAuto.state === 'saved'
+                      ? t('concurrent.saved')
+                      : t('concurrent.failedToSave')}
+                </span>
+              )}
             </div>
-            {concMsg && <div className="px-5 pb-3.5"><Msg type={concMsg.type} text={concMsg.text} /></div>}
           </div>
         </Section>
         </>}

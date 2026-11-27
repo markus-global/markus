@@ -5014,7 +5014,6 @@ export class TaskService implements ApprovalTargetPort {
     enabled: true,
     defaultTier: 'human',
     maxPendingTasksPerAgent: 20,
-    maxTotalActiveTasks: 0,
     requireApprovalForPriority: ['critical', 'high'],
     requireRequirement: true,
     rules: [],
@@ -5075,20 +5074,9 @@ export class TaskService implements ApprovalTargetPort {
     const policy = this.governancePolicy;
     if (!policy?.enabled) return { allowed: true };
 
-    if (policy.maxTotalActiveTasks > 0) {
-      const activeTasks = [...this.tasks.values()].filter(
-        t =>
-          t.orgId === request.orgId &&
-          !['completed', 'failed', 'cancelled', 'archived'].includes(t.status)
-      );
-      if (activeTasks.length >= policy.maxTotalActiveTasks) {
-        return {
-          allowed: false,
-          reason: `Org-wide active task cap reached (${policy.maxTotalActiveTasks})`,
-        };
-      }
-    }
-
+    // 组织级「活跃任务总数」上限已删除（Owner 2026-11-27）：它默认就是 0（不限制），
+    // 从来没有任何 UI 能打开它，也就不存在任何一个组织被它拦过 —— 一个永远不触发
+    // 的闸门只是让读者以为有保护。真正在防叠任务的是下面的每 agent 上限。
     // Per-agent task cap. Two-level precedence, no extra fallback layer:
     //   1) the value configured in 智能体设置 → 任务上限
     //      (`AgentManager.maxPendingTasksPerAgent`, persisted to markus.json
