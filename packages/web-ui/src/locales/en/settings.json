@@ -1587,5 +1587,46 @@
     "secretOnce": "New secret — copy it now, it is not shown again.",
     "lastEvent": "Last event: {{at}}",
     "noEventYet": "No event received yet."
+  },
+  "sounds": {
+    "title": "Notification sounds",
+    "description": "Play a short cue when these events happen. The master switch mutes everything.",
+    "enabled": "Enable sounds",
+    "enabledDesc": "Play a cue when an agent finishes replying, an approval or review is waiting, a task fails, or a notification arrives",
+    "preview": "Preview",
+    "deviceNote": "Sound preferences are stored on this device and do not sync across devices.",
+    "cues": {
+      "chime": "Rising two-note",
+      "attention": "Triple ping",
+      "ding": "Single ding",
+      "pop": "Soft pop",
+      "alert": "Falling two-note"
+    },
+    "events": {
+      "agentReplyComplete": {
+        "label": "Agent reply finished",
+        "desc": "Streaming output in Team Chat ended (the server confirmed the turn completed)"
+      },
+      "approvalRequested": {
+        "label": "Approval waiting",
+        "desc": "An agent submitted an approval request for you to decide"
+      },
+      "reviewRequested": {
+        "label": "Task awaiting review",
+        "desc": "A task moved into the review state"
+      },
+      "notification": {
+        "label": "Notification received",
+        "desc": "An agent sent you a regular notification"
+      },
+      "agentReplyError": {
+        "label": "Agent reply failed",
+        "desc": "A streaming turn ended with an error (model error, out of credits, …)"
+      },
+      "taskFailed": {
+        "label": "Task failed",
+        "desc": "A task moved into the failed state"
+      }
+    }
   }
 }

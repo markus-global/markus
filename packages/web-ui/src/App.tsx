@@ -5,6 +5,7 @@ import { isEphemeralAuthBrowserUrl } from './lib/browserAuthUrl.ts';
 import { useNavRingSwipe, ringStep, currentRingSub, requestRingSub } from './lib/navRing.ts';
 import { requestHistoryModal } from './lib/historyModal.ts';
 import { useAttentionBadge } from './lib/useAttentionBadge.ts';
+import { useNotificationSounds } from './hooks/useNotificationSounds.ts';
 import { HomePage } from './pages/Home.tsx';
 
 const TeamPage = lazy(() => import('./pages/Team.tsx').then(m => ({ default: m.TeamPage })));
@@ -910,6 +911,9 @@ export function App() {
   // 概览徽标的全局驱动器：常驻 App 根部，与当前停在哪个页面无关，保证侧栏/底栏
   // 角标实时更新（不再只有进概览页才重算）。徽标数字的唯一发布点，见 lib/useAttentionBadge。
   useAttentionBadge(currentUser?.id);
+  // 提示音接线点（回合结束 / 审批 / 待验收 / 失败）：常驻根部，与当前页面无关。
+  // 事件与音色目录见 lib/notificationSounds.ts，开关在设置 → 通用。
+  useNotificationSounds(!!currentUser);
   const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => {
     if (isMobile) {
       return {
