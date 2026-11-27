@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus, isExternalIngressPolicy } from '@markus/shared';
+import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, UPLOAD_IMAGE_MAX_BYTES, UPLOAD_FILES_PER_REQUEST_MAX, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus, isExternalIngressPolicy } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -45,6 +45,7 @@ import {
   PROVIDER_DEFAULT_BASE_URLS,
   aggregateCacheHitRate,
   computeReplayRatio,
+  defaultMaxWorkers,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -95,7 +96,7 @@ import type { ReportService } from './report-service.js';
 import type { KnowledgeService } from './knowledge-service.js';
 import type { KnowledgeSyncService } from './knowledge-sync-service.js';
 import type { DeliverableService } from './deliverable-service.js';
-import type { RequirementService } from './requirement-service.js';
+import { RequirementService } from './requirement-service.js';
 import type { WorkflowService } from './workflow-service.js';
 import type { WorkflowRunner } from './workflow-runner.js';
 import { WSBroadcaster } from './ws-server.js';
@@ -4425,8 +4426,8 @@ export class APIServer {
       }
       const ext = match[1] === 'jpeg' ? 'jpg' : match[1]!;
       const buf = Buffer.from(match[2]!, 'base64');
-      if (buf.length > 2 * 1024 * 1024) {
-        this.json(res, 400, { error: 'Image too large (max 2MB)' });
+      if (buf.length > UPLOAD_IMAGE_MAX_BYTES) {
+        this.json(res, 400, { error: `Image too large (max ${Math.round(UPLOAD_IMAGE_MAX_BYTES / (1024 * 1024))}MB)` });
         return;
       }
       const avatarDir = join(homedir(), '.markus', 'avatars');
@@ -4479,8 +4480,8 @@ export class APIServer {
         this.json(res, 400, { error: 'files[] is required (array of { dataUrl, name })' });
         return;
       }
-      if (files.length > 10) {
-        this.json(res, 400, { error: 'Too many files (max 10 per request)' });
+      if (files.length > UPLOAD_FILES_PER_REQUEST_MAX) {
+        this.json(res, 400, { error: `Too many files (max ${UPLOAD_FILES_PER_REQUEST_MAX} per request)` });
         return;
       }
       const prefix = typeof body['prefix'] === 'string' ? body['prefix'] : undefined;
@@ -10598,11 +10599,19 @@ EXPLANATION_END`;
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
-        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
+        // 回显**生效值**：并发默认值只在 defaultMaxWorkers() 一处，前端不再猜一个魔数兜底。
+        concurrent: {
+          enabled: am.concurrentConfig?.enabled ?? true,
+          maxWorkers: am.concurrentConfig?.maxWorkers ?? defaultMaxWorkers(),
+          conflictPolicy: am.concurrentConfig?.conflictPolicy,
+        },
         // 任务上限：优先回显配置值；未配置时回显治理策略默认值，与
         // TaskService.checkTaskLimits 的实际生效口径保持一致。
         maxPendingTasksPerAgent:
           am.maxPendingTasksPerAgent ?? this.taskService.getGovernancePolicy().maxPendingTasksPerAgent,
+        // 待审需求提案上限：未配置时回显 RequirementService 的默认值。
+        maxPendingRequirementProposals:
+          am.maxPendingRequirementProposals ?? RequirementService.DEFAULT_MAX_PENDING_PROPOSALS_PER_AGENT,
       });
       return;
     }
@@ -10633,6 +10642,12 @@ EXPLANATION_END`;
         am.maxPendingTasksPerAgent = body['maxPendingTasksPerAgent'] as number;
         changed = true;
       }
+      // 每个 agent 的待审需求提案上限：同一条配置链路，写入 AgentManager 单一事实源
+      // 并落库 markus.json。不传则保持原值（与其它字段的独立应用语义一致）。
+      if (typeof body['maxPendingRequirementProposals'] === 'number') {
+        am.maxPendingRequirementProposals = body['maxPendingRequirementProposals'] as number;
+        changed = true;
+      }
       if (changed) {
         try {
           saveConfig({
@@ -10640,6 +10655,7 @@ EXPLANATION_END`;
               maxToolIterations: am.maxToolIterations,
               concurrent: am.concurrentConfig,
               maxPendingTasksPerAgent: am.maxPendingTasksPerAgent,
+              maxPendingRequirementProposals: am.maxPendingRequirementProposals,
             },
           } as any, this.markusConfigPath);
         } catch (e) {
@@ -10660,9 +10676,15 @@ EXPLANATION_END`;
       }
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
-        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
+        concurrent: {
+          enabled: am.concurrentConfig?.enabled ?? true,
+          maxWorkers: am.concurrentConfig?.maxWorkers ?? defaultMaxWorkers(),
+          conflictPolicy: am.concurrentConfig?.conflictPolicy,
+        },
         maxPendingTasksPerAgent:
           am.maxPendingTasksPerAgent ?? this.taskService.getGovernancePolicy().maxPendingTasksPerAgent,
+        maxPendingRequirementProposals:
+          am.maxPendingRequirementProposals ?? RequirementService.DEFAULT_MAX_PENDING_PROPOSALS_PER_AGENT,
       });
       return;
     }

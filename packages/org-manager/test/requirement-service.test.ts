@@ -70,12 +70,37 @@ describe('RequirementService', () => {
   });
 
   describe('proposeRequirement', () => {
-    it('limits pending proposals per agent', () => {
-      for (let i = 0; i < 3; i++) {
+    it('defaults to 10 pending proposals per agent (was a hard-coded 3)', () => {
+      for (let i = 0; i < RequirementService.DEFAULT_MAX_PENDING_PROPOSALS_PER_AGENT; i++) {
         service.proposeRequirement(baseRequest({ source: 'agent', createdBy: 'agent-1', title: `Req ${i}` }));
       }
       expect(() => service.proposeRequirement(baseRequest({ source: 'agent', createdBy: 'agent-1', title: 'One more' })))
-        .toThrow(/already has 3 pending/);
+        .toThrow(/already has 10 pending requirement proposals/);
+    });
+
+    it('honours the configured cap from AgentManager (Settings → Execution)', () => {
+      // 上限从 private static 3 改为可配：这是 Owner 2026-11-27 指出的缺陷 ——
+      // 限制存在但看不见、改不了。配置值必须**压过**默认值，否则设置页是装饰。
+      service.setAgentManager({ maxPendingRequirementProposals: 2 } as never);
+      service.proposeRequirement(baseRequest({ source: 'agent', createdBy: 'agent-1', title: 'A' }));
+      service.proposeRequirement(baseRequest({ source: 'agent', createdBy: 'agent-1', title: 'B' }));
+      expect(() => service.proposeRequirement(baseRequest({ source: 'agent', createdBy: 'agent-1', title: 'C' })))
+        .toThrow(/already has 2 pending requirement proposals \(limit 2\)/);
+    });
+
+    it('names the setting in the rejection error, so the agent can route the human to it', () => {
+      service.setAgentManager({ maxPendingRequirementProposals: 1 } as never);
+      service.proposeRequirement(baseRequest({ source: 'agent', createdBy: 'agent-1', title: 'A' }));
+      expect(() => service.proposeRequirement(baseRequest({ source: 'agent', createdBy: 'agent-1', title: 'B' })))
+        .toThrow(/Settings → Execution/);
+    });
+
+    it('counts each agent independently', () => {
+      service.setAgentManager({ maxPendingRequirementProposals: 1 } as never);
+      service.proposeRequirement(baseRequest({ source: 'agent', createdBy: 'agent-1', title: 'A' }));
+      // 另一个 agent 不受影响 —— 上限按 agent 各自计数。
+      expect(() => service.proposeRequirement(baseRequest({ source: 'agent', createdBy: 'agent-2', title: 'B' })))
+        .not.toThrow();
     });
   });
 

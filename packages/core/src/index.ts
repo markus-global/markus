@@ -6,6 +6,7 @@ export { startSpan, trace, setTracingProvider } from './tracing.js';
 export type { Span, SpanAttributes, TracingProvider } from './tracing.js';
 export {
   AgentManager,
+  defaultMaxWorkers,
   type CreateAgentRequest,
   type RequirementServiceBridge,
   type RoleUpdateStatus,

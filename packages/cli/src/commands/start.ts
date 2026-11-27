@@ -845,6 +845,11 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   if (typeof config.agent?.maxPendingTasksPerAgent === 'number') {
     agentManager.maxPendingTasksPerAgent = config.agent.maxPendingTasksPerAgent;
   }
+  // 每个 agent 的待审需求提案上限（同一个「每 agent 待办队列」策略族）。
+  // 必须读回，否则设置页存了 markus.json 但重启后失效 —— 「改了没用」类缺陷。
+  if (typeof config.agent?.maxPendingRequirementProposals === 'number') {
+    agentManager.maxPendingRequirementProposals = config.agent.maxPendingRequirementProposals;
+  }
   if (config.codingTools) {
     agentManager.setCodingToolsConfig(config.codingTools);
   }
