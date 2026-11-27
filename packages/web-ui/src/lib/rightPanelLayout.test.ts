@@ -1,72 +1,38 @@
 import { describe, it, expect } from 'vitest';
 import {
   CHAT_MIN_W,
-  PANEL_AUTO_SHARE,
-  rightPanelBounds,
+  rightPanelMaxWidth,
   railsActionOnPanelTransition,
 } from './rightPanelLayout.ts';
 
 /**
- * These numbers are an Owner-facing contract, so the assertions pin the *share*
- * rather than a pixel constant: at any width wide enough for both minimums the
- * chat column must come out at exactly 40% of the shared space. A regression to
- * a 50/50 (or any other) split fails here.
+ * 这里只钉「拖拽上限」和「侧栏跃迁」。**40/60 的分栏比例不在这里** —— 它已经
+ * 交给 flex 行自己保证（Team.tsx: 聊天 `flex-[4_1_0%]` / RightPanel `grow-[6]`）。
+ *
+ * 为什么搬走：比例曾经由 JS 用「量出来的容器宽 − 侧栏宽」算，实测在真实应用里
+ * 这两个输入都是错的（2026-11-27：右侧栏渲染 558px，而公式认为 670px，反解出的
+ * 共享空间比真实值少 188px）→ 输入错，比例就悄悄错。布局引擎算出来的比例不会
+ * 和屏幕不一致。
  */
-describe('rightPanelBounds — 40/60 split', () => {
-  it('gives the panel 60% and the chat exactly 40% on a wide container', () => {
-    for (const space of [1000, 1200, 1600, 2048, 3200]) {
-      const { autoPanelWidth } = rightPanelBounds(space);
-      expect(autoPanelWidth).toBe(Math.round(space * PANEL_AUTO_SHARE));
-      expect(space - autoPanelWidth).toBe(space - Math.round(space * PANEL_AUTO_SHARE));
-      // chat share is 40% (within rounding)
-      expect(Math.abs((space - autoPanelWidth) / space - (1 - PANEL_AUTO_SHARE))).toBeLessThan(0.005);
-    }
+describe('rightPanelMaxWidth — 拖拽上限保住聊天底线', () => {
+  it('leaves the chat its floor (400px) once the container can afford it', () => {
+    expect(rightPanelMaxWidth(2000)).toBe(1600);
+    expect(rightPanelMaxWidth(1000)).toBe(600);
+    expect(2000 - rightPanelMaxWidth(2000)).toBeGreaterThanOrEqual(CHAT_MIN_W);
   });
 
-  it('keeps the chat floor at the 40% boundary (space = 1000)', () => {
-    const { autoPanelWidth, maxPanelWidth } = rightPanelBounds(1000);
-    expect(autoPanelWidth).toBe(600);
-    expect(1000 - autoPanelWidth).toBeGreaterThanOrEqual(CHAT_MIN_W);
-    expect(autoPanelWidth).toBeLessThanOrEqual(maxPanelWidth);
+  it('scales the reserve down to the chat 40% share on a narrow container', () => {
+    expect(rightPanelMaxWidth(700)).toBe(420); // chat keeps 280 = 40%, not 400
+    expect(700 - rightPanelMaxWidth(700)).toBe(280);
   });
 
-  it('keeps the 40/60 split for EVERY shared width — the ratio never changes shape', () => {
-    for (let space = 400; space <= 3000; space += 10) {
-      const { autoPanelWidth } = rightPanelBounds(space);
-      const panelShare = autoPanelWidth / space;
-      expect(Math.abs(panelShare - PANEL_AUTO_SHARE)).toBeLessThan(0.01);
-    }
-  });
-
-  it('keeps the ratio identical whether L1/L2 are open or closed', () => {
-    // Same container, panel already open; L1 (+L2) then take 286px / 552px out
-    // of the shared space. Before the fix the second row flipped to 1:1.
-    const container = 1200;
-    const closed = rightPanelBounds(container - 14);
-    const l1 = rightPanelBounds(container - 286 - 14);
-    const l1l2 = rightPanelBounds(container - 552 - 14);
-    const ratio = (panel: number, space: number) => panel / space;
-    expect(ratio(l1.autoPanelWidth, container - 286 - 14)).toBeCloseTo(ratio(closed.autoPanelWidth, container - 14), 2);
-    expect(ratio(l1l2.autoPanelWidth, container - 552 - 14)).toBeCloseTo(ratio(closed.autoPanelWidth, container - 14), 2);
-    // and the panel always stays the wider of the two columns
-    for (const [panel, space] of [[l1.autoPanelWidth, container - 286 - 14], [l1l2.autoPanelWidth, container - 552 - 14]] as const) {
-      expect(panel).toBeGreaterThan(space - panel);
-    }
-  });
-
-  it('never lets chat + auto panel overflow the shared space', () => {
+  it('never returns a negative or overflowing cap', () => {
     for (let space = 0; space <= 4000; space += 25) {
-      const { autoPanelWidth, maxPanelWidth } = rightPanelBounds(space);
-      expect(autoPanelWidth).toBeLessThanOrEqual(maxPanelWidth);
-      expect(autoPanelWidth).toBeLessThanOrEqual(space);
-      expect(maxPanelWidth).toBeLessThanOrEqual(space);
-      expect(autoPanelWidth).toBeGreaterThanOrEqual(0);
+      const cap = rightPanelMaxWidth(space);
+      expect(cap).toBeGreaterThanOrEqual(0);
+      expect(cap).toBeLessThanOrEqual(space);
     }
-  });
-
-  it('degenerates safely on non-positive input', () => {
-    expect(rightPanelBounds(0)).toEqual({ maxPanelWidth: 0, autoPanelWidth: 0 });
-    expect(rightPanelBounds(-50)).toEqual({ maxPanelWidth: 0, autoPanelWidth: 0 });
+    expect(rightPanelMaxWidth(-50)).toBe(0);
   });
 });
 

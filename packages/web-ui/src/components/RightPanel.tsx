@@ -124,6 +124,7 @@ export function RightPanel({
   payload,
   onClose,
   width,
+  autoFlex = false,
   onResizeStart,
   onAddToChat,
   tabs,
@@ -143,6 +144,14 @@ export function RightPanel({
   payload: RightPanelPayload;
   onClose: () => void;
   width: number;
+  /**
+   * Let the flex row own the width (60% of the shared space, chat takes 40%)
+   * instead of a pixel value. Used for the auto split: a ratio enforced by CSS
+   * cannot disagree with what is on screen, while a width computed from
+   * measured container/rail widths can (Owner 2026-11-27: it did — the panel
+   * rendered ~50% while the arithmetic believed 60%).
+   */
+  autoFlex?: boolean;
   onResizeStart: (e: React.MouseEvent) => void;
   onAddToChat?: (chip: ChatContextChip) => void;
   tabs?: RightPanelTab[];
@@ -836,8 +845,10 @@ export function RightPanel({
       )}
 
       <div
-        className={`bg-surface-primary flex flex-col overflow-hidden ${fullscreen ? 'flex-1 min-w-0' : 'shrink-0'}`}
-        style={fullscreen ? undefined : { width }}
+        className={`bg-surface-primary flex flex-col overflow-hidden ${
+          fullscreen ? 'flex-1 min-w-0' : autoFlex ? 'basis-0 grow-[6] shrink min-w-[320px]' : 'shrink-0'
+        }`}
+        style={fullscreen || autoFlex ? undefined : { width }}
         data-right-panel
       >
         {/* Single chrome row: tabs (or title) + panel actions — saves a header band.

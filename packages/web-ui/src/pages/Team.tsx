@@ -101,7 +101,7 @@ import { useLayout } from '../contexts/LayoutContext.tsx';
 import {
   CHAT_MIN_W,
   PANEL_MIN_W,
-  rightPanelBounds,
+  rightPanelMaxWidth,
   railsActionOnPanelTransition,
 } from '../lib/rightPanelLayout.ts';
 import { AgentProfile, LEGACY_TAB_SECTION, type ProfileTab, type OverviewSectionId } from './AgentProfile.tsx';
@@ -541,11 +541,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // 40% and the right panel 60%. `maxPanelWidth` is the hard cap that keeps the
   // chat's floor intact — the invariant that prevents any overflow — and it is
   // also what the drag handle clamps to. See lib/rightPanelLayout.ts.
-  const { maxPanelWidth: maxRightPanelWidth, autoPanelWidth } = rightPanelBounds(spaceForChatPanel);
-  // Reactive: 'auto' keeps the 40/60 split as the layout settles/changes; a user
-  // drag pins a pixel width. Either way it is clamped so the panel always fits.
-  const desiredRightPanelWidth = panelWidthPref === 'auto' ? autoPanelWidth : panelWidthPref;
-  const effectiveRightPanelWidth = Math.max(0, Math.min(desiredRightPanelWidth, maxRightPanelWidth));
+  const maxRightPanelWidth = rightPanelMaxWidth(spaceForChatPanel);
+  // Auto mode: the flex row itself owns the 40/60 ratio (chat `flex-[4_1_0%]`
+  // vs. panel `grow-[6]`), so the rendered width cannot disagree with the
+  // intent. It used to be arithmetic on measured widths (containerWidth from a
+  // ResizeObserver, rail widths from state) — those inputs were provably wrong
+  // in the real app (Owner 2026-11-27: 558px rendered while the formula believed
+  // 670), and a wrong input silently becomes a wrong split. A pixel width pinned
+  // by dragging is still clamped by the cap above.
+  const autoSplit = panelWidthPref === 'auto';
+  const effectiveRightPanelWidth = autoSplit
+    ? maxRightPanelWidth
+    : Math.max(0, Math.min(panelWidthPref, maxRightPanelWidth));
 
   // Right-panel open/close transitions drive the L1/L2 rails:
   //   open  → collapse them (the panel needs the space) and re-center to auto.
@@ -592,7 +599,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const onRightPanelResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
-    const startW = effectiveRightPanelWidthRef.current;
+    // Seed from the width actually on screen: in auto mode the panel width is
+    // owned by CSS, so the stored pref is not a pixel width at all.
+    const onScreen = (e.currentTarget as HTMLElement).nextElementSibling?.getBoundingClientRect().width ?? 0;
+    const startW = onScreen > 0 ? onScreen : effectiveRightPanelWidthRef.current;
     const onMove = (ev: MouseEvent) => {
       const next = startW + (startX - ev.clientX); // drag left → wider panel
       const max = maxRightPanelWidthRef.current;
@@ -5027,7 +5037,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       {/* ── Main area (hidden in preview fullscreen) ── */}
       {!rightPanelFullscreen && (!isMobile || showChatOnMobile) && (
-      <div className={`flex-1 overflow-hidden flex flex-col ${isMobile || rightPanelPayload ? 'min-w-0' : 'min-w-[400px]'}`}>
+      <div className={`overflow-hidden flex flex-col ${rightPanelPayload && autoSplit ? 'flex-[4_1_0%] min-w-0' : `flex-1 ${isMobile || rightPanelPayload ? 'min-w-0' : 'min-w-[400px]'}`}`}>
         {/* Header */}
         <div className="shrink-0 relative pb-2">
           {isMobile ? (
@@ -6450,6 +6460,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           payload={rightPanelPayload}
           onClose={collapseRightPanel}
           width={rightPanelFullscreen ? containerWidth : effectiveRightPanelWidth}
+          autoFlex={autoSplit && !rightPanelFullscreen}
           onResizeStart={onRightPanelResizeStart}
           onAddToChat={chip => {
             // Right panel hands over { kind, label, content }; the composer owns

@@ -14,39 +14,30 @@ export const CHAT_MIN_W = 400;
 /** Right panel floor (px) for manual drags. */
 export const PANEL_MIN_W = 320;
 
-/** Share of the shared space the right panel takes in the auto split. */
-export const PANEL_AUTO_SHARE = 0.6;
+/** Chat's share of the space the rails leave (the panel takes the rest). */
+export const CHAT_SHARE = 0.4;
 
 export interface RightPanelBounds {
   /** Largest width the panel may take while the chat keeps its floor. */
   maxPanelWidth: number;
-  /** Width the panel takes in the auto split (chat 40% / panel 60%). */
-  autoPanelWidth: number;
 }
 
 /**
- * Widths for the right panel given the space it shares with the chat column
+ * Hard cap for the right panel, given the space it shares with the chat column
  * (container width minus the L1/L2 rails and their resize handles).
  *
- * **One rule, no exceptions: the panel takes PANEL_AUTO_SHARE (60%), the chat
- * the rest (40%).** A "narrow container" exception used to switch to a 50/50
- * split below 1000px, which meant that opening L1/L2 while the panel was open
- * silently flipped the split from 4:6 to 1:1 — the panel shrank by a third and
- * the chat took the majority. From the user's side that is not a resize, it is
- * the ratio breaking (Owner 2026-11-27). The ratio must be invariant to which
- * rails are open.
- *
- * `maxPanelWidth` is the hard cap that keeps the chat's floor intact — the
- * invariant that prevents any overflow — and it is what the drag handle clamps
- * to. For the auto split it never binds (60% always leaves 40%, and the chat
- * floor is the smaller of CHAT_MIN_W and that 40%).
+ * Only the CAP lives here — it clamps a pixel width the user pinned by dragging.
+ * The auto 40/60 split is **not** computed in JS: it is a flex ratio on the row
+ * (chat `flex-[4_1_0%]`, panel `grow-[6]`). Reason (Owner 2026-11-27): the JS
+ * version derived its width from measured inputs (`containerWidth` from a
+ * ResizeObserver, rail widths from state), and in the real app those inputs were
+ * wrong — the panel rendered at ~50% while the arithmetic reported 60%. A ratio
+ * owned by the layout engine cannot drift like that.
  */
-export function rightPanelBounds(spaceForChatPanel: number): RightPanelBounds {
+export function rightPanelMaxWidth(spaceForChatPanel: number): number {
   const space = Math.max(0, spaceForChatPanel);
-  const chatReserve = Math.min(CHAT_MIN_W, Math.floor(space * (1 - PANEL_AUTO_SHARE)));
-  const maxPanelWidth = Math.max(0, space - chatReserve);
-  const autoPanelWidth = Math.max(0, Math.min(Math.round(space * PANEL_AUTO_SHARE), maxPanelWidth));
-  return { maxPanelWidth, autoPanelWidth };
+  const chatReserve = Math.min(CHAT_MIN_W, Math.floor(space * CHAT_SHARE));
+  return Math.max(0, space - chatReserve);
 }
 
 /** What the L1/L2 rails should do on a right-panel open/close transition. */
