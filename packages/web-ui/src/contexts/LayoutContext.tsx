@@ -277,7 +277,15 @@ function buildInitialRightPanelState(): {
 }
 
 export interface LayoutContextValue {
-  /** Unified collapse command for the left sidebars (L0 app rail + L1/L2 team panels). */
+  /**
+   * Page-level L1/L2 rails (Team chat panels, Work project list) are collapsed.
+   *
+   * **This is NOT the L0 app rail.** The icon rail owns its own state
+   * (`useResizablePanel('markus_sidebar')` in App.tsx) and has exactly one
+   * writer: the Markus logo button. Coupling the two — the old behaviour, where
+   * this flag was mirrored into the rail — made any keyboard-driven L1 expand
+   * also expand the app rail, which the Owner explicitly does not want.
+   */
   leftCollapsed: boolean;
   setLeftCollapsed: (v: boolean) => void;
   toggleLeftCollapsed: () => void;
@@ -344,11 +352,11 @@ export interface LayoutContextValue {
 const LayoutContext = createContext<LayoutContextValue | null>(null);
 
 export function LayoutProvider({ children }: { children: React.ReactNode }) {
-  // Initialize unified collapse from the persisted L0 sidebar state so the two
-  // start in sync (the L0 hook reads the same key).
-  const [leftCollapsed, setLeftCollapsedState] = useState<boolean>(() => {
-    try { return localStorage.getItem('markus_sidebar_c') === '1'; } catch { return false; }
-  });
+  // L1/L2 rails always start EXPANDED. Restarting the app must never land the
+  // user on a page whose list is hidden, so this is a transient per-visit
+  // choice, not a persisted preference — and it is deliberately NOT derived
+  // from the L0 rail's key (`markus_sidebar_c`), which belongs to the rail.
+  const [leftCollapsed, setLeftCollapsedState] = useState(false);
   const initialPanel = useMemo(() => buildInitialRightPanelState(), []);
   const [mode, setMode] = useState<RightPanelMode>(initialPanel.mode);
   const [browserTabs, setBrowserTabs] = useState<RightPanelTab[]>(initialPanel.browserTabs);

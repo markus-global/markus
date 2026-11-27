@@ -144,9 +144,6 @@ import {
 } from './ChatComponents.tsx';
 export type { MsgSegment };
 
-/** L1/L2 team-chat sidebar collapse preference. Only written on manual toggle. */
-const TEAM_SIDEBARS_COLLAPSED_KEY = 'markus_team_sidebars_c';
-
 /**
  * 会话在 tab 栏 / 历史列表里的**默认**标签。
  *
@@ -275,17 +272,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     storageKey: 'markus_chat_sidebar',
   });
 
-  // Sidebars collapsed: user can collapse both L1 and L2 together.
-  // Persist only explicit user toggles (collapse/expand buttons). Default open.
-  // Transient collapses (Cmd+B, right-panel open) must not write this key.
-  const [sidebarsCollapsed, setSidebarsCollapsed] = useState(() => {
-    try { return localStorage.getItem(TEAM_SIDEBARS_COLLAPSED_KEY) === '1'; }
-    catch { return false; }
-  });
-  const setSidebarsCollapsedPersisted = useCallback((collapsed: boolean) => {
-    setSidebarsCollapsed(collapsed);
-    try { localStorage.setItem(TEAM_SIDEBARS_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* ignore */ }
-  }, []);
+  // Collapsed L1 + L2 together. Always starts EXPANDED (Owner 2026-11-27):
+  // entering the page must never land on a hidden list, so this is a transient
+  // per-visit choice — deliberately not persisted.
+  const [sidebarsCollapsed, setSidebarsCollapsed] = useState(false);
 
   // Unified layout coordination (Cmd+B collapse, Cmd+L right panel, host registration)
   const layout = useLayout();
@@ -363,14 +353,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (bare !== 'h' && bare !== 'ArrowLeft') return;
       e.preventDefault();
       if (sidebarsCollapsed) {
-        setSidebarsCollapsedPersisted(false);
+        setSidebarsCollapsed(false);
         layout?.setLeftCollapsed(false);
       }
       layout?.setKeyboardPane(l2AvailableRef.current ? 'l2' : 'l1');
     };
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
-  }, [previewMode, isMobile, isActive, layout, sidebarsCollapsed, setSidebarsCollapsedPersisted]);
+  }, [previewMode, isMobile, isActive, layout, sidebarsCollapsed]);
 
   // Register this page as a right-panel host while it is the active desktop page.
   useEffect(() => {
@@ -4824,7 +4814,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         width={isMobile ? undefined : chatSidebar.width}
         onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
         hidden={(isMobile && mobileLayer !== 'roster') || (!isMobile && sidebarsCollapsed)}
-        onCollapse={() => setSidebarsCollapsedPersisted(true)}
+        onCollapse={() => setSidebarsCollapsed(true)}
         initialLoading={initialLoading}
         focused={!isMobile && !sidebarsCollapsed && keyboardPane === 'l1'}
         l2Available={l2Navigable}
@@ -5174,7 +5164,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 {/* Expand sidebars button — shown when sidebars are collapsed */}
                 {sidebarsCollapsed && !isMobile && (
                   <button
-                    onClick={() => setSidebarsCollapsedPersisted(false)}
+                    onClick={() => setSidebarsCollapsed(false)}
                     className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
                     title={t('page.toggleSidebar')}
                   >

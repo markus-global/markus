@@ -59,7 +59,6 @@ import {
   type WorkflowTaskLike,
 } from '../lib/workflow-view.ts';
 
-const WORK_L1_COLLAPSED_KEY = 'markus_work_l1_collapsed';
 /**
  * The workflow view's own team filter.
  *
@@ -5105,15 +5104,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   }, []);
 
   // L1 project sidebar — mirrors Team Chat collapse via Cmd+B (layout.leftCollapsed).
-  const [l1Collapsed, setL1Collapsed] = useState(() => {
-    if (previewMode) return false;
-    try { return localStorage.getItem(WORK_L1_COLLAPSED_KEY) === '1'; }
-    catch { return false; }
-  });
-  const setL1CollapsedPersisted = useCallback((collapsed: boolean) => {
-    setL1Collapsed(collapsed);
-    try { localStorage.setItem(WORK_L1_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* ignore */ }
-  }, []);
+  // Always starts EXPANDED: no persisted preference (Owner 2026-11-27).
+  const [l1Collapsed, setL1Collapsed] = useState(false);
   const prevLayoutLeftCollapsed = useRef(layoutLeftCollapsed);
   useEffect(() => {
     if (previewMode || isMobile) return;
@@ -6455,10 +6447,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     setNavFocus('projects');
     if (prev === 'l1') return; // already on L1 — allow Cmd+B collapse to stick
     if (l1CollapsedRef.current) {
-      setL1CollapsedPersisted(false);
+      setL1Collapsed(false);
       layout?.setLeftCollapsed(false);
     }
-  }, [keyboardPane, previewMode, isMobile, isActive, setL1CollapsedPersisted, layout]);
+  }, [keyboardPane, previewMode, isMobile, isActive, layout]);
 
   // Tasks-page keyboard: Cmd+J/L, Ctrl+Tab, H/L focus panes (content↔L1↔L0), j/k navigation
   useEffect(() => {
@@ -6506,7 +6498,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       if (bare === 'h' || bare === 'ArrowLeft') {
         if (l1CollapsedRef.current) {
           e.preventDefault();
-          setL1CollapsedPersisted(false);
+          setL1Collapsed(false);
           layout?.setLeftCollapsed(false);
           setNavFocus('projects');
           layout?.setKeyboardPane('l1');
@@ -6607,7 +6599,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     return () => document.removeEventListener('keydown', onKey, true);
   }, [
     previewMode, isMobile, isActive, toggleProjectDetail, openItemDetailOrEmpty,
-    selectProject, selectAllProjects, openItemDetail, setL1CollapsedPersisted, layout,
+    selectProject, selectAllProjects, openItemDetail, layout,
   ]);
 
   if (loading) return <PageLoading label={t('work:task.loadingPage')} />;
@@ -6646,7 +6638,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           onCreateProject={() => setShowCreateProject(true)}
           onCollapse={() => {
             const next = !l1Collapsed;
-            setL1CollapsedPersisted(next);
+            setL1Collapsed(next);
             layout?.setLeftCollapsed(next);
           }}
           width={projectSidebar.width}
@@ -6745,7 +6737,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             type="button"
             onClick={() => {
               const next = !l1Collapsed;
-              setL1CollapsedPersisted(next);
+              setL1Collapsed(next);
               layout?.setLeftCollapsed(next);
               setNavFocus('projects');
             }}

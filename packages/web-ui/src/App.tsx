@@ -280,7 +280,6 @@ export function App() {
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
 
   const layout = useLayout();
-  const leftCollapsed = layout?.leftCollapsed ?? false;
   const toggleLeftCollapsed = layout?.toggleLeftCollapsed;
   const setLeftCollapsed = layout?.setLeftCollapsed;
   const keyboardPane = layout?.keyboardPane ?? 'l0';
@@ -416,15 +415,6 @@ export function App() {
     void window.markusDesktop?.browser?.hideAll?.();
   }, []);
 
-  // Keep the L0 app rail in sync with the unified "left collapsed" command
-  // (driven by Cmd+B and by opening the right panel). Skip the initial mount so
-  // the persisted L0 collapse state is preserved on load.
-  const didSyncL0 = useRef(false);
-  useEffect(() => {
-    if (!didSyncL0.current) { didSyncL0.current = true; return; }
-    sidebar.setCollapsed(leftCollapsed);
-  }, [leftCollapsed, sidebar.setCollapsed]);
-
   // Global search shortcut: Cmd+P (Mac) / Ctrl+P (Win/Linux)
   useEffect(() => {
     if (isMobile) return;
@@ -525,6 +515,9 @@ export function App() {
         return;
       }
       if (key === 'b') {
+        // Collapse/expand the **page's own L1** (Team chat panels, Work project
+        // list) — never the L0 icon rail: that one answers to the Markus logo
+        // button only (Owner 2026-11-27).
         // Deliverables 页由页面自身处理 Cmd+B（折叠 L1 列表，见 pages/Deliverables.tsx），
         // 全局统一折叠会把 L0 + 页面 L1 一起折叠，导致双触发、行为错乱。
         if (page === PAGE.DELIVERABLES) return;
