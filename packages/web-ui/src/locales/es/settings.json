@@ -1600,12 +1600,17 @@
       "attention": "Triple ping",
       "ding": "Timbre único",
       "pop": "Pop suave",
-      "alert": "Dos notas descendentes"
+      "alert": "Dos notas descendentes",
+      "ask": "Pregunta suave"
     },
     "events": {
       "agentReplyComplete": {
         "label": "Respuesta del agente terminada",
         "desc": "La salida en streaming en Team Chat finalizó (el servidor confirmó el turno)"
+      },
+      "inputRequested": {
+        "label": "El agente te pregunta",
+        "desc": "Un agente te hizo una pregunta con request_user_input (necesita una respuesta, no una aprobación)"
       },
       "approvalRequested": {
         "label": "Aprobación pendiente",

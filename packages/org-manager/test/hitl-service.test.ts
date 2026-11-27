@@ -112,6 +112,50 @@ describe('HITLService', () => {
       expect(handler).toHaveBeenCalledWith(expect.objectContaining({ type: 'approval_request' }));
     });
 
+    it('carries the producer-tagged askKind, so consumers never guess it from the payload shape', () => {
+      // 「提问 vs 闸门」是产生方才知道的事实。这里故意让单据同时是 `formOnly`
+      // （一次点击答不完）—— 若消费方拿 formOnly/questions 反推，就会把这张**提问单**
+      // 当成审批闸门。askKind 让判定与形状解耦。
+      const handler = vi.fn();
+      service.onNotification(handler);
+
+      service.requestApproval({
+        agentId: 'agent-1',
+        agentName: 'Bot',
+        type: 'custom',
+        title: 'Which number should I use?',
+        description: 'Pick one',
+        targetUserId: 'all',
+        questions: [{ id: 'q1', prompt: 'Which number?', inputType: 'text', allowMultiple: false, allowFreeform: true }],
+        askKind: 'input',
+      });
+
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'approval_request',
+          metadata: expect.objectContaining({ askKind: 'input', formOnly: true }),
+        }),
+      );
+    });
+
+    it('a plain gate carries no askKind (consumers fall back to "gate")', () => {
+      const handler = vi.fn();
+      service.onNotification(handler);
+
+      service.requestApproval({
+        agentId: 'agent-1',
+        agentName: 'Bot',
+        type: 'action',
+        title: 'Deploy to production',
+        description: 'Please approve',
+        targetUserId: 'all',
+      });
+
+      const notified = handler.mock.calls[0]![0] as { metadata?: Record<string, unknown> };
+      expect(notified.metadata).toBeDefined();
+      expect(notified.metadata).not.toHaveProperty('askKind');
+    });
+
     it('marks approval notifications read by approvalId, not by guessing user ids', () => {
       // Regression ("unread (1) over an empty list"): the old implementation
       // enumerated 'all' + org human users and scanned at most 200 rows per user,

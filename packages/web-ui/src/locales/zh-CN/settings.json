@@ -1599,12 +1599,17 @@
       "attention": "三连音",
       "ding": "单音叮",
       "pop": "轻啵",
-      "alert": "下行两音"
+      "alert": "下行两音",
+      "ask": "上行询问音"
     },
     "events": {
       "agentReplyComplete": {
         "label": "Agent 回复完成",
         "desc": "Team Chat 里某个 Agent 的流式输出结束（服务端确认回合完成）"
+      },
+      "inputRequested": {
+        "label": "Agent 在问你",
+        "desc": "Agent 用 request_user_input 向你提问（等你的回答，不是让你审批）"
       },
       "approvalRequested": {
         "label": "有审批待处理",

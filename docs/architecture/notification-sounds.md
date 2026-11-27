@@ -17,7 +17,8 @@ length per cue stays under 0.6 s: a cue is a hint, not an interruption.
 | Event id | Label (zh) | Trigger (authoritative source) | Cue |
 |---|---|---|---|
 | `agent-reply-complete` | Agent 回复完成 | `session:stream_state` WS event: the server-confirmed turn for a session goes `streaming: true → false` with status `done` | `chime` (rising two-note) |
-| `approval-requested` | 有审批待处理 | WS `notification` with `payload.notification.type = approval_request` | `attention` (triple ping) |
+| `input-requested` | Agent 在问你 | WS `notification` with `type = approval_request` **and** `metadata.askKind = "input"` (the agent called `request_user_input`) | `ask` (soft rising two-note) |
+| `approval-requested` | 有审批待处理 | WS `notification` with `type = approval_request` and no `askKind: "input"` (a gate that needs a decision) | `attention` (triple ping) |
 | `review-requested` | 任务待验收 | WS `task:update` whose `status` is `review`; or a notification typed `review_request` / `task_review` | `ding` (single ding) |
 | `notification` | 收到通知 | Any other WS `notification` (`notify_user` and friends) | `pop` (soft pop) |
 | `agent-reply-error` | Agent 回复出错 | Same stream transition as above, but the turn ends with status `error` | `alert` (falling two-note) |
@@ -36,6 +37,21 @@ finishing everyday work must not create a soundtrack.
 | `ding` | 1318.51 Hz triangle + 1975.53 Hz sine sparkle | `review-requested` |
 | `pop` | 523.25 Hz → 659.25 Hz, sine | `notification` |
 | `alert` | 392 Hz → 311.13 Hz, triangle | `agent-reply-error`, `task-failed` |
+| `ask` | 587.33 Hz → 783.99 Hz, sine | `input-requested` |
+
+### How `input-requested` is told apart from an approval gate
+
+Both a human question (`request_user_input`) and a decision gate arrive as the same
+notification type (`approval_request`), so the distinction must be carried by the producer,
+not guessed by the consumer. `HITLService.requestApproval({ askKind })` accepts
+`'input' | 'approval'` and copies it into `notification.metadata.askKind`; the CLI's
+`userApprovalRequester`装配点 — reached **only** from the agent's `request_user_input` tool —
+passes `askKind: 'input'`.
+
+The tempting shape-based proxy is wrong: `metadata.formOnly` / `questions` answer "can one
+tap finish it", not "is this a question or a gate" — a multi-question real approval has
+exactly the same shape as a question. A notification without `askKind` is therefore treated
+as a gate (conservative: better to over-alert on a decision than to whisper a gate).
 
 Cue names are localized (`settings:sounds.cues.*`) and shown next to each event row in
 Settings → General → Notification sounds, together with a **Preview** button that plays the

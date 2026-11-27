@@ -127,6 +127,22 @@ describe('通知与任务事件判定', () => {
     expect(soundEventForTaskUpdate({ status: 'failed' })).toBe('task-failed');
   });
 
+  it('同一种通知类型按服务端标注的 askKind 分流：提问 ≠ 审批闸门', () => {
+    // 这两条都是 `approval_request`，靠 type 分不开；产生方在 metadata.askKind 上标注。
+    expect(soundEventForNotification({
+      notification: { type: 'approval_request', metadata: { askKind: 'input' } },
+    })).toBe('input-requested');
+    expect(soundEventForNotification({
+      notification: { type: 'approval_request', metadata: { askKind: 'approval' } },
+    })).toBe('approval-requested');
+    // 旧通知没有该字段 → 保守当闸门（宁可催办，不把闸门误当随口一问）。
+    expect(soundEventForNotification({
+      notification: { type: 'approval_request', metadata: {} },
+    })).toBe('approval-requested');
+    expect(cueForEvent('input-requested')).toBe('ask');
+    expect(cueForEvent('approval-requested')).toBe('attention');
+  });
+
   it('普通通知归到默认音；不认识的形状一律 null（不猜）', () => {
     expect(soundEventForNotification({ notification: { type: 'notify_user' } })).toBe('notification');
     expect(soundEventForNotification({})).toBeNull();

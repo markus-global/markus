@@ -1600,12 +1600,17 @@
       "attention": "Triple ping",
       "ding": "Single ding",
       "pop": "Soft pop",
-      "alert": "Falling two-note"
+      "alert": "Falling two-note",
+      "ask": "Soft ask"
     },
     "events": {
       "agentReplyComplete": {
         "label": "Agent reply finished",
         "desc": "Streaming output in Team Chat ended (the server confirmed the turn completed)"
+      },
+      "inputRequested": {
+        "label": "Agent is asking you",
+        "desc": "An agent asked you a question with request_user_input (it needs an answer, not an approval)"
       },
       "approvalRequested": {
         "label": "Approval waiting",

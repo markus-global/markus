@@ -1549,6 +1549,12 @@ async function startServerCore(
       allowFreeform: opts.allowFreeform,
       questions: opts.questions,
       details: { priority: opts.priority, taskId: opts.relatedTaskId, taskTitle },
+      // This装配点 is reached ONLY from the agent's `request_user_input` /
+      // `request_user_approval` tool (see core/agent.ts — it is the only caller of
+      // `userApprovalRequester`), so the ask is a question to the human, not a gate
+      // decision applied to a target. Tagging it here is what lets consumers tell
+      // the two apart without guessing from the payload shape.
+      askKind: 'input',
     });
   });
 

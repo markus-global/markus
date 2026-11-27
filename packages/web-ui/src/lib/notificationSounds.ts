@@ -31,7 +31,7 @@ export interface CueNote {
 }
 
 /** 音色 id（闭集）。定义在目录之前，避免 `keyof typeof SOUND_CUES` 的循环引用。 */
-export type SoundCue = 'chime' | 'ding' | 'pop' | 'attention' | 'alert';
+export type SoundCue = 'chime' | 'ding' | 'pop' | 'attention' | 'alert' | 'ask';
 
 /**
  * 音色目录。频率取自然音阶附近的值，听感上能区分「完成 / 需要你动手 / 出错」。
@@ -53,6 +53,11 @@ export const SOUND_CUES: Record<SoundCue, CueNote[]> = {
     { freq: 523.25, startMs: 0, durationMs: 90, wave: 'sine', gain: 0.14 },
     { freq: 659.25, startMs: 55, durationMs: 90, wave: 'sine', gain: 0.09 },
   ],
+  /** 上行两音（低沉柔和）：Agent 在问你问题（request_user_input），语气是「询问」不是「催办」。 */
+  ask: [
+    { freq: 587.33, startMs: 0, durationMs: 140, wave: 'sine', gain: 0.13 },
+    { freq: 783.99, startMs: 110, durationMs: 210, wave: 'sine', gain: 0.11 },
+  ],
   /** 三连 ping：有审批等你处理（需要动手，稍微显眼但不能刺耳）。 */
   attention: [
     { freq: 1046.5, startMs: 0, durationMs: 90, wave: 'triangle', gain: 0.12 },
@@ -72,6 +77,7 @@ export const SOUND_CUES: Record<SoundCue, CueNote[]> = {
 export type NotificationSoundEvent =
   | 'agent-reply-complete'
   | 'agent-reply-error'
+  | 'input-requested'
   | 'approval-requested'
   | 'review-requested'
   | 'task-failed'
@@ -95,6 +101,12 @@ export const NOTIFICATION_SOUND_EVENTS: readonly NotificationSoundEventDef[] = [
     cue: 'chime',
     labelKey: 'sounds.events.agentReplyComplete.label',
     descKey: 'sounds.events.agentReplyComplete.desc',
+  },
+  {
+    id: 'input-requested',
+    cue: 'ask',
+    labelKey: 'sounds.events.inputRequested.label',
+    descKey: 'sounds.events.inputRequested.desc',
   },
   {
     id: 'approval-requested',
@@ -178,10 +190,16 @@ export function soundEventForStreamTransition(
  * 其余类型统一归到普通通知 —— 不按标题文本猜，猜错比不响更糟。
  */
 export function soundEventForNotification(payload: unknown): NotificationSoundEvent | null {
-  const n = (payload as { notification?: { type?: unknown } } | undefined)?.notification;
+  const n = (payload as {
+    notification?: { type?: unknown; metadata?: { askKind?: unknown } };
+  } | undefined)?.notification;
   const type = typeof n?.type === 'string' ? n.type.toLowerCase() : '';
   if (!type) return null;
-  if (type === 'approval_request' || type === 'approval_required') return 'approval-requested';
+  if (type === 'approval_request' || type === 'approval_required') {
+    // 服务端把「提问 vs 闸门」标在 metadata.askKind 上（产生方才知道的事实，见
+    // hitl-service 的 requestApproval）。旧通知没有该字段 ⇒ 保守当作闸门。
+    return n?.metadata?.askKind === 'input' ? 'input-requested' : 'approval-requested';
+  }
   if (type === 'task_review' || type === 'review_request' || type === 'review_requested') return 'review-requested';
   if (type === 'task_failed') return 'task-failed';
   return 'notification';
