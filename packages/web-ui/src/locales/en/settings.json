@@ -1593,6 +1593,13 @@
     "description": "Play a short cue when these events happen. The master switch mutes everything.",
     "enabled": "Enable sounds",
     "enabledDesc": "Play a cue when an agent finishes replying, an approval or review is waiting, a task fails, or a notification arrives",
+    "volume": "Volume",
+    "volumeDesc": "Preview plays immediately at the selected level",
+    "volumes": {
+      "quiet": "Quiet",
+      "normal": "Normal",
+      "loud": "Loud"
+    },
     "preview": "Preview",
     "deviceNote": "Sound preferences are stored on this device and do not sync across devices.",
     "cues": {

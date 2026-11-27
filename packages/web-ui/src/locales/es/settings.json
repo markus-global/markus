@@ -1593,6 +1593,13 @@
     "description": "Se reproduce un tono breve cuando ocurren estos eventos. El interruptor general silencia todo.",
     "enabled": "Activar sonidos",
     "enabledDesc": "Reproduce un tono cuando un agente termina de responder, hay una aprobación o revisión pendiente, una tarea falla o llega una notificación",
+    "volume": "Volumen",
+    "volumeDesc": "La escucha se reproduce al instante con el nivel elegido",
+    "volumes": {
+      "quiet": "Bajo",
+      "normal": "Medio",
+      "loud": "Alto"
+    },
     "preview": "Escuchar",
     "deviceNote": "Las preferencias de sonido se guardan en este dispositivo y no se sincronizan entre dispositivos.",
     "cues": {

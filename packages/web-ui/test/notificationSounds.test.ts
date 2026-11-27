@@ -86,6 +86,24 @@ describe('事件目录（单一事实源）', () => {
     }
   });
 
+  it('每支音色的峰值与时长达到「听得见」的下限（Owner 2026-11-27 反馈：原来偏小偏短）', () => {
+    // 时长按语义分级：日常事件允许短（频繁出现，长了就是骚扰），需动手/出错的必须够长。
+    // 与业界 IM 提示音同一量级：Slack/Discord 的日常音 0.2–0.4s，macOS/iOS 的系统音 0.5–1s。
+    const LONG_CUES: SoundCue[] = ['attention', 'alert'];
+    for (const def of NOTIFICATION_SOUND_EVENTS) {
+      const notes = SOUND_CUES[def.cue];
+      const peak = Math.max(...notes.map((n) => n.gain));
+      // 业界提示音峰值约 -10～-6 dBFS（线性 0.3～0.5）；低于 0.24 就是「嗒一下」。
+      expect(peak, `${def.cue} 峰值太小`).toBeGreaterThanOrEqual(0.24);
+      const spanMs = Math.max(...notes.map((n) => n.startMs + n.durationMs));
+      const floor = LONG_CUES.includes(def.cue) ? 550 : 250;
+      expect(spanMs, `${def.cue} 太短`).toBeGreaterThanOrEqual(floor);
+    }
+    const span = (cue: SoundCue) => Math.max(...SOUND_CUES[cue].map((n) => n.startMs + n.durationMs));
+    expect(span('attention')).toBeGreaterThan(span('chime'));
+    expect(span('alert')).toBeGreaterThan(span('pop'));
+  });
+
   it('事件 id 唯一', () => {
     const ids = NOTIFICATION_SOUND_EVENTS.map((d) => d.id);
     expect(new Set(ids).size).toBe(ids.length);
@@ -157,15 +175,22 @@ describe('偏好解析与读写', () => {
     expect(parseSoundPreferences(null)).toEqual(DEFAULT_SOUND_PREFERENCES);
     expect(parseSoundPreferences({ enabled: 'yes', disabledEvents: 'x' })).toEqual(DEFAULT_SOUND_PREFERENCES);
     expect(parseSoundPreferences({ enabled: false, disabledEvents: ['notification', 'nope'] }))
-      .toEqual({ enabled: false, disabledEvents: ['notification'] });
+      .toEqual({ ...DEFAULT_SOUND_PREFERENCES, enabled: false, disabledEvents: ['notification'] });
+    expect(parseSoundPreferences({ volume: 'loud' }).volume).toBe('loud');
+    expect(parseSoundPreferences({ volume: 'ear-splitting' }).volume).toBe('normal');
   });
 
   it('写后可读，且只改传入字段', () => {
     const storage = new MemoryStorage() as unknown as Storage;
     writeSoundPreferences({ enabled: false }, storage);
-    expect(readSoundPreferences(storage)).toEqual({ enabled: false, disabledEvents: [] });
-    writeSoundPreferences({ disabledEvents: ['task-failed'] }, storage);
-    expect(readSoundPreferences(storage)).toEqual({ enabled: false, disabledEvents: ['task-failed'] });
+    expect(readSoundPreferences(storage)).toEqual({ ...DEFAULT_SOUND_PREFERENCES, enabled: false });
+    writeSoundPreferences({ disabledEvents: ['task-failed'], volume: 'quiet' }, storage);
+    expect(readSoundPreferences(storage)).toEqual({
+      ...DEFAULT_SOUND_PREFERENCES,
+      enabled: false,
+      disabledEvents: ['task-failed'],
+      volume: 'quiet',
+    });
   });
 
   it('没有存储时读默认值而不是抛错', () => {

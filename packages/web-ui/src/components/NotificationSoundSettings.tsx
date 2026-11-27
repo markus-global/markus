@@ -11,6 +11,7 @@ import { Switch } from './Switch.tsx';
 import { CARD, Section, SettingRow, TYPE, FG, BTN_SECONDARY } from '../lib/settings-primitives.tsx';
 import {
   NOTIFICATION_SOUND_EVENTS,
+  SOUND_VOLUMES,
   cueForEvent,
   previewSoundCue,
   readSoundPreferences,
@@ -18,6 +19,7 @@ import {
   writeSoundPreferences,
   type NotificationSoundEvent,
   type NotificationSoundPreferences,
+  type SoundVolume,
 } from '../lib/notificationSounds.ts';
 
 export function NotificationSoundSettings() {
@@ -28,6 +30,12 @@ export function NotificationSoundSettings() {
   useEffect(() => subscribeSoundPreferences(setPrefs), []);
 
   const setEnabled = (enabled: boolean) => setPrefs(writeSoundPreferences({ enabled }));
+
+  // 切档位时立刻用新音量试听一次：音量是听觉判断，不给耳朵听就只能靠猜。
+  const setVolume = (volume: SoundVolume) => {
+    setPrefs(writeSoundPreferences({ volume }));
+    previewSoundCue(cueForEvent('agent-reply-complete'), volume);
+  };
 
   const setEventEnabled = (id: NotificationSoundEvent, on: boolean) => {
     const disabled = new Set(prefs.disabledEvents);
@@ -46,6 +54,26 @@ export function NotificationSoundSettings() {
             label={t('sounds.enabled')}
             testId="sound-master-switch"
           />
+        </SettingRow>
+        <SettingRow label={t('sounds.volume')} hint={t('sounds.volumeDesc')}>
+          <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
+            {SOUND_VOLUMES.map((volume) => (
+              <button
+                key={volume}
+                type="button"
+                disabled={!prefs.enabled}
+                onClick={() => setVolume(volume)}
+                data-testid={`sound-volume-${volume}`}
+                className={`px-3 py-1.5 text-[11px] rounded-md transition-colors disabled:opacity-40 ${
+                  prefs.volume === volume
+                    ? 'bg-brand-600 text-on-brand shadow-sm'
+                    : 'text-fg-secondary hover:text-fg-primary'
+                }`}
+              >
+                {t(`sounds.volumes.${volume}`)}
+              </button>
+            ))}
+          </div>
         </SettingRow>
         {NOTIFICATION_SOUND_EVENTS.map((def) => {
           const eventOn = prefs.enabled && !prefs.disabledEvents.includes(def.id);

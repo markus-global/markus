@@ -21,13 +21,18 @@
  */
 /* ─────────────────────────── 音色（合成配方） ─────────────────────────── */
 
-/** 一个音符。`startMs` 相对音色起点，`gain` 是峰值增益（0..1）。 */
+/** 一个音符。`startMs` 相对音色起点，`gain` 是峰值增益（0..1 线性，1 = 满刻度）。 */
 export interface CueNote {
   freq: number;
   startMs: number;
   durationMs: number;
   wave: OscillatorType;
   gain: number;
+  /**
+   * 叠加在基频上的泛音（倍数 + 相对增益）。纯正弦在同电平下听感明显比三角波弱，
+   * 「听起来够响」要靠泛音撑，而不是把基频推上去 —— 后者刺耳且容易削波。
+   */
+  overtones?: Array<{ mult: number; gain: number }>;
 }
 
 /** 音色 id（闭集）。定义在目录之前，避免 `keyof typeof SOUND_CUES` 的循环引用。 */
@@ -38,36 +43,36 @@ export type SoundCue = 'chime' | 'ding' | 'pop' | 'attention' | 'alert' | 'ask';
  * 短视频：单音不超过 0.35s，整组不超过 0.6s —— 提示音是提示，不是打扰。
  */
 export const SOUND_CUES: Record<SoundCue, CueNote[]> = {
-  /** 上行两音：Agent 回复完成（最常听到，必须柔和）。 */
+  /** 上行两音：Agent 回复完成（最常听到，需柔和且有尾音）。 */
   chime: [
-    { freq: 880.0, startMs: 0, durationMs: 130, wave: 'sine', gain: 0.16 },
-    { freq: 1174.66, startMs: 95, durationMs: 200, wave: 'sine', gain: 0.14 },
+    { freq: 698.46, startMs: 0, durationMs: 170, wave: 'sine', gain: 0.3, overtones: [{ mult: 2, gain: 0.35 }] },
+    { freq: 880.0, startMs: 120, durationMs: 320, wave: 'sine', gain: 0.28, overtones: [{ mult: 2, gain: 0.3 }, { mult: 3, gain: 0.1 }] },
   ],
-  /** 单音「叮」：任务转待验收。 */
+  /** 单音「叮」+ 高八度闪光：任务转待验收。 */
   ding: [
-    { freq: 1318.51, startMs: 0, durationMs: 220, wave: 'triangle', gain: 0.13 },
-    { freq: 1975.53, startMs: 0, durationMs: 90, wave: 'sine', gain: 0.05 },
+    { freq: 1046.5, startMs: 0, durationMs: 340, wave: 'triangle', gain: 0.28, overtones: [{ mult: 2, gain: 0.25 }] },
+    { freq: 2093.0, startMs: 0, durationMs: 150, wave: 'sine', gain: 0.1 },
   ],
-  /** 轻「啵」：普通通知。 */
+  /** 轻「啵」（两音上行，带一点弹性）：普通通知。 */
   pop: [
-    { freq: 523.25, startMs: 0, durationMs: 90, wave: 'sine', gain: 0.14 },
-    { freq: 659.25, startMs: 55, durationMs: 90, wave: 'sine', gain: 0.09 },
+    { freq: 523.25, startMs: 0, durationMs: 150, wave: 'sine', gain: 0.3, overtones: [{ mult: 2, gain: 0.3 }] },
+    { freq: 659.25, startMs: 80, durationMs: 190, wave: 'sine', gain: 0.26, overtones: [{ mult: 2, gain: 0.25 }] },
   ],
   /** 上行两音（低沉柔和）：Agent 在问你问题（request_user_input），语气是「询问」不是「催办」。 */
   ask: [
-    { freq: 587.33, startMs: 0, durationMs: 140, wave: 'sine', gain: 0.13 },
-    { freq: 783.99, startMs: 110, durationMs: 210, wave: 'sine', gain: 0.11 },
+    { freq: 587.33, startMs: 0, durationMs: 200, wave: 'sine', gain: 0.28, overtones: [{ mult: 2, gain: 0.3 }] },
+    { freq: 783.99, startMs: 130, durationMs: 340, wave: 'sine', gain: 0.26, overtones: [{ mult: 2, gain: 0.28 }] },
   ],
-  /** 三连 ping：有审批等你处理（需要动手，稍微显眼但不能刺耳）。 */
+  /** 三连 ping 后上扬：有审批等你处理（需动手，当前最长的一支）。 */
   attention: [
-    { freq: 1046.5, startMs: 0, durationMs: 90, wave: 'triangle', gain: 0.12 },
-    { freq: 1046.5, startMs: 130, durationMs: 90, wave: 'triangle', gain: 0.12 },
-    { freq: 1318.51, startMs: 260, durationMs: 160, wave: 'triangle', gain: 0.12 },
+    { freq: 880.0, startMs: 0, durationMs: 130, wave: 'triangle', gain: 0.27, overtones: [{ mult: 2, gain: 0.25 }] },
+    { freq: 880.0, startMs: 160, durationMs: 130, wave: 'triangle', gain: 0.27, overtones: [{ mult: 2, gain: 0.25 }] },
+    { freq: 1174.66, startMs: 320, durationMs: 300, wave: 'triangle', gain: 0.28, overtones: [{ mult: 2, gain: 0.25 }] },
   ],
-  /** 下行两音：出错 / 失败（低、闷，不尖叫）。 */
+  /** 下行两音（低、闷，不尖叫）：出错 / 失败。 */
   alert: [
-    { freq: 392.0, startMs: 0, durationMs: 150, wave: 'triangle', gain: 0.15 },
-    { freq: 311.13, startMs: 165, durationMs: 240, wave: 'triangle', gain: 0.14 },
+    { freq: 392.0, startMs: 0, durationMs: 240, wave: 'triangle', gain: 0.32, overtones: [{ mult: 2, gain: 0.18 }] },
+    { freq: 311.13, startMs: 220, durationMs: 380, wave: 'triangle', gain: 0.32, overtones: [{ mult: 2, gain: 0.18 }] },
   ],
 };
 
@@ -223,11 +228,27 @@ export function soundEventForTaskUpdate(payload: unknown): NotificationSoundEven
 /* ─────────────────────────────── 偏好 ─────────────────────────────── */
 
 export interface NotificationSoundPreferences {
-  /** 总开关。关掉 = 任何提示音都不响（设置页的「运行配置」里的那一个开关）。 */
+  /** 总开关。关掉 = 任何提示音都不响（设置页「提示音」区块的总闸）。 */
   enabled: boolean;
   /** 单独关掉的事件（总开关仍开时生效）。 */
   disabledEvents: NotificationSoundEvent[];
+  /** 响度档位。默认 `normal`；觉得吵的人调低，觉得小的人调高（Owner 2026-11-27）。 */
+  volume: SoundVolume;
 }
+
+/**
+ * 响度档位。系数直接乘在音色的峰值增益上，并在播放器里做逐音封顶，
+ * 所以 `loud` 也不会削波成破音。
+ */
+export type SoundVolume = 'quiet' | 'normal' | 'loud';
+
+export const SOUND_VOLUMES: readonly SoundVolume[] = ['quiet', 'normal', 'loud'];
+
+export const VOLUME_SCALE: Record<SoundVolume, number> = {
+  quiet: 0.6,
+  normal: 1,
+  loud: 1.7,
+};
 
 export const SOUND_PREFERENCES_KEY = 'markus-notification-sounds';
 export const SOUND_PREFERENCES_CHANGED = 'markus:notification-sounds-changed';
@@ -235,18 +256,21 @@ export const SOUND_PREFERENCES_CHANGED = 'markus:notification-sounds-changed';
 export const DEFAULT_SOUND_PREFERENCES: NotificationSoundPreferences = {
   enabled: true,
   disabledEvents: [],
+  volume: 'normal',
 };
 
 /** 宽松解析：坏数据一律退回默认值，不认识的事件 id 丢弃（不抛）。 */
 export function parseSoundPreferences(raw: unknown): NotificationSoundPreferences {
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_SOUND_PREFERENCES };
-  const obj = raw as { enabled?: unknown; disabledEvents?: unknown };
+  const obj = raw as { enabled?: unknown; disabledEvents?: unknown; volume?: unknown };
   const disabled = Array.isArray(obj.disabledEvents)
     ? obj.disabledEvents.filter((id): id is NotificationSoundEvent => EVENTS_BY_ID.has(id as NotificationSoundEvent))
     : [];
+  const volume = SOUND_VOLUMES.includes(obj.volume as SoundVolume) ? (obj.volume as SoundVolume) : 'normal';
   return {
     enabled: typeof obj.enabled === 'boolean' ? obj.enabled : true,
     disabledEvents: [...new Set(disabled)],
+    volume,
   };
 }
 
@@ -341,11 +365,14 @@ export const soundGate = new SoundGate();
 
 /* ─────────────────────────────── 播放 ─────────────────────────────── */
 
-type CuePlayer = (cue: SoundCue) => void;
+type CuePlayer = (cue: SoundCue, volume: number) => void;
 
 let audioContext: AudioContext | null = null;
 
-function webAudioPlayer(cue: SoundCue): void {
+/** 逐音封顶：`loud` 档也不许把波形推平（削波听起来是破音，不是更响）。 */
+const PEAK_LIMIT = 0.85;
+
+function webAudioPlayer(cue: SoundCue, volume: number): void {
   const Ctor =
     typeof window !== 'undefined'
       ? window.AudioContext ??
@@ -362,20 +389,31 @@ function webAudioPlayer(cue: SoundCue): void {
     // 下一次事件会再试 —— 不弹错、不阻塞 UI。
     if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
     const t0 = ctx.currentTime + 0.01;
-    for (const note of notes) {
-      const start = t0 + note.startMs / 1000;
-      const end = start + note.durationMs / 1000;
+
+    /** 一个振荡器 + 包络；基频与每个泛音各一条，共享同一个时间窗。 */
+    const voice = (freq: number, wave: OscillatorType, peak: number, start: number, end: number) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = note.wave;
-      osc.frequency.setValueAtTime(note.freq, start);
+      osc.type = wave;
+      osc.frequency.setValueAtTime(freq, start);
       // 短促的 attack/release 包络，避免爆音（直接起停会听到「咔」）。
+      const level = Math.min(peak * volume, PEAK_LIMIT);
       gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(note.gain, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(Math.max(level, 0.0002), start + 0.012);
       gain.gain.exponentialRampToValueAtTime(0.0001, end);
       osc.connect(gain).connect(ctx.destination);
       osc.start(start);
       osc.stop(end + 0.02);
+    };
+
+    for (const note of notes) {
+      const start = t0 + note.startMs / 1000;
+      const end = start + note.durationMs / 1000;
+      voice(note.freq, note.wave, note.gain, start, end);
+      // 泛音让音色「有实体」，听感更响但不变刺耳。
+      for (const overtone of note.overtones ?? []) {
+        voice(note.freq * overtone.mult, note.wave, note.gain * overtone.gain, start, end);
+      }
     }
   } catch {
     /* 音频设备不可用：提示音是体验增强，绝不因它抛错打断业务 */
@@ -399,11 +437,15 @@ export function playNotificationSound(
   gate: SoundGate = soundGate,
 ): boolean {
   if (!gate.shouldPlay(event, prefs)) return false;
-  cuePlayer(cueForEvent(event));
+  cuePlayer(cueForEvent(event), VOLUME_SCALE[prefs.volume]);
   return true;
 }
 
-/** 设置页「试听」：绕过开关与冷却（用户点它就是要听），但仍走同一个播放器。 */
-export function previewSoundCue(cue: SoundCue): void {
-  cuePlayer(cue);
+/**
+ * 设置页「试听」：绕过开关与冷却（用户点它就是要听），但仍走同一个播放器，
+ * 并按当前音量档位发声 —— 否则试听音量与真实事件不一致，调音量就靠猜。
+ */
+export function previewSoundCue(cue: SoundCue, volume: SoundVolume = readSoundPreferences().volume): void {
+  cuePlayer(cue, VOLUME_SCALE[volume]);
 }
+

@@ -1592,6 +1592,13 @@
     "description": "这些事件发生时会响一声。总开关关掉后全部静音。",
     "enabled": "启用提示音",
     "enabledDesc": "Agent 回复完成、待审批、待验收、失败或收到通知时播放提示音",
+    "volume": "音量",
+    "volumeDesc": "试听会立刻按当前档位发声",
+    "volumes": {
+      "quiet": "轻",
+      "normal": "中",
+      "loud": "响"
+    },
     "preview": "试听",
     "deviceNote": "提示音偏好保存在这台设备上，不跨设备同步。",
     "cues": {

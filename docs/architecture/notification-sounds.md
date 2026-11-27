@@ -30,14 +30,36 @@ finishing everyday work must not create a soundtrack.
 
 ## Cue table
 
-| Cue id | Notes | Used by |
-|---|---|---|
-| `chime` | 880 Hz → 1174.66 Hz, sine | `agent-reply-complete` |
-| `attention` | 1046.5 Hz ×2 → 1318.51 Hz, triangle | `approval-requested` |
-| `ding` | 1318.51 Hz triangle + 1975.53 Hz sine sparkle | `review-requested` |
-| `pop` | 523.25 Hz → 659.25 Hz, sine | `notification` |
-| `alert` | 392 Hz → 311.13 Hz, triangle | `agent-reply-error`, `task-failed` |
-| `ask` | 587.33 Hz → 783.99 Hz, sine | `input-requested` |
+| Cue id | Notes | Peak gain | Length | Used by |
+|---|---|---|---|---|
+| `chime` | 698.46 Hz → 880 Hz, sine (+octave overtone) | 0.30 | 0.44 s | `agent-reply-complete` |
+| `attention` | 880 Hz ×2 → 1174.66 Hz, triangle (+octave) | 0.28 | 0.62 s | `approval-requested` |
+| `ding` | 1046.5 Hz triangle (+octave) + 2093 Hz sparkle | 0.28 | 0.34 s | `review-requested` |
+| `pop` | 523.25 Hz → 659.25 Hz, sine (+octave) | 0.30 | 0.27 s | `notification` |
+| `alert` | 392 Hz → 311.13 Hz, triangle (+octave) | 0.32 | 0.60 s | `agent-reply-error`, `task-failed` |
+| `ask` | 587.33 Hz → 783.99 Hz, sine (+octave) | 0.28 | 0.47 s | `input-requested` |
+
+### Loudness and duration — the numbers that listenable
+
+Reference points (industry IM / system sounds): peak level around **−10 … −6 dBFS** (linear
+0.30–0.50), daily-event cues **0.25–0.45 s**, "you must act" cues **0.5–0.7 s**. The first
+revision of this feature shipped 0.11–0.16 peak with 0.2–0.3 s spans and was audibly too quiet
+and too clipped (Owner, 2026-11-27).
+
+What the current cue table follows:
+
+- **Peak gain 0.26–0.32 per note** — same perceptual loudness as Slack / macOS cues. Every voice
+  is clamped to `PEAK_LIMIT = 0.85` after the volume multiplier, so `loud` cannot clip.
+- **Overtones instead of a louder fundamental** — a pure sine at a given level sounds markedly
+  weaker than a triangle; each note may carry `overtones: [{ mult, gain }]` (an octave partial,
+  sometimes a fifth) which adds body without the harshness of pushing the fundamental up.
+- **Duration is a semantic signal** — recurring daily events stay short (`pop` 0.27 s, `ding`
+  0.34 s), events that need a decision run longer (`attention` 0.62 s, `alert` 0.60 s). A busy
+  queue therefore produces short ticks, while "you owe me an approval" gets attention.
+- Frequencies stay in 310–1200 Hz (plus quiet octaves) so cues do not sit on top of speech.
+
+Tests pin the floor (`peak ≥ 0.24`, long cues `≥ 550 ms`, daily cues `≥ 250 ms`) so a future
+"let me make it subtle" edit cannot silently regress into inaudible territory.
 
 ### How `input-requested` is told apart from an approval gate
 
@@ -82,8 +104,15 @@ is `SoundGate`, both pure.
 ## Switching and throttling
 
 Preferences live in `localStorage` under `markus-notification-sounds` as
-`{ enabled: boolean, disabledEvents: string[] }`. They are deliberately device-scoped (like
-the theme): "should this machine make noise" is not an account-level trait.
+`{ enabled: boolean, disabledEvents: string[], volume: 'quiet' | 'normal' | 'loud' }`. They are
+deliberately device-scoped (like the theme): "should this machine make noise" is not an
+account-level trait.
+
+`volume` multiplies every note's gain (`quiet` 0.6, `normal` 1, `loud` 1.7) and is clamped per
+voice, so the loud step cannot clip. Settings → General → Notification sounds shows the three
+steps and plays the selected level on click — a volume control the user cannot hear while
+adjusting is a guess, not a setting. The Preview button for each event also uses the current
+level, so what you audition is what you will hear.
 
 The gate applies three rules in order, short-circuiting:
 
