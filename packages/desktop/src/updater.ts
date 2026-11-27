@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron';
 import { compareVersions } from '@markus/shared';
+import { setAppQuitting } from './app-lifecycle.js';
 import {
   INITIAL_CHECK_DELAY_MS,
   channelPolicy,
@@ -149,8 +150,29 @@ export function installUpdateNow(): InstallResult {
   if (state.phase !== 'ready') return { ok: false, error: 'no-update-ready' };
   if (state.requiresMoveToApplications) return { ok: false, error: 'move-to-applications-required' };
   log('install requested by user → quitAndInstall');
+  // Mark the app as quitting BEFORE Electron starts terminating. The main window
+  // hides itself on 'close' while `isAppQuitting()` is false, so without this the
+  // window disappears into the tray and the process keeps running — which looks
+  // exactly like "the restart button does nothing" (observed on 0.12.5-rc.1).
+  try {
+    setAppQuitting(true);
+  } catch (err) {
+    log(`could not mark app as quitting: ${String(err)}`);
+  }
   // Defer so the IPC reply reaches the renderer before the window goes away.
-  setImmediate(() => updater?.quitAndInstall(false, true));
+  setImmediate(() => {
+    try {
+      updater?.quitAndInstall(false, true);
+    } catch (err) {
+      // Never leave the app marked as quitting if the installer refused to start:
+      // that would make the close button stop working.
+      try { setAppQuitting(false); } catch { /* ignore */ }
+      publish({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  });
+  // Permanent diagnostic: if the process is still alive this long after asking the
+  // installer to run, the quit path was blocked by something in the app.
+  setTimeout(() => log('still alive 5s after quitAndInstall — quit path blocked'), 5000).unref?.();
   return { ok: true };
 }
 

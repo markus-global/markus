@@ -380,21 +380,39 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   quitting = true;
   setAppQuitting(true);
-  // Allow the hidden main window to actually close now.
-  const win = getMainWindow();
-  if (win && !win.isDestroyed()) {
-    win.destroy();
-  }
-  stopNotificationBridge();
-  destroyTray();
-  const timeout = setTimeout(() => {
+
+  // The force-exit watchdog is armed FIRST, before any cleanup step. A throwing
+  // cleanup used to abort this handler before the timeout was registered, leaving
+  // a zombie process: no window, tray still there, and `quitting` already true so
+  // every later Quit attempt returned early. That is the "restart to update did
+  // nothing" symptom.
+  const forceExit = setTimeout(() => {
     console.warn('[main] shutdown timed out — forcing exit');
     app.exit(0);
   }, 2000);
+
+  const safe = (label: string, step: () => void) => {
+    try {
+      step();
+    } catch (err) {
+      console.warn(`[main] shutdown step failed (${label}):`, err);
+    }
+  };
+
+  // Allow the hidden main window to actually close now.
+  safe('destroy-window', () => {
+    const win = getMainWindow();
+    if (win && !win.isDestroyed()) {
+      win.destroy();
+    }
+  });
+  safe('notification-bridge', () => stopNotificationBridge());
+  safe('tray', () => destroyTray());
+
   void shutdownBackend()
     .catch((err) => console.warn('[main] shutdown error:', err))
     .finally(() => {
-      clearTimeout(timeout);
+      clearTimeout(forceExit);
       app.exit(0);
     });
 });
