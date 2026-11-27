@@ -98,6 +98,12 @@ import {
   selectAgentReviewNotifications, resolveReviewLanding, notifySessionId,
 } from '../lib/notifyReview.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
+import {
+  CHAT_MIN_W,
+  PANEL_MIN_W,
+  rightPanelBounds,
+  railsActionOnPanelTransition,
+} from '../lib/rightPanelLayout.ts';
 import { AgentProfile, LEGACY_TAB_SECTION, type ProfileTab, type OverviewSectionId } from './AgentProfile.tsx';
 import { resolveMobileChatBackHash, teamChannelKey } from '../lib/mobileTeamNav.ts';
 import { agentStatusPresentation, resolveAgentStatus } from '../lib/agentOverview.ts';
@@ -301,9 +307,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // the team container (see effectiveRightPanelWidth further below), so the panel
   // never gets pushed off-screen / truncated — even when the user manually
   // re-expands the L1/L2 sidebars while the panel is open. `panelWidthPref` is
-  // 'auto' for the even 50/50 split, or a user-chosen pixel width after dragging.
-  const CHAT_MIN_W = 400;
-  const PANEL_MIN_W = 320;
+  // 'auto' for the 40/60 split (chat/panel), or a user-chosen pixel width after
+  // dragging.
   const RESIZE_HANDLE_W = 6;
   // Live width of the team container (already excludes the global L0 rail).
   const [containerWidth, setContainerWidth] = useState<number>(
@@ -542,33 +547,51 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // left rails). A small buffer keeps us on the safe side of rounding so the
   // flex row never overflows.
   const spaceForChatPanel = Math.max(0, containerWidth - leftRailWidth - RESIZE_HANDLE_W - 8);
-  // Reserve for the chat column scales down when space is tight, so BOTH the chat
-  // and the panel stay fully visible (never truncated) no matter how many
-  // sidebars the user opens or which agent is active. The panel is then capped to
-  // whatever remains — this is the invariant that prevents any overflow.
-  const chatReserve = Math.min(CHAT_MIN_W, Math.floor(spaceForChatPanel * 0.4));
-  const maxRightPanelWidth = Math.max(0, spaceForChatPanel - chatReserve);
-  // Even 50/50 split of the shared space (chat column vs. panel).
-  const evenSplitWidth = Math.min(Math.round(spaceForChatPanel / 2), maxRightPanelWidth);
-  // Reactive: 'auto' keeps the even split as the layout settles/changes; a user
+  // Split rule (Owner spec): of the space the L1/L2 rails leave, the chat gets
+  // 40% and the right panel 60%. `maxPanelWidth` is the hard cap that keeps the
+  // chat's floor intact — the invariant that prevents any overflow — and it is
+  // also what the drag handle clamps to. See lib/rightPanelLayout.ts.
+  const { maxPanelWidth: maxRightPanelWidth, autoPanelWidth } = rightPanelBounds(spaceForChatPanel);
+  // Reactive: 'auto' keeps the 40/60 split as the layout settles/changes; a user
   // drag pins a pixel width. Either way it is clamped so the panel always fits.
-  const desiredRightPanelWidth = panelWidthPref === 'auto' ? evenSplitWidth : panelWidthPref;
+  const desiredRightPanelWidth = panelWidthPref === 'auto' ? autoPanelWidth : panelWidthPref;
   const effectiveRightPanelWidth = Math.max(0, Math.min(desiredRightPanelWidth, maxRightPanelWidth));
 
-  // On each fresh open of the right panel: collapse the L1/L2 sidebars to make
-  // room, and re-center to an even 50/50 split. This fires directly on the
-  // open transition (rather than relying on the shared leftCollapsed flag
-  // changing), so it works even when that flag was already set. The user can
-  // still manually re-expand the sidebars afterwards — the width stays clamped.
+  // Right-panel open/close transitions drive the L1/L2 rails:
+  //   open  → collapse them (the panel needs the space) and re-center to auto.
+  //   close → restore them, otherwise the freed space is left as an over-wide
+  //           chat column (Owner 2026-11-27). L2 comes back with them because
+  //           only `sidebarsCollapsed` was toggled, never `showTeamDetailPanel`.
+  // Only *transitions* act, and a rail set the user had already collapsed before
+  // opening the panel is left collapsed — a manual Cmd+B is never undone behind
+  // the user's back (see railsActionOnPanelTransition).
   const rightPanelWasOpen = useRef(false);
+  const sidebarsCollapsedRef = useRef(sidebarsCollapsed);
+  sidebarsCollapsedRef.current = sidebarsCollapsed;
+  /** Rail collapse state captured when the panel took the space, or null. */
+  const railsCollapsedBeforePanel = useRef<boolean | null>(null);
+  const setLayoutLeftCollapsed = layout?.setLeftCollapsed;
   useEffect(() => {
     const open = (layout?.rightPanel ?? null) !== null;
-    if (open && !rightPanelWasOpen.current) {
+    const wasOpen = rightPanelWasOpen.current;
+    rightPanelWasOpen.current = open;
+    const action = railsActionOnPanelTransition(wasOpen, open, railsCollapsedBeforePanel.current);
+    if (action === 'collapse') {
+      railsCollapsedBeforePanel.current = sidebarsCollapsedRef.current;
       setSidebarsCollapsed(true);
       setPanelWidthPref('auto');
+      return;
     }
-    rightPanelWasOpen.current = open;
-  }, [layout?.rightPanel]);
+    if (action === 'restore') {
+      railsCollapsedBeforePanel.current = null;
+      setSidebarsCollapsed(false);
+      setLayoutLeftCollapsed?.(false);
+      return;
+    }
+    // Panel closed while the rails were already collapsed (or no transition):
+    // drop the capture so a later open captures a fresh state.
+    if (wasOpen && !open) railsCollapsedBeforePanel.current = null;
+  }, [layout?.rightPanel, setLayoutLeftCollapsed]);
 
   // Custom resize handle for the right panel: seeds the drag from the currently
   // rendered width (so there's no jump), then pins a user-chosen pixel width.
@@ -6417,9 +6440,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
           </div>
           </div>
-          {/* Shift+Enter hint — only while the user is typing (any composer mode) */}
+          {/* Shift+Enter hint — only while the user is typing (any composer mode).
+              Shares the composer box's `max-w-3xl mx-auto` wrapper so it lines up
+              with the input's right edge, not the chat column's (which is far
+              wider whenever the right panel is closed). */}
           {(input.trim() || pendingImages.length > 0) && (
-            <div className="mt-0.5 flex justify-end px-1 pointer-events-none select-none">
+            <div className={`mt-0.5 flex justify-end px-1 pointer-events-none select-none ${isMobile ? '' : 'max-w-3xl mx-auto'}`}>
               <span className="text-[10px] text-fg-tertiary/80">{t('common:shiftEnterHint')}</span>
             </div>
           )}
