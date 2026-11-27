@@ -1108,7 +1108,10 @@ export function App() {
             </span>
           </div>
         )}
-        <UpdateNotice />
+        {/* Settings renders its own full-height left nav; a full-width bar above
+            it covers that nav's top icons. Every other global banner here (LLM,
+            LAN) excludes Settings for the same reason — follow that convention. */}
+        {page !== PAGE.SETTINGS && <UpdateNotice />}
         {lanNotice && !lanNoticeDismissed && page !== PAGE.SETTINGS && (
           <div className="flex items-center justify-between px-4 py-2 bg-emerald-500/10 border-b border-emerald-500/25 text-emerald-600 dark:text-emerald-400 text-sm shrink-0">
             <span className={isMobile ? 'text-xs' : ''}>{t('lanNotice.message', { host: lanNotice.host })}</span>
