@@ -5,7 +5,17 @@ export interface TaskGovernancePolicy {
   rules: TaskApprovalRule[];
   defaultTier: ApprovalTier;
   maxPendingTasksPerAgent: number;
-  maxTotalActiveTasks: number;
+  /**
+   * 已退役（Owner 2026-11-27）：组织级「活跃任务总数」上限。
+   *
+   * 它默认就是 0（不限制），从来没有任何 UI 能打开它 —— 一个永远不触发的闸门
+   * 只会让读者以为有保护。真正在防叠的是 `maxPendingTasksPerAgent`。
+   *
+   * 保留为**可选字段**而不是直接删：旧项目的 governancePolicy 已以 JSON 持久化，
+   * 里面还带着这个键；约 40 处测试夹具也在用。它不再被任何逻辑读取。
+   * **移除条件**：当测试夹具中的引用清零、且确认无存量配置依赖它时，连同本字段删除。
+   */
+  maxTotalActiveTasks?: number;
   requireApprovalForPriority: string[];
   /** When true, top-level tasks must reference an approved requirement */
   requireRequirement: boolean;

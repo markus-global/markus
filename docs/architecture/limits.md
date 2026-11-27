@@ -22,7 +22,12 @@ the single place a numeric constant may live.
 | Pending tasks / agent | 20 | Settings → Execution | Same family — per-agent queue depth. |
 | Tool iterations per turn | 0 (unlimited) | Settings → Execution | Trades token spend against how much autonomy one turn gets. |
 | Concurrent workers | `min(8, max(2, cores-1))` | Settings → Execution | Buy speed with CPU/memory and provider rate limits. |
-| Org-wide active task cap | 0 (unlimited) | project governance policy | A throughput ceiling is a business decision. |
+
+**Retired:** an org-wide cap on total active tasks existed as a governance-policy field that
+defaulted to 0 (unlimited) and had no UI to turn it on — a gate that can never fire. Removed
+on the owner's call (2026-11-27); `checkTaskLimits` no longer reads it, and the type field is
+kept only as an optional, unread residue for persisted project JSON (removal condition is
+documented at the field).
 
 Note on `0`: it means **unlimited**, never "forbidden". Any UI that renders these must say
 "unlimited" rather than showing a bare `0` — the number reads as a prohibition to everyone
@@ -57,7 +62,14 @@ way silently degrades prompt quality. They belong in code review, not in Setting
   developer's laptop; on an 18-core machine it left 15 cores idle. The default now comes
   from the hardware, and an explicit setting still wins.
 
-## 5. Known open question (explicitly not silently changed)
+## 6. Saving model (why there are no Save buttons)
+
+The Execution tab used to have one Save button per group. Two groups, two buttons, and
+the failure was structural: change the top group, change the bottom group, press one
+button — the other group silently keeps its old value. Fields now auto-save with a 600 ms
+debounce, out-of-order responses are discarded by sequence number, and a pending write is
+flushed on unmount so switching tabs never loses an edit. The UI only reports state
+(saving / saved / failed) instead of asking the user to remember to commit.
 
 The **knowledge-injection budget** (`knowledgeInjectionCapChars` → 6000 execute / 4800
 converse chars) caps how much of its own curated knowledge an agent can see in one turn.

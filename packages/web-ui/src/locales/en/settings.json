@@ -451,7 +451,7 @@
   },
   "concurrent": {
     "title": "Concurrent Processing",
-    "description": "Let your agent handle multiple conversations, tasks, and messages at the same time with isolated worker sessions. When disabled, it processes strictly one item at a time (serial).",
+    "description": "Let your agent handle several conversations, tasks, and messages at once through isolated workers. A **worker** is a copy of the same agent opened for parallel work: it shares the agent's identity, memory, and permissions, but has its own conversation context. When disabled, the agent processes strictly one item at a time (serial).",
     "enabled": "Enable concurrent processing",
     "enabledDesc": "Recommended. Agents can process multiple independent items in parallel; each worker gets isolated session state.",
     "maxWorkers": "Max workers",

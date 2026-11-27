@@ -188,7 +188,10 @@ describe('TaskService', () => {
         .toBe('human');
     });
 
-    it('blocks task creation when org-wide cap reached', () => {
+    it('no longer enforces an org-wide active-task cap (retired 2026-11-27)', () => {
+      // 这条限制默认就是 0（不限制）、从来没有任何 UI 能打开它 —— Owner 判定它无意义
+      // 并要求删除。守卫反过来咬住「它不再限制」：配置里即使还留着
+      // maxTotalActiveTasks: 1（旧项目 JSON 里就是这种残留），第二条任务也必须建成功。
       ts.setGovernancePolicy({
         enabled: true,
         defaultTier: 'auto',
@@ -199,8 +202,7 @@ describe('TaskService', () => {
         rules: [],
       });
       ts.createTask(createDefaults({ title: 'First' }) as never);
-      expect(() => ts.createTask(createDefaults({ title: 'Second' }) as never))
-        .toThrow(/Org-wide active task cap/);
+      expect(() => ts.createTask(createDefaults({ title: 'Second' }) as never)).not.toThrow();
     });
 
     it('blocks task creation when agent cap reached', () => {

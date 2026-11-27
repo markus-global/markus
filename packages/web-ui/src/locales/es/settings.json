@@ -1530,7 +1530,7 @@
   },
   "concurrent": {
     "title": "Procesamiento concurrente",
-    "description": "Permite que tu agente gestione varias conversaciones, tareas y mensajes a la vez con sesiones de trabajo aisladas. Cuando está desactivado, procesa estrictamente un elemento a la vez (serie).",
+    "description": "Permite que tu agente gestione varias conversaciones, tareas y mensajes a la vez mediante workers aislados. Un **worker** es una copia del mismo agente abierta para trabajar en paralelo: comparte identidad, memoria y permisos, pero tiene su propio contexto de conversación. Desactivado, procesa estrictamente un elemento a la vez (serie).",
     "enabled": "Activar procesamiento concurrente",
     "enabledDesc": "Recomendado. Los agentes pueden procesar varios elementos independientes en paralelo; cada worker tiene estado de sesión aislado.",
     "maxWorkers": "Máximo de workers",
