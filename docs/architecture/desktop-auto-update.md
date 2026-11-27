@@ -194,7 +194,51 @@ It runs in:
 - `.github/workflows/publish.yml` — every release, with `--require-developer-id
   --require-notarized` on mac when the Apple certificate secret is present.
 
-## 4. What a release must contain on macOS
+## 4. Where the feed lives (and the two channels)
+
+Builds shipped from 0.12.5-rc.4 onwards read the feed from **our own domain**, not
+from GitHub:
+
+```
+publish: generic  →  https://markus.global/releases/
+```
+
+The website wildcard-forwards `/releases/*` to the R2 bucket (verified
+2026-11-27: `/releases/any-name` → 307 → `www.markus.global/releases/any-name` →
+`pub-*.r2.dev/releases/any-name`; a missing object 404s at R2). Two consequences
+worth keeping in mind:
+
+1. **The storage backend is invisible to the client.** Attaching a custom domain
+   later (required before wide rollout — Cloudflare positions `r2.dev` as
+   non-production) changes only the website rule; no app build is involved.
+2. **Channel = file name, same directory.** `channelPolicy` selects the channel,
+   and electron-updater resolves `<channel><platform>.yml`:
+
+| Channel | macOS | Windows | Linux |
+|---|---|---|---|
+| stable | `latest-mac.yml` | `latest.yml` | `latest-linux.yml` |
+| candidate | `rc-mac.yml` | `rc.yml` | `rc-linux.yml` |
+
+A candidate must **never** write `latest*.yml` or `meta.json`: that would hand
+every stable user an rc and make `install.sh` advertise it as the latest stable.
+
+### GitHub Release is still published (and that is not a "double-write period")
+
+Builds shipped *before* the generic-provider switch have `provider: github` baked
+into their `app-update.yml`, and that cannot be changed from outside. GitHub
+Releases therefore keep being published by the workflow, which means:
+
+| Installed build | Reads | Dies out |
+|---|---|---|
+| ≤ 0.12.5-rc.3 (provider: github) | the GitHub Release feed | when it upgrades to a build that reads R2 |
+| ≥ 0.12.5-rc.4 (provider: generic) | `markus.global/releases/` | — |
+
+Both channels carry the same artifacts from the same release run, so nothing has
+to be coordinated and no extra release is needed: the old channel simply empties
+itself as installs move forward. Which channel a machine uses is determined by
+its bundled `app-update.yml`, **not** by its version number.
+
+## 5. What a release must contain on macOS
 
 Attached to the GitHub release and referenced by `latest-mac.yml`:
 
@@ -207,7 +251,7 @@ Attached to the GitHub release and referenced by `latest-mac.yml`:
 Missing zip ⇒ macOS users can never auto-update, and the failure is invisible to
 them. That is why the gate exists.
 
-## 5. Verifying a change end to end
+## 6. Verifying a change end to end
 
 Ordered from cheapest to most authoritative — do not stop at the first green:
 

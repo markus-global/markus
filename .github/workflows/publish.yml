@@ -202,9 +202,12 @@ jobs:
           rm /tmp/cert.p12
           echo "DESKTOP_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
+      # `--publish never`: electron-builder no longer uploads anything. The GitHub
+      # Release is attached by softprops/action-gh-release below and R2 by the
+      # upload-to-hub job, so both channels carry the exact same artifacts.
       - name: Package Electron app
         working-directory: packages/desktop
-        run: pnpm dist ${{ matrix.electron_args }}
+        run: pnpm dist ${{ matrix.electron_args }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -320,7 +323,7 @@ jobs:
       # unset, so the pipeline still produces an unsigned installer for forks.
       - name: Package + sign Electron app (Certum SimplySign)
         working-directory: packages/desktop
-        run: pnpm dist --win --x64
+        run: pnpm dist --win --x64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CERTUM_EMAIL: ${{ secrets.CERTUM_EMAIL }}
@@ -406,7 +409,10 @@ jobs:
   upload-to-hub:
     runs-on: ubuntu-latest
     needs: [publish-npm, build-server-binary, build-desktop, build-desktop-windows, github-release]
-    if: needs.publish-npm.outputs.is_prerelease == 'false'
+    # Runs for BOTH channels. Stable writes `latest*.yml`; a prerelease writes
+    # `rc*.yml`. A prerelease must never touch `latest*.yml` or `meta.json`, or
+    # every stable user would be handed an rc (and install.sh would call it the
+    # latest stable).
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -421,11 +427,14 @@ jobs:
           R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
           R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
           VERSION: ${{ needs.publish-npm.outputs.version }}
+          IS_PRERELEASE: ${{ needs.publish-npm.outputs.is_prerelease }}
         run: |
-          set -e
+          set -euo pipefail
           uploaded=0
-          for file in artifacts/markus-setup-* artifacts/markus-v${VERSION}-* artifacts/Markus-*.dmg artifacts/Markus-*.AppImage artifacts/Markus*.exe; do
-            [ -f "$file" ] || continue
+          for file in artifacts/markus-setup-* artifacts/markus-v${VERSION}-* \
+                      artifacts/Markus-*.dmg artifacts/Markus-*.AppImage \
+                      artifacts/Markus-*.zip artifacts/Markus*.exe; do
+            if [ ! -f "$file" ]; then continue; fi
             filename=$(basename "$file")
             echo "Uploading $filename to R2..."
             aws s3 cp "$file" "s3://${R2_BUCKET}/releases/${filename}" \
@@ -439,8 +448,56 @@ jobs:
             exit 1
           fi
 
-          echo "{\"version\":\"$VERSION\",\"updatedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > /tmp/meta.json
-          aws s3 cp /tmp/meta.json "s3://${R2_BUCKET}/releases/meta.json" \
-            --endpoint-url "$R2_ENDPOINT" \
-            --content-type "application/json"
-          echo "Uploaded $uploaded files + meta.json to R2"
+          upload_feed() {
+            aws s3 cp "$1" "s3://${R2_BUCKET}/releases/$2" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "text/yaml"
+          }
+
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            if [ -f artifacts/latest-mac.yml ]; then upload_feed artifacts/latest-mac.yml rc-mac.yml; fi
+            if [ -f artifacts/latest.yml ]; then upload_feed artifacts/latest.yml rc.yml; fi
+            if [ -f artifacts/latest-linux.yml ]; then upload_feed artifacts/latest-linux.yml rc-linux.yml; fi
+            echo "Uploaded $uploaded files + rc feeds (no meta.json: prerelease)"
+          else
+            if [ -f artifacts/latest-mac.yml ]; then upload_feed artifacts/latest-mac.yml latest-mac.yml; fi
+            if [ -f artifacts/latest.yml ]; then upload_feed artifacts/latest.yml latest.yml; fi
+            if [ -f artifacts/latest-linux.yml ]; then upload_feed artifacts/latest-linux.yml latest-linux.yml; fi
+            echo "{\"version\":\"$VERSION\",\"updatedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > /tmp/meta.json
+            aws s3 cp /tmp/meta.json "s3://${R2_BUCKET}/releases/meta.json" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "application/json"
+            echo "Uploaded $uploaded files + latest feeds + meta.json"
+          fi
+
+      # The feed is only useful if the client can actually reach it through our
+      # domain. Verify that here instead of discovering it from a user report.
+      - name: Verify the feed is reachable through markus.global
+        env:
+          VERSION: ${{ needs.publish-npm.outputs.version }}
+          IS_PRERELEASE: ${{ needs.publish-npm.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            feeds="rc-mac.yml rc.yml rc-linux.yml"
+          else
+            feeds="latest-mac.yml latest.yml latest-linux.yml"
+          fi
+          reachable=0
+          for feed in $feeds; do
+            url="https://markus.global/releases/${feed}"
+            if ! body=$(curl -fsS --max-time 30 "$url"); then
+              echo "::warning::$url not reachable (platform not built in this run?)"
+              continue
+            fi
+            if ! printf '%s' "$body" | grep -q "version: ${VERSION}"; then
+              echo "::error::$url does not advertise ${VERSION}"
+              exit 1
+            fi
+            reachable=$((reachable + 1))
+            echo "OK $url (v${VERSION})"
+          done
+          if [ "$reachable" -eq 0 ]; then
+            echo "::error::no feed is reachable through markus.global/releases"
+            exit 1
+          fi

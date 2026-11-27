@@ -114,7 +114,16 @@ linux:
   category: Development
   icon: build/icon.png
 
+# The updater reads its feed from OUR domain, not from GitHub. The website
+# wildcard-forwards /releases/* to the R2 bucket (verified 2026-11-27:
+#   /releases/any-name -> 307 -> www.markus.global/releases/any-name -> pub-*.r2.dev)
+# so this URL stays valid when a custom domain is attached later — the client
+# never needs to know which storage backend is behind it.
+#
+# Consequence: electron-builder no longer uploads releases to GitHub. The release
+# workflow passes `--publish never` and attaches artifacts itself (softprops for
+# the GitHub Release, aws s3 for R2) — GitHub stays the channel that already
+# installed builds read, R2 is the channel new builds read.
 publish:
-  provider: github
-  owner: markus-global
-  repo: markus
+  provider: generic
+  url: https://markus.global/releases/
