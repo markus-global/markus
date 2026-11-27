@@ -202,12 +202,12 @@ jobs:
           rm /tmp/cert.p12
           echo "DESKTOP_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
-      # `--publish never`: electron-builder no longer uploads anything. The GitHub
-      # Release is attached by softprops/action-gh-release below and R2 by the
-      # upload-to-hub job, so both channels carry the exact same artifacts.
+      # No `--publish never` here: electron-builder only writes latest*.yml (the
+      # feed) when publishing is enabled. rc.4 proved this the expensive way —
+      # with `--publish never` + generic provider every feed file was missing.
       - name: Package Electron app
         working-directory: packages/desktop
-        run: pnpm dist ${{ matrix.electron_args }} --publish never
+        run: pnpm dist ${{ matrix.electron_args }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -323,7 +323,7 @@ jobs:
       # unset, so the pipeline still produces an unsigned installer for forks.
       - name: Package + sign Electron app (Certum SimplySign)
         working-directory: packages/desktop
-        run: pnpm dist --win --x64 --publish never
+        run: pnpm dist --win --x64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CERTUM_EMAIL: ${{ secrets.CERTUM_EMAIL }}

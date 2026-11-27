@@ -28,6 +28,8 @@ interface AutoUpdaterHandle {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   autoRunAppAfterInstall: boolean;
+  /** Point the updater at a feed that is not the one baked into app-update.yml. */
+  setFeedURL(options: { provider: string; url: string }): void;
   /** Feed channel: `latest` for stable builds, `rc` for candidates. */
   channel: string;
   /** Follow the prerelease channel (GitHub provider only; harmless with generic). */
@@ -37,6 +39,15 @@ interface AutoUpdaterHandle {
   checkForUpdates(): Promise<{ updateInfo?: { version?: string } } | null>;
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
 }
+
+/**
+ * Where the desktop app reads its update feed.
+ *
+ * The website wildcard-forwards `/releases/*` to the R2 bucket (verified
+ * 2026-11-27), so this URL stays valid when a custom domain is attached later —
+ * the client never needs to know which storage backend answers.
+ */
+const UPDATE_FEED_URL = 'https://markus.global/releases/';
 
 let state: UpdateState = initialUpdateState();
 let updater: AutoUpdaterHandle | null = null;
@@ -111,12 +122,17 @@ async function runCheck(): Promise<void> {
       // not newer. Two different feed files, one directory, no tag juggling.
       updater.channel = 'latest';
       updater.allowPrerelease = false;
-      const stable = await updater.checkForUpdates();
-      const stableVersion = stable?.updateInfo?.version;
-      settled = !!stableVersion && compareVersions(stableVersion, app.getVersion()) > 0;
-      if (settled) {
-        log(`graduating from candidate to stable v${stableVersion}`);
-      } else {
+      try {
+        const stable = await updater.checkForUpdates();
+        const stableVersion = stable?.updateInfo?.version;
+        settled = !!stableVersion && compareVersions(stableVersion, app.getVersion()) > 0;
+        if (settled) log(`graduating from candidate to stable v${stableVersion}`);
+      } catch (err) {
+        // Nothing stable is published on this feed yet (the first stable release
+        // since the switch). That must not abort the candidate check.
+        log(`stable probe failed (${err instanceof Error ? err.message : String(err)}) — staying on the candidate channel`);
+      }
+      if (!settled) {
         updater.channel = 'rc';
         updater.allowPrerelease = true;
       }
@@ -218,7 +234,13 @@ async function start(): Promise<void> {
   updater.autoRunAppAfterInstall = true;
   updater.allowPrerelease = policy.isPrerelease;
   updater.channel = channelNameFor(policy);
-  log(`channel: ${updater.channel}, installOnQuit=${policy.installOnQuit} (v${app.getVersion()})`);
+  // The baked app-update.yml still says `github`: that config is also what makes
+  // electron-builder GENERATE latest*.yml, and pairing `--publish never` with
+  // `provider: generic` silently produced no feed at all (rc.4). So the build
+  // side stays on github and the READ side is redirected here — one writer, in
+  // this file.
+  updater.setFeedURL({ provider: 'generic', url: UPDATE_FEED_URL });
+  log(`feed: ${UPDATE_FEED_URL}, channel: ${updater.channel}, installOnQuit=${policy.installOnQuit} (v${app.getVersion()})`);
 
   updater.on('checking-for-update', () => publish({ type: 'checking' }));
   updater.on('update-available', ((info: { version: string }) => {

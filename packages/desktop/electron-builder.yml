@@ -114,16 +114,15 @@ linux:
   category: Development
   icon: build/icon.png
 
-# The updater reads its feed from OUR domain, not from GitHub. The website
-# wildcard-forwards /releases/* to the R2 bucket (verified 2026-11-27:
-#   /releases/any-name -> 307 -> www.markus.global/releases/any-name -> pub-*.r2.dev)
-# so this URL stays valid when a custom domain is attached later — the client
-# never needs to know which storage backend is behind it.
-#
-# Consequence: electron-builder no longer uploads releases to GitHub. The release
-# workflow passes `--publish never` and attaches artifacts itself (softprops for
-# the GitHub Release, aws s3 for R2) — GitHub stays the channel that already
-# installed builds read, R2 is the channel new builds read.
+# Keep `github` here on purpose. This block controls two different things:
+#   (a) whether electron-builder GENERATES the update-info files (latest*.yml);
+#   (b) where it UPLOADS them.
+# `--publish never` already disables (b), and with `provider: generic` it also
+# silently skips (a) — which is exactly how rc.4 lost every feed file and failed
+# its own verification step. So the built feed is produced by the github config
+# (proven since rc.1) and the CLIENT decides where to read from: updater.ts calls
+# setFeedURL() with https://markus.global/releases/ at startup.
 publish:
-  provider: generic
-  url: https://markus.global/releases/
+  provider: github
+  owner: markus-global
+  repo: markus
