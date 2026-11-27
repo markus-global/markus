@@ -112,7 +112,7 @@ export function UpdateNotice(): ReactElement | null {
           <button
             type="button"
             onClick={install}
-            className="px-3 py-1 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg transition-colors"
+            className="px-3 py-1 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs rounded-lg transition-colors"
           >
             {t('update.restart')}
           </button>
