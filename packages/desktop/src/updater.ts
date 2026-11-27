@@ -1,11 +1,12 @@
 import { app, BrowserWindow } from 'electron';
+import { compareVersions } from '@markus/shared';
 import {
   INITIAL_CHECK_DELAY_MS,
+  channelPolicy,
   initialUpdateState,
   nextCheckIntervalMs,
   reduceUpdateState,
   resolveUpdaterSupport,
-  shouldFollowPrereleaseChannel,
   type UpdateEvent,
   type UpdateState,
 } from './update-policy.js';
@@ -29,7 +30,7 @@ interface AutoUpdaterHandle {
   allowPrerelease: boolean;
   logger: unknown;
   on(event: string, listener: (...args: never[]) => void): void;
-  checkForUpdates(): Promise<unknown>;
+  checkForUpdates(): Promise<{ updateInfo?: { version?: string } } | null>;
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
 }
 
@@ -95,9 +96,25 @@ function scheduleNextCheck(delayMs: number): void {
 
 async function runCheck(): Promise<void> {
   if (!updater) return;
+  const policy = channelPolicy(app.getVersion());
   try {
     publish({ type: 'checking' });
-    await updater.checkForUpdates();
+    let settled = false;
+    if (policy.probeStableFirst) {
+      // Graduation: the GitHub provider only matches tags whose prerelease label
+      // equals the running one, so an installed rc would NEVER see the final
+      // `X.Y.Z`. Probe the stable feed first and prefer it when it is newer.
+      updater.allowPrerelease = false;
+      const stable = await updater.checkForUpdates();
+      const stableVersion = stable?.updateInfo?.version;
+      settled = !!stableVersion && compareVersions(stableVersion, app.getVersion()) > 0;
+      if (settled) {
+        log(`graduating from candidate to stable v${stableVersion}`);
+      } else {
+        updater.allowPrerelease = true;
+      }
+    }
+    if (!settled) await updater.checkForUpdates();
     consecutiveFailures = 0;
   } catch (err) {
     consecutiveFailures += 1;
@@ -165,15 +182,14 @@ async function start(): Promise<void> {
     updater.logger = console;
   }
 
-  // Download in the background, install when the user quits or clicks restart.
+  // Download in the background for everyone; whether it installs without asking
+  // is the channel policy's call (candidates wait for an explicit restart).
+  const policy = channelPolicy(app.getVersion());
   updater.autoDownload = true;
-  updater.autoInstallOnAppQuit = true;
+  updater.autoInstallOnAppQuit = policy.installOnQuit;
   updater.autoRunAppAfterInstall = true;
-  // rc builds follow the prerelease channel so an installed candidate can see
-  // the next candidate; stable builds keep resolving `releases/latest` so no
-  // user is ever silently pulled onto a prerelease.
-  updater.allowPrerelease = shouldFollowPrereleaseChannel(app.getVersion());
-  log(`channel: ${updater.allowPrerelease ? 'prerelease' : 'latest'} (v${app.getVersion()})`);
+  updater.allowPrerelease = policy.isPrerelease;
+  log(`channel: ${policy.isPrerelease ? 'prerelease (probe stable first)' : 'latest'}, installOnQuit=${policy.installOnQuit} (v${app.getVersion()})`);
 
   updater.on('checking-for-update', () => publish({ type: 'checking' }));
   updater.on('update-available', ((info: { version: string }) => {
