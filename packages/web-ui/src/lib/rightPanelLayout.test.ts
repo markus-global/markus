@@ -30,10 +30,27 @@ describe('rightPanelBounds — 40/60 split', () => {
     expect(autoPanelWidth).toBeLessThanOrEqual(maxPanelWidth);
   });
 
-  it('falls back to an even split when 40% would starve the chat', () => {
-    for (const space of [700, 800, 900, 999]) {
+  it('keeps the 40/60 split for EVERY shared width — the ratio never changes shape', () => {
+    for (let space = 400; space <= 3000; space += 10) {
       const { autoPanelWidth } = rightPanelBounds(space);
-      expect(autoPanelWidth).toBe(Math.round(space / 2));
+      const panelShare = autoPanelWidth / space;
+      expect(Math.abs(panelShare - PANEL_AUTO_SHARE)).toBeLessThan(0.01);
+    }
+  });
+
+  it('keeps the ratio identical whether L1/L2 are open or closed', () => {
+    // Same container, panel already open; L1 (+L2) then take 286px / 552px out
+    // of the shared space. Before the fix the second row flipped to 1:1.
+    const container = 1200;
+    const closed = rightPanelBounds(container - 14);
+    const l1 = rightPanelBounds(container - 286 - 14);
+    const l1l2 = rightPanelBounds(container - 552 - 14);
+    const ratio = (panel: number, space: number) => panel / space;
+    expect(ratio(l1.autoPanelWidth, container - 286 - 14)).toBeCloseTo(ratio(closed.autoPanelWidth, container - 14), 2);
+    expect(ratio(l1l2.autoPanelWidth, container - 552 - 14)).toBeCloseTo(ratio(closed.autoPanelWidth, container - 14), 2);
+    // and the panel always stays the wider of the two columns
+    for (const [panel, space] of [[l1.autoPanelWidth, container - 286 - 14], [l1l2.autoPanelWidth, container - 552 - 14]] as const) {
+      expect(panel).toBeGreaterThan(space - panel);
     }
   });
 

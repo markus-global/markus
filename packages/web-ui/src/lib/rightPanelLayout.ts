@@ -28,24 +28,25 @@ export interface RightPanelBounds {
  * Widths for the right panel given the space it shares with the chat column
  * (container width minus the L1/L2 rails and their resize handles).
  *
- * Rule: the panel takes 60%, the chat 40%. When the container is too narrow for
- * 40% to still leave `CHAT_MIN_W` for the chat, the two columns fall back to an
- * even split so neither collapses. `maxPanelWidth` is always clamped so
- * chat + panel can never overflow the shared space.
+ * **One rule, no exceptions: the panel takes PANEL_AUTO_SHARE (60%), the chat
+ * the rest (40%).** A "narrow container" exception used to switch to a 50/50
+ * split below 1000px, which meant that opening L1/L2 while the panel was open
+ * silently flipped the split from 4:6 to 1:1 — the panel shrank by a third and
+ * the chat took the majority. From the user's side that is not a resize, it is
+ * the ratio breaking (Owner 2026-11-27). The ratio must be invariant to which
+ * rails are open.
+ *
+ * `maxPanelWidth` is the hard cap that keeps the chat's floor intact — the
+ * invariant that prevents any overflow — and it is what the drag handle clamps
+ * to. For the auto split it never binds (60% always leaves 40%, and the chat
+ * floor is the smaller of CHAT_MIN_W and that 40%).
  */
 export function rightPanelBounds(spaceForChatPanel: number): RightPanelBounds {
   const space = Math.max(0, spaceForChatPanel);
-  // Chat's floor: CHAT_MIN_W, but never more than its 40% share (otherwise a
-  // narrow container would reserve the whole width for the chat).
   const chatReserve = Math.min(CHAT_MIN_W, Math.floor(space * (1 - PANEL_AUTO_SHARE)));
   const maxPanelWidth = Math.max(0, space - chatReserve);
-  const autoShare = space >= CHAT_MIN_W / (1 - PANEL_AUTO_SHARE)
-    ? Math.round(space * PANEL_AUTO_SHARE) // 40/60 split
-    : Math.round(space / 2); // narrow: even split
-  return {
-    maxPanelWidth,
-    autoPanelWidth: Math.max(0, Math.min(autoShare, maxPanelWidth)),
-  };
+  const autoPanelWidth = Math.max(0, Math.min(Math.round(space * PANEL_AUTO_SHARE), maxPanelWidth));
+  return { maxPanelWidth, autoPanelWidth };
 }
 
 /** What the L1/L2 rails should do on a right-panel open/close transition. */
