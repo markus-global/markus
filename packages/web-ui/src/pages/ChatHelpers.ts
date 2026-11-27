@@ -873,6 +873,9 @@ export function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): Ch
     agentName: isSelf ? undefined : m.senderName,
     agentId: isSelf ? undefined : m.senderId,
     isError,
+    // 群聊/通道消息同样只存原文（服务端写的 `⚠ Error: …`）：气泡展示时统一重生成，
+    // 所以刷新前前后后是同一句话。
+    ...(isError ? { errorRaw: m.text } : {}),
     replyToId: m.replyToId,
     replyToSender: m.replyToSender,
     replyToText: m.replyToText,

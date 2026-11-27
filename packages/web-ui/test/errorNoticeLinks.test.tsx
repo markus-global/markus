@@ -57,7 +57,7 @@ const stub = vi.hoisted(() => {
 import { LinkifiedText } from '../src/components/LinkifiedText.tsx';
 import { splitBareUrls } from '../src/components/markdown-utils.ts';
 import { AgentMessageBody } from '../src/pages/ChatComponents.tsx';
-import { dbMsgToChat } from '../src/pages/ChatHelpers.ts';
+import { dbMsgToChat, channelMsgToChat } from '../src/pages/ChatHelpers.ts';
 import type { ChatMsg } from '../src/pages/ChatHelpers.ts';
 
 const BILLING_URL = fx.BILLING_URL;
@@ -184,5 +184,90 @@ describe('翻页回来（历史行里只有 provider 原文）', () => {
 
     fireEvent.click(links[0]!);
     expect(stub.openExternal).toHaveBeenCalledWith(BILLING_URL);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 系统性回归：「刷新后变原话」不是 CU_EXCEEDED 一个类的问题，是**所有** provider
+// 报错的问题。这里按错误类建矩阵，两条持久化映射（单聊 / 群聊）都走一遍：
+//   · 不能漏出 provider 原话（错误码、request_id、JSON 体）；
+//   · 必须命中**该类**的友好文案（落到 aiGeneric 兜底也算错分类）；
+//   · 系统提示（本来就是人话）不得被包进 aiGeneric。
+// ─────────────────────────────────────────────────────────────────────────────
+const PROVIDER_ERROR_CASES: Array<{ name: string; raw: string; expectText: string }> = [
+  {
+    name: 'markus CU_EXCEEDED',
+    raw: '⚠ Error: [markus:qwen/qwen4-max] CU_EXCEEDED: Credits exhausted. Please top up or upgrade your plan.',
+    expectText: '余额不足，请充值或升级计划',
+  },
+  {
+    name: 'deepseek 402 insufficient balance',
+    raw: '⚠ Error: [deepseek:deepseek-v4-flash] OpenAI API error 402: {"error":{"message":"Insufficient Balance (request_id: 63b6ee7e-23e1-492c-be4f-9f96eb3905d2)","type":"insufficient_balance_error","param":null,"code":"invalid_request_error"}}',
+    expectText: 'team:errors.ai402',
+  },
+  {
+    name: '401 bad key',
+    raw: '⚠ Error: [openai:gpt-x] OpenAI API error 401: {"error":{"message":"Incorrect API key provided"}}',
+    expectText: 'team:errors.ai401',
+  },
+  {
+    name: '429 rate limited',
+    raw: '⚠ Error: [x:y] HTTP 429: rate limit reached',
+    expectText: 'team:errors.ai429',
+  },
+  {
+    name: 'context overflow',
+    raw: '⚠ Error: [x:y] CONTEXT OVERFLOW: requested 200000 tokens, maximum context length is 128000 tokens',
+    expectText: 'team:errors.aiContextOverflow',
+  },
+];
+
+describe('系统性：所有 provider 报错类的持久化行都重建为友好文案', () => {
+  for (const c of PROVIDER_ERROR_CASES) {
+    it(`单聊历史行：${c.name}`, () => {
+      const row = {
+        id: 'm_err', sessionId: 's1', role: 'assistant', content: c.raw,
+        createdAt: '2026-11-27T10:00:00.000Z', metadata: { isError: true },
+      } as never;
+      const { container } = render(
+        <AgentMessageBody msg={dbMsgToChat(row)} isStreaming={false} liveActivities={[]} />,
+      );
+      const shown = container.textContent ?? '';
+      // 原话不得漏出
+      expect(shown).not.toContain('request_id');
+      expect(shown).not.toContain('"error"');
+      expect(shown).not.toContain('insufficient_balance_error');
+      // 必须落到**该类**的文案，而不是 aiGeneric 兜底
+      expect(shown).toContain(c.expectText);
+      expect(shown).not.toContain('aiGeneric');
+    });
+
+    it(`群聊历史行：${c.name}`, () => {
+      const row = {
+        id: 'cm_err', text: c.raw, senderType: 'agent', senderName: 'A',
+        senderId: 'agt_x', createdAt: '2026-11-27T10:00:00.000Z', metadata: null,
+      } as never;
+      const msg = channelMsgToChat(row);
+      expect(msg.errorRaw).toBe(c.raw);
+      const { container } = render(<AgentMessageBody msg={msg} isStreaming={false} liveActivities={[]} />);
+      const shown = container.textContent ?? '';
+      expect(shown).not.toContain('request_id');
+      expect(shown).toContain(c.expectText);
+      expect(shown).not.toContain('aiGeneric');
+    });
+  }
+
+  it('系统提示（本来就是人话）原样显示，不被包进 aiGeneric', () => {
+    const note = '该 agent 已停止，这条消息没有投递。';
+    const { container } = render(
+      <AgentMessageBody
+        msg={{ id: 'm_note', sender: 'agent', text: note, time: '', isError: true, errorRaw: note } as never}
+        isStreaming={false}
+        liveActivities={[]}
+      />,
+    );
+    const shown = container.textContent ?? '';
+    expect(shown).toContain(note);
+    expect(shown).not.toContain('aiGeneric');
   });
 });
