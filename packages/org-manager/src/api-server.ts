@@ -10599,7 +10599,12 @@ EXPLANATION_END`;
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
-        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: defaultMaxWorkers() },
+        // 回显**生效值**：并发默认值只在 defaultMaxWorkers() 一处，前端不再猜一个魔数兜底。
+        concurrent: {
+          enabled: am.concurrentConfig?.enabled ?? true,
+          maxWorkers: am.concurrentConfig?.maxWorkers ?? defaultMaxWorkers(),
+          conflictPolicy: am.concurrentConfig?.conflictPolicy,
+        },
         // 任务上限：优先回显配置值；未配置时回显治理策略默认值，与
         // TaskService.checkTaskLimits 的实际生效口径保持一致。
         maxPendingTasksPerAgent:
@@ -10671,7 +10676,11 @@ EXPLANATION_END`;
       }
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
-        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: defaultMaxWorkers() },
+        concurrent: {
+          enabled: am.concurrentConfig?.enabled ?? true,
+          maxWorkers: am.concurrentConfig?.maxWorkers ?? defaultMaxWorkers(),
+          conflictPolicy: am.concurrentConfig?.conflictPolicy,
+        },
         maxPendingTasksPerAgent:
           am.maxPendingTasksPerAgent ?? this.taskService.getGovernancePolicy().maxPendingTasksPerAgent,
         maxPendingRequirementProposals:

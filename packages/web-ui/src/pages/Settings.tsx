@@ -565,7 +565,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         if (d && typeof d.maxPendingRequirementProposals === 'number') setAgentMaxReqProps(d.maxPendingRequirementProposals);
         if (d?.concurrent) {
           setConcEnabled(d.concurrent.enabled ?? true);
-          setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
+          // 后端回显的是**生效值**（未配置时已算好默认）。这里的 1 只是防御性兜底：
+          // 以前写 `?? 3` 等于在前端又立了一份「默认值」，改后端默认时它不会跟着变。
+          setConcMaxWorkers(d.concurrent.maxWorkers ?? 1);
           setConcConflictPolicy(d.concurrent.conflictPolicy ?? 'auto');
         }
         return true;
@@ -2654,7 +2656,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       concurrent: { enabled: concEnabled, maxWorkers: concMaxWorkers, conflictPolicy: concConflictPolicy },
                     });
                     setConcEnabled(d.concurrent.enabled);
-                    setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
+                    setConcMaxWorkers(d.concurrent.maxWorkers ?? 1);
                     setConcConflictPolicy(d.concurrent.conflictPolicy ?? 'auto');
                     setConcMsg({ type: 'ok', text: t('concurrent.saved') });
                   } catch { setConcMsg({ type: 'err', text: t('concurrent.failedToSave') }); }
