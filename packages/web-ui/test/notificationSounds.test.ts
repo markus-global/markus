@@ -17,6 +17,7 @@ import {
   DEFAULT_SOUND_PREFERENCES,
   SoundGate,
   cueForEvent,
+  cuePeakGain,
   parseSoundPreferences,
   playNotificationSound,
   previewSoundCue,
@@ -86,15 +87,17 @@ describe('事件目录（单一事实源）', () => {
     }
   });
 
-  it('每支音色的峰值与时长达到「听得见」的下限（Owner 2026-11-27 反馈：原来偏小偏短）', () => {
-    // 时长按语义分级：日常事件允许短（频繁出现，长了就是骚扰），需动手/出错的必须够长。
-    // 与业界 IM 提示音同一量级：Slack/Discord 的日常音 0.2–0.4s，macOS/iOS 的系统音 0.5–1s。
+  it('每支音色的整体峰值与时长达到「听得见」的下限（Owner 2026-11-27 反馈：原来偏小偏短）', () => {
+    // 口径是**整支音色叠加后**的峰值（cuePeakGain），不是单音 gain：厚音色靠多 voice 叠，
+    // 单音 gain 必须降下来才不削波。默认取单音 gain 会在厚重音色上给出错误结论。
     const LONG_CUES: SoundCue[] = ['attention', 'alert'];
     for (const def of NOTIFICATION_SOUND_EVENTS) {
       const notes = SOUND_CUES[def.cue];
-      const peak = Math.max(...notes.map((n) => n.gain));
+      const peak = cuePeakGain(notes);
       // 业界提示音峰值约 -10～-6 dBFS（线性 0.3～0.5）；低于 0.24 就是「嗒一下」。
       expect(peak, `${def.cue} 峰值太小`).toBeGreaterThanOrEqual(0.24);
+      // 也不能猛撞限幅器：normal 档应在它之下，loud 档才由它接住。
+      expect(peak, `${def.cue} 峰值太大，normal 档会被限幅器压扁`).toBeLessThanOrEqual(0.9);
       const spanMs = Math.max(...notes.map((n) => n.startMs + n.durationMs));
       const floor = LONG_CUES.includes(def.cue) ? 550 : 250;
       expect(spanMs, `${def.cue} 太短`).toBeGreaterThanOrEqual(floor);
@@ -102,6 +105,21 @@ describe('事件目录（单一事实源）', () => {
     const span = (cue: SoundCue) => Math.max(...SOUND_CUES[cue].map((n) => n.startMs + n.durationMs));
     expect(span('attention')).toBeGreaterThan(span('chime'));
     expect(span('alert')).toBeGreaterThan(span('pop'));
+  });
+
+  it('需要动手的两支不能「单薄」：必须有低频垫 + 非整数倍钟泛音（Owner 2026-11-27 反馈）', () => {
+    // 「单薄」的客观特征：全在 800 Hz 以上、泛音只有整倍、包络一碰到底。
+    // 这里钉两条一旦被改回就变红的性质：
+    //  ① 低频垫路（≤ 300 Hz）给「重量」；
+    //  ② 主音带非整数倍泛音（2.76×，钟的三度泛音）给「金属感」。
+    for (const cue of ['attention', 'ding'] as SoundCue[]) {
+      const notes = SOUND_CUES[cue];
+      expect(notes.some((n) => n.freq <= 300), `${cue} 缺低频垫，会听起来像蜂鸣器`).toBe(true);
+      const richest = notes.reduce((best, n) => ((n.overtones?.length ?? 0) > (best.overtones?.length ?? 0) ? n : best), notes[0]);
+      const mults = (richest.overtones ?? []).map((o) => o.mult);
+      expect(mults.length, `${cue} 主音泛音太少`).toBeGreaterThanOrEqual(2);
+      expect(mults.some((m) => !Number.isInteger(m)), `${cue} 缺非整数倍泛音，金属感出不来`).toBe(true);
+    }
   });
 
   it('事件 id 唯一', () => {

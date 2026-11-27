@@ -48,10 +48,18 @@ export const SOUND_CUES: Record<SoundCue, CueNote[]> = {
     { freq: 698.46, startMs: 0, durationMs: 170, wave: 'sine', gain: 0.3, overtones: [{ mult: 2, gain: 0.35 }] },
     { freq: 880.0, startMs: 120, durationMs: 320, wave: 'sine', gain: 0.28, overtones: [{ mult: 2, gain: 0.3 }, { mult: 3, gain: 0.1 }] },
   ],
-  /** 单音「叮」+ 高八度闪光：任务转待验收。 */
+  /**
+   * 单次钟击 + 低八度垫 + 长余韵：任务转待验收。
+   *
+   * 为什么改成钟而不是「叮」一下：单低频中高频加陡峭包络 = 电子蜂鸣器，
+   * 听感单薄。厚实感来自三件事 —— 低八度垫底（重量）、非整数倍泛音
+   * 2.76×（钟的「三度泛音」，金属感）、长衰减（余韵）。
+   */
   ding: [
-    { freq: 1046.5, startMs: 0, durationMs: 340, wave: 'triangle', gain: 0.28, overtones: [{ mult: 2, gain: 0.25 }] },
-    { freq: 2093.0, startMs: 0, durationMs: 150, wave: 'sine', gain: 0.1 },
+    { freq: 261.63, startMs: 0, durationMs: 760, wave: 'sine', gain: 0.09 },
+    { freq: 523.25, startMs: 0, durationMs: 700, wave: 'sine', gain: 0.08 },
+    { freq: 1046.5, startMs: 0, durationMs: 650, wave: 'sine', gain: 0.16, overtones: [{ mult: 2, gain: 0.32 }, { mult: 2.76, gain: 0.16 }, { mult: 4, gain: 0.08 }] },
+    { freq: 1567.98, startMs: 0, durationMs: 320, wave: 'sine', gain: 0.05 },
   ],
   /** 轻「啵」（两音上行，带一点弹性）：普通通知。 */
   pop: [
@@ -63,11 +71,17 @@ export const SOUND_CUES: Record<SoundCue, CueNote[]> = {
     { freq: 587.33, startMs: 0, durationMs: 200, wave: 'sine', gain: 0.28, overtones: [{ mult: 2, gain: 0.3 }] },
     { freq: 783.99, startMs: 130, durationMs: 340, wave: 'sine', gain: 0.26, overtones: [{ mult: 2, gain: 0.28 }] },
   ],
-  /** 三连 ping 后上扬：有审批等你处理（需动手，当前最长的一支）。 */
+  /**
+   * 低音垫 + 三音上行钟扫：有审批等你处理（需动手，当前最厚重的一支）。
+   *
+   * 与 `ding` 的区别不能只是音高：审批是「多件事等你逐个拍板」，所以是**三次**
+   * 敲击并逐级上行，且带 196 Hz 低频垫——手机外放上也能听出分量。
+   */
   attention: [
-    { freq: 880.0, startMs: 0, durationMs: 130, wave: 'triangle', gain: 0.27, overtones: [{ mult: 2, gain: 0.25 }] },
-    { freq: 880.0, startMs: 160, durationMs: 130, wave: 'triangle', gain: 0.27, overtones: [{ mult: 2, gain: 0.25 }] },
-    { freq: 1174.66, startMs: 320, durationMs: 300, wave: 'triangle', gain: 0.28, overtones: [{ mult: 2, gain: 0.25 }] },
+    { freq: 196.0, startMs: 0, durationMs: 520, wave: 'sine', gain: 0.1 },
+    { freq: 783.99, startMs: 0, durationMs: 430, wave: 'sine', gain: 0.14, overtones: [{ mult: 2, gain: 0.3 }, { mult: 2.76, gain: 0.15 }] },
+    { freq: 987.77, startMs: 150, durationMs: 400, wave: 'sine', gain: 0.13, overtones: [{ mult: 2, gain: 0.28 }, { mult: 2.76, gain: 0.12 }] },
+    { freq: 1174.66, startMs: 300, durationMs: 520, wave: 'sine', gain: 0.13, overtones: [{ mult: 2, gain: 0.3 }, { mult: 2.76, gain: 0.15 }] },
   ],
   /** 下行两音（低、闷，不尖叫）：出错 / 失败。 */
   alert: [
@@ -372,6 +386,29 @@ let audioContext: AudioContext | null = null;
 /** 逐音封顶：`loud` 档也不许把波形推平（削波听起来是破音，不是更响）。 */
 const PEAK_LIMIT = 0.85;
 
+/**
+ * 一支音色在任意时刻的峰值增益之和（按起止事件扫描，取最大值）。
+ *
+ * 用来回答两个问题：「这支音色在 `normal` 档会不会撞上限幅器」（测试断言）与
+ * 「音量参数该留多少余量」。同一时刻**先加后减**是高估 —— 宁可保守。
+ */
+export function cuePeakGain(notes: readonly CueNote[]): number {
+  const edges: Array<{ at: number; delta: number }> = [];
+  for (const note of notes) {
+    const voiceSum = note.gain * (1 + (note.overtones ?? []).reduce((sum, o) => sum + o.gain, 0));
+    edges.push({ at: note.startMs, delta: voiceSum });
+    edges.push({ at: note.startMs + note.durationMs, delta: -voiceSum });
+  }
+  edges.sort((a, b) => a.at - b.at || b.delta - a.delta);
+  let current = 0;
+  let peak = 0;
+  for (const edge of edges) {
+    current += edge.delta;
+    if (current > peak) peak = current;
+  }
+  return peak;
+}
+
 function webAudioPlayer(cue: SoundCue, volume: number): void {
   const Ctor =
     typeof window !== 'undefined'
@@ -390,6 +427,22 @@ function webAudioPlayer(cue: SoundCue, volume: number): void {
     if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
     const t0 = ctx.currentTime + 0.01;
 
+    // 支级音量 + 限幅器：音量档位乘在总线上，而不是逐音乘。
+    //
+    // 为什么需要限幅而不是「把每个音 clamp 到 0.85」：一支厚重的音色是多数个 voice
+    // 叠出来的（低频垫 + 基频 + 几个非整数倍泛音），逐音 clamp 管不住**叠加后**的
+    // 峰值 —— 那就是削波破音。限幅器（软压缩）在保住「更响」的同时把峰值压住，
+    // 这是业界做法，也是 `loud` 档真能听出差别的前提。
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(volume, t0);
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.setValueAtTime(-6, t0);
+    limiter.knee.setValueAtTime(6, t0);
+    limiter.ratio.setValueAtTime(12, t0);
+    limiter.attack.setValueAtTime(0.003, t0);
+    limiter.release.setValueAtTime(0.15, t0);
+    master.connect(limiter).connect(ctx.destination);
+
     /** 一个振荡器 + 包络；基频与每个泛音各一条，共享同一个时间窗。 */
     const voice = (freq: number, wave: OscillatorType, peak: number, start: number, end: number) => {
       const osc = ctx.createOscillator();
@@ -397,11 +450,11 @@ function webAudioPlayer(cue: SoundCue, volume: number): void {
       osc.type = wave;
       osc.frequency.setValueAtTime(freq, start);
       // 短促的 attack/release 包络，避免爆音（直接起停会听到「咔」）。
-      const level = Math.min(peak * volume, PEAK_LIMIT);
+      const level = Math.min(peak, PEAK_LIMIT);
       gain.gain.setValueAtTime(0.0001, start);
       gain.gain.exponentialRampToValueAtTime(Math.max(level, 0.0002), start + 0.012);
       gain.gain.exponentialRampToValueAtTime(0.0001, end);
-      osc.connect(gain).connect(ctx.destination);
+      osc.connect(gain).connect(master);
       osc.start(start);
       osc.stop(end + 0.02);
     };

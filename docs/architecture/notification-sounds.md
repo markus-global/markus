@@ -30,14 +30,33 @@ finishing everyday work must not create a soundtrack.
 
 ## Cue table
 
-| Cue id | Notes | Peak gain | Length | Used by |
+| Cue id | Notes | Peak | Length | Used by |
 |---|---|---|---|---|
-| `chime` | 698.46 Hz → 880 Hz, sine (+octave overtone) | 0.30 | 0.44 s | `agent-reply-complete` |
-| `attention` | 880 Hz ×2 → 1174.66 Hz, triangle (+octave) | 0.28 | 0.62 s | `approval-requested` |
-| `ding` | 1046.5 Hz triangle (+octave) + 2093 Hz sparkle | 0.28 | 0.34 s | `review-requested` |
+| `chime` | 698.46 Hz → 880 Hz, sine (+octave) | 0.30 | 0.44 s | `agent-reply-complete` |
+| `attention` | 196 Hz bed + three rising bells (784 / 988 / 1175 Hz, +2× and +2.76× partials) | 0.67 | 0.82 s | `approval-requested` |
+| `ding` | 262 Hz + 523 Hz beds + 1046.5 Hz bell (+2×, +2.76×, +4× partials) + 1568 Hz sparkle | 0.47 | 0.76 s | `review-requested` |
 | `pop` | 523.25 Hz → 659.25 Hz, sine (+octave) | 0.30 | 0.27 s | `notification` |
 | `alert` | 392 Hz → 311.13 Hz, triangle (+octave) | 0.32 | 0.60 s | `agent-reply-error`, `task-failed` |
 | `ask` | 587.33 Hz → 783.99 Hz, sine (+octave) | 0.28 | 0.47 s | `input-requested` |
+
+Peak is `cuePeakGain(cue)` — the summed gain of all voices *overlapping in time* (not a single
+note's gain), which is what the limiter actually sees.
+
+### Why some cues sounded "thin" and what makes them sound solid
+
+The first pass at `attention` / `ding` was all energy above 800 Hz with a single octave partial
+and a steep envelope — that is the recipe for a piezo buzzer, and the Owner reported exactly
+that ("单薄", 2026-11-27). Physical thickness needs three things, all of them now in the table:
+
+1. **A low bed** (196 Hz for `attention`, 262 + 523 Hz for `ding`). Mid/high content alone has no
+   weight on a laptop speaker.
+2. **Inharmonic partials** — 2.76× is the bell's tierce (a non-integer ratio). Integer-only
+   partials read as "electronic"; the inharmonic one is what makes metal sound like metal.
+3. **Overlapping strikes with long decay** — `attention` is three bells 150 ms apart that ring
+   into each other; `ding` is one strike with a 650 ms tail. Single short blips cannot be thick.
+
+Two cues may not share a semantic either: `ding` is one strike (a task finished its turn),
+`attention` is a rising triple (several things are waiting for your decision).
 
 ### Loudness and duration — the numbers that listenable
 
@@ -48,18 +67,22 @@ and too clipped (Owner, 2026-11-27).
 
 What the current cue table follows:
 
-- **Peak gain 0.26–0.32 per note** — same perceptual loudness as Slack / macOS cues. Every voice
-  is clamped to `PEAK_LIMIT = 0.85` after the volume multiplier, so `loud` cannot clip.
+- **Volume lives on a master bus with a limiter**, not per note. Per-note clamping cannot bound
+  the *sum* of overlapping voices, which is exactly how a thick cue clips. `loud` (×1.7) is
+  therefore genuinely louder: the `DynamicsCompressor` (threshold −6 dB, ratio 12:1) catches the
+  peaks instead of the gain stage flattening them.
 - **Overtones instead of a louder fundamental** — a pure sine at a given level sounds markedly
-  weaker than a triangle; each note may carry `overtones: [{ mult, gain }]` (an octave partial,
-  sometimes a fifth) which adds body without the harshness of pushing the fundamental up.
-- **Duration is a semantic signal** — recurring daily events stay short (`pop` 0.27 s, `ding`
-  0.34 s), events that need a decision run longer (`attention` 0.62 s, `alert` 0.60 s). A busy
-  queue therefore produces short ticks, while "you owe me an approval" gets attention.
-- Frequencies stay in 310–1200 Hz (plus quiet octaves) so cues do not sit on top of speech.
+  weaker than a triangle; each note may carry `overtones: [{ mult, gain }]` which adds body
+  without the harshness of pushing the fundamental up.
+- **Duration is a semantic signal** — recurring daily events stay short (`pop` 0.27 s), events
+  that need a decision run long (`attention` 0.82 s, `alert` 0.60 s). A busy queue therefore
+  produces short ticks, while "you owe me an approval" gets attention.
+- Frequencies stay in ~190–1600 Hz (plus quiet octaves) so cues do not sit on top of speech.
 
-Tests pin the floor (`peak ≥ 0.24`, long cues `≥ 550 ms`, daily cues `≥ 250 ms`) so a future
-"let me make it subtle" edit cannot silently regress into inaudible territory.
+Tests pin the floors so a later "make it subtle" edit cannot regress into inaudibility:
+`cuePeakGain ≥ 0.24` and `≤ 0.9` (below the limiter), long cues `≥ 550 ms`, daily cues
+`≥ 250 ms`. `attention` and `ding` additionally must keep a low bed (`≤ 300 Hz`) and an
+inharmonic partial — reverting either to a single high blip turns the suite red.
 
 ### How `input-requested` is told apart from an approval gate
 
