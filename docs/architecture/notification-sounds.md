@@ -159,6 +159,12 @@ events cover other tabs), so an open Settings page and the running app never dis
 
 ## Known limitations
 
+- **`attention` currently has no reachable production trigger.** The only producer of
+  `approval_request` notifications today is `request_user_input`, and every one of those is
+  tagged `askKind: 'input'` — which routes to `input-requested`, by design. The owner
+  reviewed this on 2026-11-27 and chose to keep the cue for preview only, rather than add a
+  gate entry point or delete it. Recorded here so nobody later assumes the approval cue is
+  firing in production when it is not.
 - Browser autoplay policy: audio needs one user gesture before the first cue. The player
   resumes the `AudioContext` opportunistically and silently skips a cue if the context is
   still suspended — the next event after any click works.
