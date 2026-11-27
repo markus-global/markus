@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus, isExternalIngressPolicy } from '@markus/shared';
+import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, UPLOAD_IMAGE_MAX_BYTES, UPLOAD_FILES_PER_REQUEST_MAX, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus, isExternalIngressPolicy } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -45,6 +45,7 @@ import {
   PROVIDER_DEFAULT_BASE_URLS,
   aggregateCacheHitRate,
   computeReplayRatio,
+  defaultMaxWorkers,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -4425,8 +4426,8 @@ export class APIServer {
       }
       const ext = match[1] === 'jpeg' ? 'jpg' : match[1]!;
       const buf = Buffer.from(match[2]!, 'base64');
-      if (buf.length > 2 * 1024 * 1024) {
-        this.json(res, 400, { error: 'Image too large (max 2MB)' });
+      if (buf.length > UPLOAD_IMAGE_MAX_BYTES) {
+        this.json(res, 400, { error: `Image too large (max ${Math.round(UPLOAD_IMAGE_MAX_BYTES / (1024 * 1024))}MB)` });
         return;
       }
       const avatarDir = join(homedir(), '.markus', 'avatars');
@@ -4479,8 +4480,8 @@ export class APIServer {
         this.json(res, 400, { error: 'files[] is required (array of { dataUrl, name })' });
         return;
       }
-      if (files.length > 10) {
-        this.json(res, 400, { error: 'Too many files (max 10 per request)' });
+      if (files.length > UPLOAD_FILES_PER_REQUEST_MAX) {
+        this.json(res, 400, { error: `Too many files (max ${UPLOAD_FILES_PER_REQUEST_MAX} per request)` });
         return;
       }
       const prefix = typeof body['prefix'] === 'string' ? body['prefix'] : undefined;
@@ -10598,7 +10599,7 @@ EXPLANATION_END`;
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
-        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
+        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: defaultMaxWorkers() },
         // 任务上限：优先回显配置值；未配置时回显治理策略默认值，与
         // TaskService.checkTaskLimits 的实际生效口径保持一致。
         maxPendingTasksPerAgent:
@@ -10670,7 +10671,7 @@ EXPLANATION_END`;
       }
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
-        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
+        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: defaultMaxWorkers() },
         maxPendingTasksPerAgent:
           am.maxPendingTasksPerAgent ?? this.taskService.getGovernancePolicy().maxPendingTasksPerAgent,
         maxPendingRequirementProposals:

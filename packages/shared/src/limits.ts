@@ -830,6 +830,32 @@ export const SHELL_SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
  *  discarded when exceeded to prevent unbounded memory growth. */
 export const SHELL_SESSION_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 
+// ─── Upload Limits ───────────────────────────────────────────────────────────
+
+/**
+ * Max bytes for an uploaded image (avatar / inline).
+ *
+ * Was 2 MB inline in the upload route. That number had **no victim**: the bytes
+ * land in the local avatars directory, so the only real cost is disk, and 2 MB
+ * rejects ordinary phone screenshots (retina PNGs are routinely 3–6 MB) — a
+ * limit that only ever hit legitimate work.
+ *
+ * 10 MB covers a full-resolution screenshot while still bounding a runaway
+ * upload. Deliberately NOT user-configurable: no user benefits from choosing a
+ * different number, and exposing it would add a knob nobody turns (the same
+ * judgement that keeps the tool-response limits out of Settings).
+ */
+export const UPLOAD_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Max number of files in one upload request.
+ *
+ * Kept at 10: each entry is buffered in memory during the parse, so the victim
+ * is the process, and 10 mixed with the per-file size cap already bounds a
+ * request. Exposed in Settings as read-only context rather than a knob.
+ */
+export const UPLOAD_FILES_PER_REQUEST_MAX = 10;
+
 // ─── Human-Approval Wait ─────────────────────────────────────────────────────
 
 /** Backstop timeout (ms) for mailbox items that are blocking on human approval.
