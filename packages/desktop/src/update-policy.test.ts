@@ -21,7 +21,8 @@ import {
   nextCheckIntervalMs,
   normalizePercent,
   reduceUpdateState,
-  shouldStartUpdater,
+  resolveUpdaterSupport,
+  shouldFollowPrereleaseChannel,
   type UpdateState,
 } from './update-policy.js';
 
@@ -104,11 +105,41 @@ describe('nextCheckIntervalMs', () => {
   });
 });
 
-describe('shouldStartUpdater', () => {
-  it('runs only for packaged, non-MAS builds', () => {
-    expect(shouldStartUpdater({ isMas: false, isPackaged: true })).toBe(true);
-    expect(shouldStartUpdater({ isMas: true, isPackaged: true })).toBe(false);
-    expect(shouldStartUpdater({ isMas: false, isPackaged: false })).toBe(false);
+describe('resolveUpdaterSupport', () => {
+  const base = { platform: 'darwin', isMas: false, isPackaged: true };
+
+  it('runs on packaged macOS and Windows builds', () => {
+    expect(resolveUpdaterSupport(base)).toEqual({ supported: true });
+    expect(resolveUpdaterSupport({ ...base, platform: 'win32' })).toEqual({ supported: true });
+  });
+
+  it('never runs in MAS builds (Apple owns updates)', () => {
+    expect(resolveUpdaterSupport({ ...base, isMas: true })).toEqual({ supported: false, reason: 'mas' });
+  });
+
+  it('never runs unpackaged (no app-update.yml feed in dev)', () => {
+    expect(resolveUpdaterSupport({ ...base, isPackaged: false })).toEqual({ supported: false, reason: 'unpackaged' });
+  });
+
+  it('requires APPIMAGE on Linux — a deb/rpm install has nothing to replace', () => {
+    expect(resolveUpdaterSupport({ ...base, platform: 'linux' })).toEqual({ supported: false, reason: 'no-appimage-env' });
+    expect(resolveUpdaterSupport({ ...base, platform: 'linux', appImagePath: '/opt/Markus.AppImage' })).toEqual({ supported: true });
+  });
+
+  it('refuses platforms electron-updater cannot drive', () => {
+    expect(resolveUpdaterSupport({ ...base, platform: 'freebsd' })).toEqual({ supported: false, reason: 'unsupported-platform' });
+  });
+});
+
+describe('shouldFollowPrereleaseChannel', () => {
+  it('lets an rc build follow the prerelease channel (otherwise rc.0 never sees rc.1)', () => {
+    expect(shouldFollowPrereleaseChannel('0.12.5-rc.0')).toBe(true);
+    expect(shouldFollowPrereleaseChannel('0.13.0-beta.2')).toBe(true);
+  });
+
+  it('keeps stable builds on the latest channel so no user is pulled onto an rc', () => {
+    expect(shouldFollowPrereleaseChannel('0.12.4')).toBe(false);
+    expect(shouldFollowPrereleaseChannel('1.0.0')).toBe(false);
   });
 });
 

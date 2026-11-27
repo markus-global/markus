@@ -115,15 +115,48 @@ export function nextCheckIntervalMs(consecutiveFailures: number): number {
 }
 
 /**
- * Whether the electron-updater path should run at all.
+ * Whether the electron-updater path can run at all, and why not when it cannot.
  *
- *  - MAS builds: Apple owns updates (Guideline 2.4.5) — never self-update, and
- *    electron-updater's Squirrel.Mac path is unusable inside the sandbox.
- *  - Unpackaged runs (`electron .` in dev): there is no `app-update.yml` feed,
- *    so every check would throw `ENOENT` and pollute logs with a fake failure.
+ * Every "no" here is a case where electron-updater would otherwise throw on
+ * every check and write a fake error into the log:
+ *  - MAS: Apple owns updates (Guideline 2.4.5), and Squirrel.Mac cannot run in
+ *    the sandbox.
+ *  - Unpackaged: there is no `app-update.yml` feed, so `checkForUpdates` throws
+ *    ENOENT in dev.
+ *  - Linux without `APPIMAGE`: electron-updater only supports Linux via
+ *    AppImageUpdater, which needs the `APPIMAGE` env var to know which file to
+ *    replace. A deb/rpm install has no writable AppImage → nothing to update.
  */
-export function shouldStartUpdater(options: { isMas: boolean; isPackaged: boolean }): boolean {
-  return !options.isMas && options.isPackaged;
+export type UpdaterSupport =
+  | { supported: true }
+  | { supported: false; reason: 'mas' | 'unpackaged' | 'no-appimage-env' | 'unsupported-platform' };
+
+export function resolveUpdaterSupport(options: {
+  platform: string;
+  isMas: boolean;
+  isPackaged: boolean;
+  appImagePath?: string | undefined;
+}): UpdaterSupport {
+  if (options.isMas) return { supported: false, reason: 'mas' };
+  if (!options.isPackaged) return { supported: false, reason: 'unpackaged' };
+  if (options.platform === 'darwin' || options.platform === 'win32') return { supported: true };
+  if (options.platform === 'linux') {
+    return options.appImagePath ? { supported: true } : { supported: false, reason: 'no-appimage-env' };
+  }
+  return { supported: false, reason: 'unsupported-platform' };
+}
+
+/**
+ * Prerelease installs follow the prerelease channel; stable installs never do.
+ *
+ * Without this, an rc build can never update itself: the GitHub provider's
+ * `latest` channel resolves to `releases/latest`, which excludes prereleases, so
+ * a running `0.12.5-rc.0` would never see `0.12.5-rc.1`. The mirror rule matters
+ * just as much — a stable install must NOT be offered an rc, or every user would
+ * be pulled onto the candidate channel.
+ */
+export function shouldFollowPrereleaseChannel(currentVersion: string): boolean {
+  return currentVersion.includes('-');
 }
 
 /** True when the UI should offer "restart to update" instead of a download link. */

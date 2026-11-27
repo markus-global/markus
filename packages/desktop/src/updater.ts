@@ -4,7 +4,8 @@ import {
   initialUpdateState,
   nextCheckIntervalMs,
   reduceUpdateState,
-  shouldStartUpdater,
+  resolveUpdaterSupport,
+  shouldFollowPrereleaseChannel,
   type UpdateEvent,
   type UpdateState,
 } from './update-policy.js';
@@ -24,6 +25,8 @@ interface AutoUpdaterHandle {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   autoRunAppAfterInstall: boolean;
+  /** Follow the prerelease channel (rc builds only — see shouldFollowPrereleaseChannel). */
+  allowPrerelease: boolean;
   logger: unknown;
   on(event: string, listener: (...args: never[]) => void): void;
   checkForUpdates(): Promise<unknown>;
@@ -135,12 +138,16 @@ export function installUpdateNow(): InstallResult {
 }
 
 async function start(): Promise<void> {
-  const allowed = shouldStartUpdater({
+  const support = resolveUpdaterSupport({
+    platform: process.platform,
     isMas: process.env['MARKUS_MAS'] === 'true',
     isPackaged: app.isPackaged,
+    // electron-updater only updates Linux via AppImageUpdater, which needs this
+    // to know which file to replace. A deb/rpm install has no writable AppImage.
+    appImagePath: process.env['APPIMAGE'],
   });
-  if (!allowed) {
-    log('skipped: MAS build or unpackaged run (no update feed to consult)');
+  if (!support.supported) {
+    log(`skipped: ${support.reason}`);
     return;
   }
 
@@ -162,6 +169,11 @@ async function start(): Promise<void> {
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = true;
   updater.autoRunAppAfterInstall = true;
+  // rc builds follow the prerelease channel so an installed candidate can see
+  // the next candidate; stable builds keep resolving `releases/latest` so no
+  // user is ever silently pulled onto a prerelease.
+  updater.allowPrerelease = shouldFollowPrereleaseChannel(app.getVersion());
+  log(`channel: ${updater.allowPrerelease ? 'prerelease' : 'latest'} (v${app.getVersion()})`);
 
   updater.on('checking-for-update', () => publish({ type: 'checking' }));
   updater.on('update-available', ((info: { version: string }) => {

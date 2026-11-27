@@ -63,6 +63,34 @@ successful download must not hide an update the user could install right now.
 - Errors are **not** shown to the user as a banner; a background check that fails
   must not nag. They are logged, and the next check clears the state.
 
+### Platform support matrix
+
+`resolveUpdaterSupport()` in `update-policy.ts` is the single decision point. It
+returns a **reason** when it says no, so the log explains itself:
+
+| Platform / mode | Runs? | Why |
+|---|---|---|
+| macOS, packaged, non-MAS | yes | Squirrel.Mac + `latest-mac.yml` |
+| Windows, packaged | yes | `NsisUpdater` + `latest.yml` |
+| Linux, packaged, launched from an AppImage | yes | `AppImageUpdater` (needs `$APPIMAGE`) |
+| Linux, packaged, deb/rpm install | **no** (`no-appimage-env`) | nothing writable to replace in place |
+| MAS build | **no** (`mas`) | App Store owns updates |
+| Unpackaged (`electron .`) | **no** (`unpackaged`) | no `app-update.yml` feed → ENOENT |
+
+### Release channel: stable vs prerelease
+
+`shouldFollowPrereleaseChannel(app.getVersion())` sets `autoUpdater.allowPrerelease`:
+
+- version contains `-` (e.g. `0.12.5-rc.0`) → follow prereleases, so an installed
+  candidate can see the next candidate (`rc.0` → `rc.1`).
+- stable version → `releases/latest` only. **This is what stops an rc from being
+  pushed to every user**, and it is also why a stable install will never offer an
+  rc: GitHub's `latest` endpoint excludes prereleases.
+
+Consequence worth remembering when testing a candidate: an installed **stable**
+build cannot see an rc. To exercise the update chain on a candidate you must
+install `rc.N` by hand once, then publish `rc.N+1`.
+
 ## 2. Platform requirements
 
 ### macOS
@@ -90,39 +118,45 @@ successful download must not hide an update the user could install right now.
 
 ### Windows
 
-- `latest.yml` + NSIS installer + `.blockmap` for differential download. Already
-  working; no self-update code differs per platform beyond the guard.
+- `latest.yml` + NSIS installer + `.blockmap` for differential download.
 - `oneClick: false` does **not** disable auto-update: electron-updater invokes the
-  assisted installer with `/S` (silent).
+  assisted installer with `/S` (silent). Per-user install (`perMachine: false`)
+  means no UAC prompt.
 - The running `.exe` cannot be replaced, so install happens after process exit.
+- Gate: `node scripts/verify-update-feed.mjs --platform win` — the feed must name
+  an `.exe` and that `.exe`'s `.blockmap` must exist (missing blockmap still
+  works, but every update becomes a ~100 MB full download instead of a delta).
 
 ### Linux
 
-- AppImage: `latest-linux.yml` + in-place file replacement (requires the
-  `APPIMAGE` env var, set by the AppImage runtime).
-- deb/rpm distribution is the package manager's job — the app must not
-  self-elevate.
+- AppImage only: `latest-linux.yml` + in-place replacement of the file named by
+  `$APPIMAGE`. Started from anywhere else (deb/rpm/tar.gz) the updater reports
+  `no-appimage-env` and does nothing — by design, not a silent failure.
+- deb/rpm distribution is the package manager's job; the app must not self-elevate.
+- Gate: `node scripts/verify-update-feed.mjs --platform linux` — the feed must
+  name an `.AppImage`.
 
-## 3. Release gate
+### 3. Release gate
 
-`scripts/verify-mac-update-feed.mjs` reads the **build output**, not the config,
-and fails on every failure mode above:
+`scripts/verify-update-feed.mjs` reads the **build output**, not the config, and
+fails on every failure mode above. It covers all three platforms:
 
 ```bash
-node scripts/verify-mac-update-feed.mjs                # after a mac build
-scripts/verify-mac-artifacts.sh [--require-developer-id]
+node scripts/verify-update-feed.mjs --platform mac|win|linux|all
+scripts/verify-mac-artifacts.sh [--require-developer-id|--require-notarized]   # mac extras
 ```
 
-Checks: 2 DMGs + 2 ZIPs, per-arch correctness (`lipo`), signatures
-(`codesign --verify`), notarization (`spctl`, `stapler validate`, only with
-`--require-developer-id`), and the feed (zip-only, both arches, sha512 and size
-matching the files on disk).
+Checks: per-platform artifact selectable (zip per arch / exe + blockmap /
+AppImage), version matches the packaged version, sha512 + size matching the files
+on disk; on mac additionally 2 DMGs + 2 ZIPs, per-arch `lipo`, `codesign
+--verify`, and optionally Gatekeeper + stapled-ticket validation.
 
 It runs in:
 
-- `.github/workflows/build-desktop-test.yml` — every PR (structure only).
-- `.github/workflows/publish.yml` — every release, with `--require-developer-id`
-  when the Apple certificate secret is present.
+- `.github/workflows/build-desktop-test.yml` — every PR (structure only, all
+  platforms).
+- `.github/workflows/publish.yml` — every release, with `--require-developer-id
+  --require-notarized` on mac when the Apple certificate secret is present.
 
 ## 4. What a release must contain on macOS
 

@@ -66,11 +66,18 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      # Same gate as macOS: the feed must name an installer electron-updater can
+      # actually run, plus its differential blockmap.
+      - name: Verify Windows update feed is installable
+        run: node scripts/verify-update-feed.mjs --platform win
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: markus-windows-x64-unsigned
-          path: packages/desktop/dist-electron/*.exe
+          path: |
+            packages/desktop/dist-electron/*.exe
+            packages/desktop/dist-electron/latest.yml
           retention-days: 14
           if-no-files-found: error
 
@@ -109,9 +116,9 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       # Guards the one thing a config file cannot prove: that the produced feed is
-      # something Squirrel.Mac can install (zip, both arches, sha512 matches).
+      # something Squirrel.Mac can install (zip selectable per arch, sha512 match).
       - name: Verify macOS update feed is installable
-        run: node scripts/verify-mac-update-feed.mjs
+        run: node scripts/verify-update-feed.mjs --platform mac
 
       - name: Upload app
         uses: actions/upload-artifact@v4

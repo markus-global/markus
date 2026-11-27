@@ -42,7 +42,7 @@ mac:
   # drive on macOS — cannot apply a DMG; it needs the .zip artifact plus a
   # `latest-mac.yml` that points at it. Without `zip`, every mac check dies with
   # ERR_UPDATER_ZIP_FILE_NOT_FOUND (that was the real state until this changed).
-  # `scripts/verify-mac-update-feed.mjs` guards it in CI; do not drop `zip` to
+  # `scripts/verify-update-feed.mjs` guards it in CI; do not drop `zip` to
   # "save a release asset".
   target:
     - dmg

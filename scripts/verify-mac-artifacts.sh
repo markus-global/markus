@@ -20,7 +20,8 @@
 #   5. With --require-notarized: Gatekeeper assessment + stapled ticket pass.
 #      Implies --require-developer-id. Only usable on a release build — an
 #      intentionally unsigned CI build must not use either flag.
-#   6. `scripts/verify-mac-update-feed.mjs` passes (zip-only, both arches, sha512).
+#   6. `scripts/verify-update-feed.mjs --platform mac` passes (zip selectable for
+#      both arches, sha512 matching).
 #
 # Usage: scripts/verify-mac-artifacts.sh [--dir <dist-electron>] [--require-developer-id] [--require-notarized]
 set -euo pipefail
@@ -132,6 +133,6 @@ for zip in "${zips[@]}"; do
 done
 
 info "verify update feed"
-node "$REPO_ROOT/scripts/verify-mac-update-feed.mjs" --dir "$DIST_DIR"
+node "$REPO_ROOT/scripts/verify-update-feed.mjs" --dir "$DIST_DIR" --platform mac
 
 echo "✔ macOS artifacts verified (${#dmgs[@]} DMGs, ${#zips[@]} update ZIPs)"

@@ -228,6 +228,10 @@ jobs:
             bash scripts/verify-mac-artifacts.sh
           fi
 
+      - name: Verify Linux update feed
+        if: matrix.platform == 'linux'
+        run: node scripts/verify-update-feed.mjs --platform linux
+
       - name: Cleanup Apple keychain
         if: always() && matrix.platform == 'darwin' && env.DESKTOP_KEYCHAIN != ''
         run: security delete-keychain "$DESKTOP_KEYCHAIN" 2>/dev/null || true
@@ -243,6 +247,7 @@ jobs:
             packages/desktop/dist-electron/*.AppImage
             packages/desktop/dist-electron/latest-mac.yml
             packages/desktop/dist-electron/latest.yml
+            packages/desktop/dist-electron/latest-linux.yml
           retention-days: 5
 
   # Windows is built in its own job so the Certum SimplySign signing secrets can
@@ -321,11 +326,17 @@ jobs:
           CERTUM_EMAIL: ${{ secrets.CERTUM_EMAIL }}
           CERTUM_OTP: ${{ secrets.CERTUM_OTP }}
 
+      - name: Verify Windows update feed
+        shell: bash
+        run: node scripts/verify-update-feed.mjs --platform win
+
       - name: Upload Electron artifacts
         uses: actions/upload-artifact@v4
         with:
           name: markus-desktop-win-x64
-          path: packages/desktop/dist-electron/*.exe
+          path: |
+            packages/desktop/dist-electron/*.exe
+            packages/desktop/dist-electron/latest.yml
           retention-days: 5
 
   github-release:
