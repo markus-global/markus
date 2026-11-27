@@ -77,19 +77,34 @@ returns a **reason** when it says no, so the log explains itself:
 | MAS build | **no** (`mas`) | App Store owns updates |
 | Unpackaged (`electron .`) | **no** (`unpackaged`) | no `app-update.yml` feed → ENOENT |
 
-### Release channel: stable vs prerelease
+### Channel policy: stable vs candidate
 
-`shouldFollowPrereleaseChannel(app.getVersion())` sets `autoUpdater.allowPrerelease`:
+`channelPolicy(currentVersion)` in `update-policy.ts` is the entire "who gets what"
+rule. The channel follows the **installed build** (the Chrome Beta / VS Code
+Insiders / Firefox Beta model) — there is no global toggle:
 
-- version contains `-` (e.g. `0.12.5-rc.0`) → follow prereleases, so an installed
-  candidate can see the next candidate (`rc.0` → `rc.1`).
-- stable version → `releases/latest` only. **This is what stops an rc from being
-  pushed to every user**, and it is also why a stable install will never offer an
-  rc: GitHub's `latest` endpoint excludes prereleases.
+| Running build | Sees | Installs |
+|---|---|---|
+| stable `0.12.4` | stable releases only | silently, when the app quits |
+| candidate `0.12.5-rc.N` | the next candidate **and** the stable release of the same base version | only when the user clicks **Restart to update** |
 
-Consequence worth remembering when testing a candidate: an installed **stable**
-build cannot see an rc. To exercise the update chain on a candidate you must
-install `rc.N` by hand once, then publish `rc.N+1`.
+Two rules produce that table, and both were learned the hard way:
+
+1. **A candidate must not install silently** (`installOnQuit: false`). A broken
+   candidate replacing a working build while the user is away is exactly the kind
+   of surprise that makes people distrust auto-update. Download stays in the
+   background; the switch is the user's.
+2. **A candidate must be able to graduate** (`probeStableFirst: true`). The GitHub
+   provider only matches tags whose prerelease label equals the running one, so an
+   installed `0.12.5-rc.1` would otherwise *never* see `0.12.5` — it would track
+   `-rc.*` forever, and once those are deleted it would throw
+   `ERR_UPDATER_NO_PUBLISHED_VERSIONS`. Each check therefore probes the stable feed
+   first (`allowPrerelease = false`), graduates when the stable version is newer,
+   and only then falls back to the candidate feed.
+
+Consequence for testing: a **stable** install cannot see a candidate at all
+(GitHub's `latest` excludes prereleases), so exercising the chain on a candidate
+requires installing `rc.N` by hand once and then publishing `rc.N+1`.
 
 ## 2. Platform requirements
 

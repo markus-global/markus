@@ -22,7 +22,7 @@ import {
   normalizePercent,
   reduceUpdateState,
   resolveUpdaterSupport,
-  shouldFollowPrereleaseChannel,
+  channelPolicy,
   type UpdateState,
 } from './update-policy.js';
 
@@ -131,15 +131,26 @@ describe('resolveUpdaterSupport', () => {
   });
 });
 
-describe('shouldFollowPrereleaseChannel', () => {
-  it('lets an rc build follow the prerelease channel (otherwise rc.0 never sees rc.1)', () => {
-    expect(shouldFollowPrereleaseChannel('0.12.5-rc.0')).toBe(true);
-    expect(shouldFollowPrereleaseChannel('0.13.0-beta.2')).toBe(true);
+describe('channelPolicy', () => {
+  it('stable: latest channel only, and installs silently on quit', () => {
+    expect(channelPolicy('0.12.4')).toEqual({
+      isPrerelease: false,
+      probeStableFirst: false,
+      installOnQuit: true,
+    });
   });
 
-  it('keeps stable builds on the latest channel so no user is pulled onto an rc', () => {
-    expect(shouldFollowPrereleaseChannel('0.12.4')).toBe(false);
-    expect(shouldFollowPrereleaseChannel('1.0.0')).toBe(false);
+  it('candidate: follows prereleases, probes stable first, and never installs silently', () => {
+    expect(channelPolicy('0.12.5-rc.1')).toEqual({
+      isPrerelease: true,
+      probeStableFirst: true,
+      installOnQuit: false,
+    });
+  });
+
+  it('treats any prerelease suffix as a candidate, not just rc', () => {
+    expect(channelPolicy('0.13.0-beta.2').installOnQuit).toBe(false);
+    expect(channelPolicy('1.0.0').installOnQuit).toBe(true);
   });
 });
 

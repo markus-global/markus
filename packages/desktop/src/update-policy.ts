@@ -147,16 +147,40 @@ export function resolveUpdaterSupport(options: {
 }
 
 /**
- * Prerelease installs follow the prerelease channel; stable installs never do.
+ * Channel policy for the running build — the whole "who gets what update" rule in
+ * one place.
  *
- * Without this, an rc build can never update itself: the GitHub provider's
- * `latest` channel resolves to `releases/latest`, which excludes prereleases, so
- * a running `0.12.5-rc.0` would never see `0.12.5-rc.1`. The mirror rule matters
- * just as much — a stable install must NOT be offered an rc, or every user would
- * be pulled onto the candidate channel.
+ * Channel follows the installed build (Chrome Beta / VS Code Insiders / Firefox
+ * Beta all work this way): a stable install never sees a prerelease, and a
+ * prerelease install keeps tracking prereleases. Two consequences were not
+ * obvious until they bit us:
+ *
+ *  1. **prerelease can never see the stable release** (GitHubProvider only
+ *     matches tags whose prerelease identifier equals the current one), so a
+ *     candidate would be stuck on the candidate channel forever. Hence
+ *     `probeStableFirst`: a candidate probes the stable feed first and graduates
+ *     as soon as the final `X.Y.Z` exists.
+ *  2. **A candidate must not be installed silently.** A stable build downloads in
+ *     the background and installs on quit; a candidate downloads in the
+ *     background and waits for an explicit "restart to update", because a broken
+ *     candidate should not replace a working build while the user is away.
  */
-export function shouldFollowPrereleaseChannel(currentVersion: string): boolean {
-  return currentVersion.includes('-');
+export interface ChannelPolicy {
+  /** Running build is a prerelease (its version carries a `-suffix`). */
+  isPrerelease: boolean;
+  /** Probe the stable feed before the prerelease feed (graduation). */
+  probeStableFirst: boolean;
+  /** Install without asking, when the app quits. */
+  installOnQuit: boolean;
+}
+
+export function channelPolicy(currentVersion: string): ChannelPolicy {
+  const isPrerelease = currentVersion.includes('-');
+  return {
+    isPrerelease,
+    probeStableFirst: isPrerelease,
+    installOnQuit: !isPrerelease,
+  };
 }
 
 /** True when the UI should offer "restart to update" instead of a download link. */
