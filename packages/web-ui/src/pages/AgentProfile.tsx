@@ -14,6 +14,7 @@ import { isActivityLive, liveRefSet } from '../lib/workUnitLiveness.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, groupByEntity, workUnitEntityLabel, workUnitEntityIcon, withResidentLoopGroup, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { MAILBOX_STATUS_FILTERS, statusFilterParam } from '../lib/mailboxStatusFilters.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { LinkifiedText } from '../components/LinkifiedText.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar } from '../components/Avatar.tsx';
@@ -563,7 +564,7 @@ function OverviewTab({ agent, externalInfo, t, canManageAgents, highlightMailbox
               {agent.state.lastErrorAt && <span className="text-[10px] text-red-500/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>}
             </div>
             <pre className="text-[11px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-red-500/5 rounded p-2">
-              {friendlyAgentError(agent.state.lastError, t) || agent.state.lastError || t('agent:profilePage.overview.errorFallback')}
+              <LinkifiedText text={friendlyAgentError(agent.state.lastError, t) || agent.state.lastError || t('agent:profilePage.overview.errorFallback')} />
             </pre>
           </div>
         )}

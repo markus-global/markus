@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { api, isAuthExpiredError, type AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { LinkifiedText } from '../components/LinkifiedText.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
   MemoExecEntryRow,
@@ -1160,6 +1161,11 @@ export const AgentMessageBody = memo(function AgentMessageBody({
 }) {
   const { t } = useTranslation(['team', 'common']);
   const isStopped = msg.isStopped;
+  // 「这条系统注释归谁渲染」只能有一个答案。以前它有两个渲染点：正文兜底
+  // （MarkdownMessage，链接会开内嵌右侧栏）和气泡底部的 ended-early 注释
+  // （纯 <span>，链接是死文本）—— 同一句话在用户眼里可以是可点、不可以点，
+  // 点下去还能去两个不同的地方。这里先用一个判据定归属，两处都读它。
+  const isErrorNotice = !!(msg.isError || (msg.text ?? '').startsWith('⚠'));
   // 过程（思考/工具）默认折成一行，流式中和结束后**同一套结构** ——
   // 展开状态由每个过程块自己持有（见 ProcessRun）。
   // 这轮结束后，最终结果之前的一切还会再整体折进顶部一行
@@ -1248,6 +1254,13 @@ export const AgentMessageBody = memo(function AgentMessageBody({
     // 于是「思考→工具→思考→工具」把气泡拉成一列折叠行（老板 2026-10-18 截图）。
     // 中断/异常结束的回合不折叠 —— 见 visibleTimelineBlocks 的说明。
     const interrupted = !!(isStopped || msg.isError);
+    // 这句系统注释只能有一个渲染点：
+    //   • 正文块里已经有一模一样的 ⚠ 文本（历史消息把原始报错存成了 text 段）
+    //     → 由正文块渲染，注释行不再重复；
+    //   • 否则 → 由气泡底部的 ended-early 注释行渲染，正文块不得再拿 msg.text 重复一遍。
+    const errorNoticeInAnnotation = !isStreaming && isErrorNotice && !!msg.text && !(
+      segments?.some(s => s.type === 'text' && s.content && (s.content === msg.text || s.content.startsWith('⚠')))
+    );
     const timeline = visibleTimelineBlocks(blocks, {
       isStreaming,
       interrupted,
@@ -1326,9 +1339,17 @@ export const AgentMessageBody = memo(function AgentMessageBody({
         )}
 
         {/* 没有任何正文块时退回 msg.text（正文只存在 text 字段里的历史消息）。
-            有正文块时绝不重复输出 —— 正文由上面的块负责。 */}
+            有正文块时绝不重复输出 —— 正文由上面的块负责。
+            错误/告警这种**系统注释**不走 Markdown：Markdown 里的外链会开内嵌
+            右侧栏，而「去充值」必须在系统浏览器里带着用户自己的登录态完成。 */}
         {!hasTextBlock && displayText && (
-          <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
+          isErrorNotice
+            ? (errorNoticeInAnnotation ? null : (
+              <div className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">
+                <LinkifiedText text={displayText.replace(/^⚠\s*/, '')} />
+              </div>
+            ))
+            : <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
         )}
 
         {inlineCards.map(c => c.kind === 'task'
@@ -1345,9 +1366,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
         {/* Abnormally finished turn → a quiet annotation, never a red warning.
             The reason is a SYSTEM note (kept out of `segments`), so this still shows
             when the timeline only captured tool rows before the stream died. */}
-        {!isStreaming && (msg.isError || msg.text.startsWith('⚠')) && msg.text && !(
-          segments?.some(s => s.type === 'text' && s.content && (s.content === msg.text || s.content.startsWith('⚠')))
-        ) && (
+        {errorNoticeInAnnotation && (
           <div className="flex items-start gap-1.5 mt-2 text-[11px] text-fg-tertiary leading-relaxed">
             <svg
               className="w-3 h-3 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none"
@@ -1359,7 +1378,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
             <span className="min-w-0">
               <span className="text-fg-secondary">{t('page.endedEarly')}</span>
               <span className="mx-1">·</span>
-              <span>{msg.text.replace(/^⚠\s*/, '')}</span>
+              <span><LinkifiedText text={msg.text.replace(/^⚠\s*/, '')} /></span>
             </span>
           </div>
         )}
@@ -1399,7 +1418,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
       )}
       {legacyText
         ? (msg.isError || legacyText.startsWith('⚠')
-          ? <p className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">{legacyText.replace(/^⚠\s*/, '')}</p>
+          ? <p className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap"><LinkifiedText text={legacyText.replace(/^⚠\s*/, '')} /></p>
           : <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} />)
         : null}
       {!isStreaming && !legacyText && !hasActivities && !isStopped && msg.sender === 'agent' && msg.emptyReply === true && (
