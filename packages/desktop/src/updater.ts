@@ -3,6 +3,7 @@ import { compareVersions } from '@markus/shared';
 import { setAppQuitting } from './app-lifecycle.js';
 import {
   INITIAL_CHECK_DELAY_MS,
+  channelNameFor,
   channelPolicy,
   initialUpdateState,
   nextCheckIntervalMs,
@@ -27,7 +28,9 @@ interface AutoUpdaterHandle {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   autoRunAppAfterInstall: boolean;
-  /** Follow the prerelease channel (rc builds only — see shouldFollowPrereleaseChannel). */
+  /** Feed channel: `latest` for stable builds, `rc` for candidates. */
+  channel: string;
+  /** Follow the prerelease channel (GitHub provider only; harmless with generic). */
   allowPrerelease: boolean;
   logger: unknown;
   on(event: string, listener: (...args: never[]) => void): void;
@@ -102,9 +105,11 @@ async function runCheck(): Promise<void> {
     publish({ type: 'checking' });
     let settled = false;
     if (policy.probeStableFirst) {
-      // Graduation: the GitHub provider only matches tags whose prerelease label
-      // equals the running one, so an installed rc would NEVER see the final
-      // `X.Y.Z`. Probe the stable feed first and prefer it when it is newer.
+      // Graduation: a candidate must be able to leave the candidate channel once
+      // the final X.Y.Z ships, so probe the STABLE feed (`latest-mac.yml`) first
+      // and only fall back to the candidate feed (`rc-mac.yml`) when stable is
+      // not newer. Two different feed files, one directory, no tag juggling.
+      updater.channel = 'latest';
       updater.allowPrerelease = false;
       const stable = await updater.checkForUpdates();
       const stableVersion = stable?.updateInfo?.version;
@@ -112,6 +117,7 @@ async function runCheck(): Promise<void> {
       if (settled) {
         log(`graduating from candidate to stable v${stableVersion}`);
       } else {
+        updater.channel = 'rc';
         updater.allowPrerelease = true;
       }
     }
@@ -211,7 +217,8 @@ async function start(): Promise<void> {
   updater.autoInstallOnAppQuit = policy.installOnQuit;
   updater.autoRunAppAfterInstall = true;
   updater.allowPrerelease = policy.isPrerelease;
-  log(`channel: ${policy.isPrerelease ? 'prerelease (probe stable first)' : 'latest'}, installOnQuit=${policy.installOnQuit} (v${app.getVersion()})`);
+  updater.channel = channelNameFor(policy);
+  log(`channel: ${updater.channel}, installOnQuit=${policy.installOnQuit} (v${app.getVersion()})`);
 
   updater.on('checking-for-update', () => publish({ type: 'checking' }));
   updater.on('update-available', ((info: { version: string }) => {

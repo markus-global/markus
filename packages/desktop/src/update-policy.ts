@@ -183,6 +183,17 @@ export function channelPolicy(currentVersion: string): ChannelPolicy {
   };
 }
 
+/**
+ * Feed-file channel name. electron-updater resolves `<channel><platform>.yml`,
+ * so candidates read `rc-mac.yml` / `rc.yml` / `rc-linux.yml` while stable builds
+ * read `latest-mac.yml` / `latest.yml` / `latest-linux.yml`. Keeping them as
+ * separate files in one directory is what lets both channels be published from
+ * the same release run without either overwriting the other.
+ */
+export function channelNameFor(policy: ChannelPolicy): 'rc' | 'latest' {
+  return policy.isPrerelease ? 'rc' : 'latest';
+}
+
 /** True when the UI should offer "restart to update" instead of a download link. */
 export function isActionablePhase(phase: UpdatePhase): boolean {
   return phase === 'downloading' || phase === 'ready';

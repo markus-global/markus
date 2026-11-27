@@ -23,6 +23,7 @@ import {
   reduceUpdateState,
   resolveUpdaterSupport,
   channelPolicy,
+  channelNameFor,
   type UpdateState,
 } from './update-policy.js';
 
@@ -151,6 +152,11 @@ describe('channelPolicy', () => {
   it('treats any prerelease suffix as a candidate, not just rc', () => {
     expect(channelPolicy('0.13.0-beta.2').installOnQuit).toBe(false);
     expect(channelPolicy('1.0.0').installOnQuit).toBe(true);
+  });
+
+  it('maps the policy to a feed channel name (separate files, one directory)', () => {
+    expect(channelNameFor(channelPolicy('0.12.4'))).toBe('latest');
+    expect(channelNameFor(channelPolicy('0.12.5-rc.1'))).toBe('rc');
   });
 });
 
