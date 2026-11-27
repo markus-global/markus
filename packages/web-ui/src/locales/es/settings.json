@@ -1589,5 +1589,58 @@
     "secretOnce": "Nuevo secreto: cópialo ahora, no se mostrará otra vez.",
     "lastEvent": "Último evento: {{at}}",
     "noEventYet": "Todavía no se ha recibido ningún evento."
+  },
+  "sounds": {
+    "title": "Sonidos de notificación",
+    "description": "Se reproduce un tono breve cuando ocurren estos eventos. El interruptor general silencia todo.",
+    "enabled": "Activar sonidos",
+    "enabledDesc": "Reproduce un tono cuando un agente termina de responder, hay una aprobación o revisión pendiente, una tarea falla o llega una notificación",
+    "volume": "Volumen",
+    "volumeDesc": "La escucha se reproduce al instante con el nivel elegido",
+    "volumes": {
+      "quiet": "Bajo",
+      "normal": "Medio",
+      "loud": "Alto"
+    },
+    "preview": "Escuchar",
+    "deviceNote": "Las preferencias de sonido se guardan en este dispositivo y no se sincronizan entre dispositivos.",
+    "cues": {
+      "chime": "Dos notas ascendentes",
+      "attention": "Triple ping",
+      "ding": "Timbre único",
+      "pop": "Pop suave",
+      "alert": "Dos notas descendentes",
+      "ask": "Pregunta suave"
+    },
+    "events": {
+      "agentReplyComplete": {
+        "label": "Respuesta del agente terminada",
+        "desc": "La salida en streaming en Team Chat finalizó (el servidor confirmó el turno)"
+      },
+      "inputRequested": {
+        "label": "El agente te pregunta",
+        "desc": "Un agente te hizo una pregunta con request_user_input (necesita una respuesta, no una aprobación)"
+      },
+      "approvalRequested": {
+        "label": "Aprobación pendiente",
+        "desc": "Un agente envió una solicitud de aprobación para que decidas"
+      },
+      "reviewRequested": {
+        "label": "Tarea en revisión",
+        "desc": "Una tarea pasó al estado de revisión"
+      },
+      "notification": {
+        "label": "Notificación recibida",
+        "desc": "Un agente te envió una notificación normal"
+      },
+      "agentReplyError": {
+        "label": "Error al responder",
+        "desc": "Un turno en streaming terminó con error (fallo del modelo, sin créditos, …)"
+      },
+      "taskFailed": {
+        "label": "Tarea fallida",
+        "desc": "Una tarea pasó al estado fallido"
+      }
+    }
   }
 }

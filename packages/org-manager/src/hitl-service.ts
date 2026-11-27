@@ -713,6 +713,19 @@ export class HITLService {
      * the card.
      */
     i18n?: NotificationI18n;
+    /**
+     * **Why this request exists** — an agent asking the human a question
+     * (`request_user_input`) versus a gate that needs a decision applied to a
+     * target.
+     *
+     * Only the producer knows this: both arrive as `type: 'approval_request'`, and
+     * the tempting client-side proxy (`formOnly`, `questions` present) answers a
+     * different question — "can one tap finish it" — so a multi-select real
+     * approval would be misclassified as a question. Tagging it here makes the
+     * distinction a fact carried by the entity instead of a guess made from its
+     * shape. Absent ⇒ treat as a gate (conservative).
+     */
+    askKind?: 'input' | 'approval';
   }): ApprovalRequest {
     const id = genId('apr');
     const now = new Date().toISOString();
@@ -756,6 +769,10 @@ export class HITLService {
         agentId: opts.agentId,
         options: opts.options,
         i18n: opts.i18n,
+        // Producer-tagged ask kind: `input` = the agent is asking the human a
+        // question; absent/`approval` = a gate. Consumers (sound cues, channel
+        // cards) branch on this instead of guessing from `formOnly`.
+        ...(opts.askKind ? { askKind: opts.askKind } : {}),
         ...(isAnswerableByTap(opts.questions, opts.options) ? {} : { formOnly: true }),
       },
     });
@@ -778,6 +795,8 @@ export class HITLService {
     approverUserIds?: string[];
     /** @see requestApproval — the sentence as structure, so it can be translated. */
     i18n?: NotificationI18n;
+    /** @see requestApproval — who the ask is for: a human question or a gate decision. */
+    askKind?: 'input' | 'approval';
   }): Promise<ApprovalDecision> {
     const approval = this.requestApproval(opts);
     return new Promise<ApprovalDecision>((resolve) => {

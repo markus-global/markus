@@ -1588,5 +1588,58 @@
     "secretOnce": "新密钥——现在就复制，之后不再显示。",
     "lastEvent": "最近一次事件：{{at}}",
     "noEventYet": "还没有收到任何事件。"
+  },
+  "sounds": {
+    "title": "提示音",
+    "description": "这些事件发生时会响一声。总开关关掉后全部静音。",
+    "enabled": "启用提示音",
+    "enabledDesc": "Agent 回复完成、待审批、待验收、失败或收到通知时播放提示音",
+    "volume": "音量",
+    "volumeDesc": "试听会立刻按当前档位发声",
+    "volumes": {
+      "quiet": "轻",
+      "normal": "中",
+      "loud": "响"
+    },
+    "preview": "试听",
+    "deviceNote": "提示音偏好保存在这台设备上，不跨设备同步。",
+    "cues": {
+      "chime": "上行两音",
+      "attention": "三连音",
+      "ding": "单音叮",
+      "pop": "轻啵",
+      "alert": "下行两音",
+      "ask": "上行询问音"
+    },
+    "events": {
+      "agentReplyComplete": {
+        "label": "Agent 回复完成",
+        "desc": "Team Chat 里某个 Agent 的流式输出结束（服务端确认回合完成）"
+      },
+      "inputRequested": {
+        "label": "Agent 在问你",
+        "desc": "Agent 用 request_user_input 向你提问（等你的回答，不是让你审批）"
+      },
+      "approvalRequested": {
+        "label": "有审批待处理",
+        "desc": "Agent 提交审批请求，等你拍板"
+      },
+      "reviewRequested": {
+        "label": "任务待验收",
+        "desc": "任务进入待验收状态"
+      },
+      "notification": {
+        "label": "收到通知",
+        "desc": "Agent 给你发的普通通知"
+      },
+      "agentReplyError": {
+        "label": "Agent 回复出错",
+        "desc": "流式回合以错误结束（模型报错、额度不足等）"
+      },
+      "taskFailed": {
+        "label": "任务失败",
+        "desc": "任务状态变为失败"
+      }
+    }
   }
 }

@@ -182,6 +182,16 @@ export class SessionStreamState {
     return this.bySession.has(sessionId);
   }
 
+  /**
+   * 只读投影：所有会话当前条目（含 sessionId）。
+   *
+   * 给「需要跨会话比较前后两帧」的派生消费者用 —— 目前是提示音（回合结束要响一声）。
+   * 它是**读**的视图，不是第二个真值：写入仍然只能经上面三个入口。
+   */
+  entriesSnapshot(): Array<SessionStreamEntry & { sessionId: string }> {
+    return [...this.bySession].map(([sessionId, e]) => ({ sessionId, ...e }));
+  }
+
   /** 回收已结束的旧条目（有界增长）。仍在流的条目一律保留。 */
   prune(now = Date.now(), maxAgeMs = ENTRY_TTL_MS): void {
     for (const [sessionId, e] of this.bySession) {

@@ -31,6 +31,7 @@ import { FilterableSelect } from '../components/FilterableSelect.tsx';
 import { WebSearchSettings } from './WebSearchSettings.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { Switch } from '../components/Switch.tsx';
+import { NotificationSoundSettings } from '../components/NotificationSoundSettings.tsx';
 import { useAutoSave } from '../hooks/useAutoSave.ts';
 import { readProviderCatalog } from '../lib/providerCatalogRead.ts';
 import { fetchLlmSettings } from '../lib/llmSettingsCache.ts';
@@ -1495,6 +1496,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </SettingRow>
           )}
         </div>
+
+        {/* 提示音：事件清单与音色目录见 lib/notificationSounds.ts（单一事实源）。 */}
+        <NotificationSoundSettings />
         </>}
 
         {canManageOrgSettings && (
