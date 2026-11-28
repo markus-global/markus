@@ -70,6 +70,29 @@ export function isAtBottom(el: ScrollMetrics): boolean {
   return distanceFromBottom(el) <= AT_BOTTOM_EPSILON;
 }
 
+/**
+ * 「回到底部」从多远开始才露出：默认 **半个视口高**。
+ *
+ * 判据必须是「距离」而不是「是否贴底」——只要稍微离开底部就把按钮怼到脸上，是最
+ * 惹人烦的那类提示（Owner 2026-11-28：至少半屏再显示）。
+ *
+ * 取 `clientHeight` 的比例而不是固定像素：同一个 200px 在小窗口里是半屏，在 4K 窗口
+ * 里什么都不是，用户感知的是比例而不是像素。
+ */
+export const AFFORDANCE_MIN_DISTANCE_RATIO = 0.5;
+
+/**
+ * 该不该显示「回到底部」：离底距离超过 `ratio × 视口高`。
+ * 不可滚动的内容永远不需要这个入口（没有“下面”可回）。
+ */
+export function shouldShowScrollAffordance(
+  el: ScrollMetrics,
+  ratio: number = AFFORDANCE_MIN_DISTANCE_RATIO,
+): boolean {
+  if (!isScrollable(el)) return false;
+  return distanceFromBottom(el) > el.clientHeight * ratio;
+}
+
 // ─── Gesture classification ──────────────────────────────────────────────────
 
 export type GestureDirection = 'up' | 'down' | 'none';

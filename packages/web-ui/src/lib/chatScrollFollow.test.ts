@@ -12,6 +12,7 @@ import {
   isScrollable,
   keyDirection,
   maxScrollTop,
+  shouldShowScrollAffordance,
   touchDirection,
   wheelDirection,
   type ScrollFollowInput,
@@ -176,5 +177,43 @@ describe('policy constants', () => {
     expect(GESTURE_WINDOW_MS).toBeLessThan(1000);
     expect(SMOOTH_JUMP_MS).toBeGreaterThan(0);
     expect(SMOOTH_JUMP_MS).toBeLessThan(1000);
+  });
+});
+
+/**
+ * 「回到底部」的可见性（Owner 2026-11-28）：稍微离开底部就弹按钮是最烦人的那类提示，
+ * 至少半屏才给。阈值按**比例**而不是固定像素 —— 同一个 200px 在小窗口里是半屏，
+ * 在 4K 窗口里什么都不是。
+ */
+describe('shouldShowScrollAffordance —— 离底超过半屏才给「回到底部」', () => {
+  const viewport = (clientHeight: number, distance: number) => ({
+    scrollHeight: 10_000,
+    clientHeight,
+    scrollTop: 10_000 - clientHeight - distance,
+  });
+
+  it('贴底 / 小幅度上滑 → 不显示', () => {
+    expect(shouldShowScrollAffordance(viewport(800, 0))).toBe(false);
+    expect(shouldShowScrollAffordance(viewport(800, 40))).toBe(false);
+    expect(shouldShowScrollAffordance(viewport(800, 399))).toBe(false);
+  });
+
+  it('刚过半屏 → 显示（严格大于，边界不抖）', () => {
+    expect(shouldShowScrollAffordance(viewport(800, 400))).toBe(false);
+    expect(shouldShowScrollAffordance(viewport(800, 401))).toBe(true);
+  });
+
+  it('阈值跟视口高度走：同为 300px 距离，矮窗口给按钮、高窗口不给', () => {
+    expect(shouldShowScrollAffordance(viewport(500, 300))).toBe(true);
+    expect(shouldShowScrollAffordance(viewport(1200, 300))).toBe(false);
+  });
+
+  it('内容不可滚动 → 永远不给（没有“下面”可回）', () => {
+    expect(shouldShowScrollAffordance({ scrollHeight: 500, clientHeight: 500, scrollTop: 0 })).toBe(false);
+  });
+
+  it('比例可覆盖（比如更克制的 0.8 屏）', () => {
+    expect(shouldShowScrollAffordance(viewport(800, 500), 0.8)).toBe(false);
+    expect(shouldShowScrollAffordance(viewport(800, 700), 0.8)).toBe(true);
   });
 });

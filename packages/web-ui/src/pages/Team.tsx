@@ -47,6 +47,7 @@ import {
   isAtBottom,
   isScrollable,
   keyDirection,
+  shouldShowScrollAffordance,
   touchDirection,
   wheelDirection,
   type GestureDirection,
@@ -1979,6 +1980,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const newMsgCountRef = useRef(0);
   const [newMsgCount, setNewMsgCount] = useState(0);
 
+  /**
+   * 「回到底部」的可见性判定：**唯一入口**。
+   *
+   * 以前凡「用户接管了视口」就亮按钮，于是稍微离开底部一下就被嘘。现在统一按距离判：
+   * 离底超过半屏才给（阈值与纯函数见 lib/chatScrollFollow.ts）。
+   * 只有一个写者，否则新消息到达、粘底接管、滚动同步三条路径会各自维护一套阈值。
+   */
+  const syncScrollAffordance = useCallback(() => {
+    const el = chatScrollRef.current;
+    setShowScrollBtn(el ? shouldShowScrollAffordance(el) : false);
+  }, []);
+
   const gestureActive = useCallback(() => performance.now() < gestureUntilRef.current, []);
   const mayFollow = useCallback(
     () => canFollow({ takeover: userTakeoverRef.current, gestureActive: gestureActive() }),
@@ -2009,8 +2022,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       cancelAnimationFrame(followRafRef.current);
       followRafRef.current = null;
     }
-    setShowScrollBtn(true);
-  }, []);
+    syncScrollAffordance();
+  }, [syncScrollAffordance]);
 
   /** Record a user gesture; an upward one is an immediate, unconditional takeover. */
   const noteScrollGesture = useCallback((direction: GestureDirection) => {
@@ -2049,9 +2062,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       newMsgCountRef.current = 0;
       setNewMsgCount(0);
     } else if (userTakeoverRef.current) {
-      setShowScrollBtn(true);
+      syncScrollAffordance();
     }
-  }, [gestureActive, pinChatScrollAway, resumeChatScrollFollow]);
+  }, [gestureActive, pinChatScrollAway, resumeChatScrollFollow, syncScrollAffordance]);
   // Gesture sources. Direction matters, not just "something happened": an
   // upward gesture is an immediate, unconditional takeover, while a downward one
   // is what re-arms follow once the user reaches the bottom again. Scrollbar
@@ -3435,7 +3448,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (key === currentConvKeyRef.current && userTakeoverRef.current) {
         newMsgCountRef.current += 1;
         setNewMsgCount(newMsgCountRef.current);
-        setShowScrollBtn(true);
+        // 计数照旧累积（离底半屏时才随按钮一起登场），可见性仍走唯一判定。
+        syncScrollAffordance();
       }
 
     });
@@ -5964,14 +5978,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               inside it. The affordance can no longer influence its own trigger. */}
           {showScrollBtn && mainTab === 'chat' && (
             <div className="sticky bottom-0 z-20 h-0 pointer-events-none">
-              <div className="absolute inset-x-0 bottom-2 flex justify-center">
+              {/* 靠右：这是「去往下」的控件，靠右侧拇指区比居中更顺手，也不挡读正文。 */}
+              <div className="absolute inset-x-0 bottom-2 flex justify-end pr-4">
                 <button
                   onClick={() => {
                     // Explicit jump = the user handing the viewport back.
                     resumeChatScrollFollow();
                     scrollChatToBottom('smooth');
                   }}
-                  className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/90 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary"
+                  className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-2 bg-brand-600 text-on-brand rounded-full shadow-lg hover:bg-brand-500 transition-colors text-xs font-medium"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
                   {newMsgCount > 0
