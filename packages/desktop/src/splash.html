@@ -3,40 +3,145 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; img-src 'self' file:">
+<title>Markus</title>
 <style>
+/* Splash contract with main.ts:
+   - `#status` receives textContent updates (updateSplash) and innerHTML on error.
+   - Nothing here may block load: no external assets, no fonts, no network. */
 * { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
 body {
-  display: flex; align-items: center; justify-content: center; height: 100vh;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0f0f23; color: #e2e8f0;
-  -webkit-app-region: drag;
+  display: flex; align-items: center; justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  background: #0b0b16; color: #e2e8f0; overflow: hidden;
+  -webkit-app-region: drag; user-select: none;
 }
-.container { text-align: center; }
+
+/* Aurora: two slow-moving radial washes behind everything. Pure CSS, no JS so a
+   slow main thread (the whole reason this screen exists) cannot make it janky. */
+.aurora { position: fixed; inset: -20%; pointer-events: none; }
+.aurora::before, .aurora::after {
+  content: ""; position: absolute; width: 60vmax; height: 60vmax; border-radius: 50%;
+  filter: blur(90px); opacity: .35;
+}
+.aurora::before {
+  background: radial-gradient(circle, #6366f1 0%, transparent 65%);
+  top: -10%; left: -10%; animation: drift1 18s ease-in-out infinite alternate;
+}
+.aurora::after {
+  background: radial-gradient(circle, #0ea5e9 0%, transparent 65%);
+  bottom: -15%; right: -10%; animation: drift2 22s ease-in-out infinite alternate;
+}
+@keyframes drift1 { to { transform: translate3d(8vmax, 6vmax, 0) scale(1.15); } }
+@keyframes drift2 { to { transform: translate3d(-7vmax, -5vmax, 0) scale(1.1); } }
+
+.container { position: relative; text-align: center; width: 320px; }
+
+.logo-wrap { position: relative; width: 96px; height: 96px; margin: 0 auto 22px; }
+.logo-wrap::after {
+  content: ""; position: absolute; inset: -10px; border-radius: 28px;
+  border: 1px solid rgba(129,140,248,.35);
+  animation: halo 2.4s ease-out infinite;
+}
+@keyframes halo {
+  0%   { transform: scale(.92); opacity: .9; }
+  70%  { transform: scale(1.18); opacity: 0; }
+  100% { transform: scale(1.18); opacity: 0; }
+}
 .logo {
-  width: 80px; height: 80px; margin: 0 auto 24px;
-  border-radius: 20px;
-  object-fit: contain;
+  width: 96px; height: 96px; border-radius: 24px; object-fit: contain;
+  box-shadow: 0 12px 40px rgba(99,102,241,.35);
+  animation: breathe 3.2s ease-in-out infinite;
 }
-h1 { font-size: 28px; margin-bottom: 12px; }
-.spinner {
-  width: 28px; height: 28px; border: 3px solid #334155;
-  border-top-color: #667eea; border-radius: 50%;
-  animation: spin 0.8s linear infinite; margin: 24px auto 0;
+@keyframes breathe { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+
+h1 { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
+.sub { margin-top: 6px; font-size: 12px; color: #64748b; letter-spacing: .08em; text-transform: uppercase; }
+
+/* Indeterminate bar: communicates "working" without faking a percentage we
+   cannot actually know (backend boot has no reliable progress denominator). */
+.bar { position: relative; height: 3px; margin: 26px 0 16px; border-radius: 999px; background: rgba(148,163,184,.15); overflow: hidden; }
+.bar::after {
+  content: ""; position: absolute; top: 0; height: 100%; width: 40%; border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #818cf8, #38bdf8, transparent);
+  animation: slide 1.5s ease-in-out infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
-#status { font-size: 14px; color: #94a3b8; margin-top: 16px; }
+@keyframes slide { 0% { left: -40%; } 100% { left: 100%; } }
+
+#status { font-size: 13px; line-height: 1.6; color: #94a3b8; min-height: 21px; }
+#status code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #cbd5e1; }
+
+.meta { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; font-size: 11px; color: #475569; }
+.dot { width: 3px; height: 3px; border-radius: 50%; background: #475569; }
+#elapsed { font-variant-numeric: tabular-nums; }
+
+#tip { margin-top: 30px; font-size: 12px; color: #64748b; min-height: 34px; line-height: 1.6; }
+#tip b { color: #818cf8; font-weight: 500; }
 </style>
 </head>
 <body>
+<div class="aurora"></div>
 <div class="container">
-  <img class="logo" src="icon.png" alt="Markus">
+  <div class="logo-wrap"><img class="logo" src="icon.png" alt="Markus"></div>
   <h1>Markus</h1>
-  <div class="spinner"></div>
-  <p id="status"></p>
+  <div class="sub" id="sub">Digital Workforce</div>
+  <div class="bar"></div>
+  <p id="status">正在启动服务...</p>
+  <div class="meta">
+    <span id="clock"></span>
+    <span class="dot"></span>
+    <span id="elapsed">0.0s</span>
+  </div>
+  <div id="tip"></div>
 </div>
 <script>
-const zh = (navigator.language || '').startsWith('zh');
-document.getElementById('status').textContent = zh ? '正在启动服务...' : 'Starting server...';
+  const zh = (navigator.language || '').startsWith('zh');
+  const statusEl = document.getElementById('status');
+  const startedAt = Date.now();
+
+  statusEl.textContent = zh ? '正在启动服务...' : 'Starting server...';
+  document.getElementById('sub').textContent = zh ? '数字劳动力平台' : 'Digital Workforce';
+
+  // Elapsed time: the honest answer to "why is this taking so long". Users
+  // tolerate a 12s boot far better when the number is visible and moving.
+  const elapsedEl = document.getElementById('elapsed');
+  const tick = () => {
+    elapsedEl.textContent = ((Date.now() - startedAt) / 1000).toFixed(1) + 's';
+  };
+  tick();
+  setInterval(tick, 100);
+
+  const clockEl = document.getElementById('clock');
+  const now = new Date();
+  clockEl.textContent = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+
+  // Tips rotate so a long boot still feels alive, and teach something while waiting.
+  const tips = zh ? [
+    '<b>⌘K</b> 打开全局搜索，找人、找任务、找文档',
+    '<b>⌘/</b> 查看全部快捷键',
+    'Agent 正在恢复上下文，稍后即可继续对话',
+    '右侧栏可并排打开浏览器与终端：<b>⌘B</b>',
+    '首次升级会检查数据库，大库可能需要几分钟',
+  ] : [
+    '<b>⌘K</b> to search agents, tasks and docs',
+    '<b>⌘/</b> for all keyboard shortcuts',
+    'Agents are restoring their context in the background',
+    'Open browser and terminal side by side: <b>⌘B</b>',
+    'First upgrade checks the database — large ones take a few minutes',
+  ];
+  let tipIndex = 0;
+  const tipEl = document.getElementById('tip');
+  const showTip = () => {
+    tipEl.style.opacity = '0';
+    setTimeout(() => {
+      tipEl.innerHTML = tips[tipIndex % tips.length];
+      tipEl.style.transition = 'opacity .5s ease';
+      tipEl.style.opacity = '1';
+      tipIndex++;
+    }, 250);
+  };
+  showTip();
+  setInterval(showTip, 4200);
 </script>
 </body>
 </html>
