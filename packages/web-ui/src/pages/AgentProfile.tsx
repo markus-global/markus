@@ -2871,7 +2871,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             return (
               <span className="text-sm text-fg-secondary inline-flex items-center gap-2">
                 <span>
-                  {mailboxTypeIcon(mind.currentFocus.type)}{' '}
+                  <Icon name={mailboxTypeIcon(mind.currentFocus.type)} size={13} />{' '}
                   <span className="text-fg-primary font-medium">{focusDisplay.title}</span>
                   {focusDisplay.subtitle && <span className="text-fg-tertiary ml-1.5 text-xs">{focusDisplay.subtitle}</span>}
                   <span className="text-fg-tertiary ml-2 text-xs">{t('agent:profilePage.mind.since', { time: new Date(mind.currentFocus.startedAt).toLocaleTimeString() })}</span>
@@ -2931,7 +2931,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                 <div className="flex gap-1.5 flex-wrap">
                   {Object.entries(typeCounts).map(([type, count]) => (
                     <span key={type} className="text-[10px] text-fg-tertiary bg-amber-500/10 px-1.5 py-0.5 rounded">
-                      {mailboxTypeIcon(type)} {count}
+                      <Icon name={mailboxTypeIcon(type)} size={11} /> {count}
                     </span>
                   ))}
                 </div>
@@ -2940,7 +2940,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                 {visibleItems.map((item, i) => (
                   <div key={item.id} className="flex items-center gap-2 px-3 py-1.5 rounded bg-amber-500/5 border border-amber-500/20 text-sm">
                     <span className="text-fg-tertiary w-4 text-right text-xs">{i + 1}</span>
-                    <span className="text-sm">{mailboxTypeIcon(item.sourceType)}</span>
+                    <span className="text-sm flex items-center"><Icon name={mailboxTypeIcon(item.sourceType)} size={13} /></span>
                     <span className={`text-[10px] ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{t(`agent:profilePage.mind.priority.${PRIORITY_KEYS[item.priority] ?? item.priority}`, { defaultValue: `P${item.priority}` })}</span>
                     <span className="text-fg-secondary truncate flex-1 text-xs">{item.summary}</span>
                     <span className="text-[10px] text-fg-tertiary">{new Date(item.queuedAt).toLocaleTimeString()}</span>
@@ -3201,7 +3201,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                       就是白白吃掉标题宽度。@sm（容器 384px）以上再显示。 */}
                   <span className="hidden @sm:inline text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
                   <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${rowDisplayStatus === 'stale' ? 'bg-amber-400/70' : (STATUS_COLORS[item.status] ?? 'bg-gray-400')}`} />
-                  <span className="text-sm">{icon}</span>
+                  <span className="text-sm flex items-center"><Icon name={icon} size={13} /></span>
                   <div className="flex-1 min-w-0">
                     {/* 标题独占一行。上一版是 `flex-wrap` + 标题 `flex-1` —— 但 `flex-1`
                         允许无限收缩，flex-wrap 因此**永不触发**：标题被压成窄柱（实测

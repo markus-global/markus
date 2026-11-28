@@ -52,7 +52,7 @@ export const MAILBOX_TYPE_STRUCTURE: Readonly<Record<string, MailboxTypeStructur
 };
 
 /** Icon for a mailbox type; unknown types get a neutral dot instead of nothing. */
-export function mailboxTypeIcon(sourceType: string | undefined): string {
+export function mailboxTypeIcon(sourceType: string | undefined): IconName {
   if (!sourceType) return 'dot';
   return MAILBOX_TYPE_STRUCTURE[sourceType]?.icon ?? 'dot';
 }

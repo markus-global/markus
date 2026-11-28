@@ -12,7 +12,8 @@
  *      `CHIP_ICON_NAMES`。谁把两者合并成一份，这条就红。
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { ICON_PATHS, type IconName } from '../src/components/Icon.tsx';
 import { CHIP_ICONS, CHIP_ICON_NAMES, CHIP_KINDS } from '../src/lib/chatChips.ts';
@@ -93,5 +94,42 @@ describe('chip 的两份图标：文本协议 vs 渲染', () => {
       const name = CHIP_ICON_NAMES[kind];
       expect(ICON_PATHS[name], `${kind} → ${name} 不在图标集里`).toBeTruthy();
     }
+  });
+});
+
+/**
+ * 「图标名字被当文本渲染」的守卫。
+ *
+ * 2026-11-28 实证缺陷：`mailboxTypeIcon()` 的返回值从 emoji 改成 IconName 之后，
+ * AgentProfile 里四处 `{mailboxTypeIcon(x)}` 没跟着改成 `<Icon name={…} />`，
+ * 界面上就出现了一排字面文字 "clipboard" / "link"。类型系统拦不住 ——
+ * `string` 是合法的 ReactNode，只会安静地渲染成文字。
+ *
+ * 所以这里扫源码：凡是调用「返回图标名字」的访问器，必须包在 `<Icon name={…}` 里。
+ */
+const ICON_ACCESSORS = ['mailboxTypeIcon', 'tabIcon'];
+
+describe('图标名字不得被当文本渲染', () => {
+  it.each(ICON_ACCESSORS)('%s() 的调用点必须包在 <Icon name={…}> 里', accessor => {
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === 'locales' || entry.name === 'node_modules') continue;
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) continue;
+        const src = readFileSync(full, 'utf8');
+        for (const line of src.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed.includes(`${accessor}(`)) continue;
+          // 定义、导入、以及「名字被包进 <Icon name={…}>」三种合法形态
+          if (/^(import|export function|function|\*|\/\/|const |let |var )/.test(trimmed)) continue;
+          if (new RegExp(`<Icon\\s+name=\\{${accessor}\\(`).test(line)) continue;
+          offenders.push(`${full.replace(process.cwd(), '')}: ${trimmed.slice(0, 90)}`);
+        }
+      }
+    };
+    walk(resolve(import.meta.dirname, '../src'));
+    expect(offenders, `这些调用点把图标名字当文本渲染了：\n${offenders.join('\n')}`).toEqual([]);
   });
 });
