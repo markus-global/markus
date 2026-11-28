@@ -14,6 +14,7 @@ import { PageLoading } from '../components/AsyncState.tsx';
 import { MilestonePanel } from '../components/MilestonePanel.tsx';
 import { MILESTONE_ALL, MILESTONE_NONE, resolveMilestoneScope, requirementInScope, taskInScope } from '../lib/milestoneScope.ts';
 import { resolveDetailSlots, type RightDetailMode } from '../lib/workDetailLayout.ts';
+import { resizedWidth } from '../lib/panelResize.ts';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
 import {
   type ScheduleDraft,
@@ -5170,13 +5171,17 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   effectiveDetailWidthRef.current = effectiveDetailWidth;
   const maxDetailWidthRef = useRef(maxDetailWidth);
   maxDetailWidthRef.current = maxDetailWidth;
-  const onDetailResizeStart = useCallback((e: React.MouseEvent) => {
+  const onDetailResizeStart = useCallback((e: React.MouseEvent, side: 'left' | 'right' = 'right') => {
     e.preventDefault();
     const startX = e.clientX;
     const startW = effectiveDetailWidthRef.current;
     const onMove = (ev: MouseEvent) => {
-      const next = Math.max(320, Math.min(maxDetailWidthRef.current, startW + (startX - ev.clientX)));
-      setPanelWidthPref(next);
+      // `side` is the panel's own anchored edge: the project detail panel sits left of the board,
+      // the item detail panel sits right of it. Both share one width, so the direction must come
+      // from which panel is being dragged — not from a hard-coded sign.
+      setPanelWidthPref(resizedWidth({
+        startWidth: startW, dx: ev.clientX - startX, side, min: 320, max: maxDetailWidthRef.current,
+      }));
     };
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
@@ -6819,7 +6824,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             style={{ width: effectiveDetailWidth }}>
             {projectDetailPanel}
           </div>
-          <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={onDetailResizeStart}>
+          <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={(e) => onDetailResizeStart(e, 'left')}>
             <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />
           </div>
         </>
@@ -7346,7 +7351,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
 
       {/* Resize handle — desktop only, when detail is open */}
       {!isMobile && showDetailSlot && (
-        <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={onDetailResizeStart}>
+        <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={(e) => onDetailResizeStart(e, 'right')}>
           <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />
         </div>
       )}
