@@ -71,10 +71,6 @@ h1 { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
 #status { font-size: 13px; line-height: 1.6; color: #94a3b8; min-height: 21px; }
 #status code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #cbd5e1; }
 
-.meta { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; font-size: 11px; color: #475569; }
-.dot { width: 3px; height: 3px; border-radius: 50%; background: #475569; }
-#elapsed { font-variant-numeric: tabular-nums; }
-
 #tip { margin-top: 30px; font-size: 12px; color: #64748b; min-height: 34px; line-height: 1.6; }
 #tip b { color: #818cf8; font-weight: 500; }
 </style>
@@ -87,33 +83,17 @@ h1 { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
   <div class="sub" id="sub">Digital Workforce</div>
   <div class="bar"></div>
   <p id="status">正在启动服务...</p>
-  <div class="meta">
-    <span id="clock"></span>
-    <span class="dot"></span>
-    <span id="elapsed">0.0s</span>
-  </div>
   <div id="tip"></div>
 </div>
 <script>
   const zh = (navigator.language || '').startsWith('zh');
+  // Boot duration and wall-clock time are diagnostics, not product information:
+  // they belong in the startup log (`[timing]` lines from cli/commands/start.ts),
+  // not on a screen the user stares at.
   const statusEl = document.getElementById('status');
-  const startedAt = Date.now();
 
   statusEl.textContent = zh ? '正在启动服务...' : 'Starting server...';
   document.getElementById('sub').textContent = zh ? '数字劳动力平台' : 'Digital Workforce';
-
-  // Elapsed time: the honest answer to "why is this taking so long". Users
-  // tolerate a 12s boot far better when the number is visible and moving.
-  const elapsedEl = document.getElementById('elapsed');
-  const tick = () => {
-    elapsedEl.textContent = ((Date.now() - startedAt) / 1000).toFixed(1) + 's';
-  };
-  tick();
-  setInterval(tick, 100);
-
-  const clockEl = document.getElementById('clock');
-  const now = new Date();
-  clockEl.textContent = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
 
   // Tips rotate so a long boot still feels alive, and teach something while waiting.
   const tips = zh ? [
