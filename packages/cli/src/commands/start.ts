@@ -62,6 +62,7 @@ import {
   AuditService,
   ProjectService,
   RequirementService,
+  MilestoneService,
   KnowledgeService,
   FileKnowledgeStore,
   DeliverableService,
@@ -1224,8 +1225,28 @@ async function startServerCore(
   await requirementService.loadFromStorage('default');
   requirementService.rebuildTaskLinks(taskService.listTasks());
 
+  // ─── Milestones (里程碑) ────────────────────────────────────────────────────
+  // A milestone is a project-owned checkpoint grouping requirements. Wiring is two-way but
+  // each direction has exactly ONE owner:
+  //   - `requirements.milestone_id` is written only by RequirementService (detach on delete);
+  //   - progress is derived only by MilestoneService (it reads requirements, never writes them).
+  const milestoneService = new MilestoneService();
+  if (storage?.milestoneRepo) {
+    milestoneService.setMilestoneRepo(storage.milestoneRepo);
+  }
+  milestoneService.setProjectService(projectService);
+  milestoneService.setRequirementBridge(requirementService);
+  requirementService.setMilestoneLookup((milestoneId: string) => {
+    const m = milestoneService.getMilestone(milestoneId);
+    return m ? { id: m.id, projectId: m.projectId, name: m.name } : null;
+  });
+  // A milestone cannot outlive its project: every deleteProject caller gets this cleanup.
+  projectService.setOnBeforeDelete((projectId: string) => milestoneService.deleteByProject(projectId));
+  await milestoneService.loadFromStorage('default');
+
   agentManager.setRequirementService(requirementService);
   agentManager.setProjectService(projectService);
+  agentManager.setMilestoneService(milestoneService);
   agentManager.setDeliverableService(deliverableService);
   agentManager.setWebUiBaseUrl(`http://localhost:${apiPort}`);
 
@@ -1259,6 +1280,7 @@ async function startServerCore(
       taskService.postRequirementComment(requirementId, authorId, authorName, content, mentions, undefined, opts),
   );
   apiServer.setProjectService(projectService);
+  apiServer.setMilestoneService(milestoneService);
   apiServer.setReportService(reportService);
   apiServer.setKnowledgeService(knowledgeService);
   apiServer.setDeliverableService(deliverableService);
@@ -2131,6 +2153,20 @@ async function startServerCore(
   markPhase('api listening');
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
+  // Milestones: same two wires as requirements — WS so other windows refresh, and an audit sink
+  // so "who deleted this checkpoint" is answerable. The service publishes, bootstrap decides where.
+  milestoneService.setWSBroadcaster(apiServer.getWSBroadcaster());
+  milestoneService.setAuditSink(event => {
+    auditService.record({
+      orgId: 'default',
+      type: event.type,
+      action: event.action,
+      detail: event.detail,
+      userId: event.actorId,
+      success: true,
+      metadata: event.metadata,
+    });
+  });
   deliverableService.setWSBroadcaster(apiServer.getWSBroadcaster());
 
   // Tell the user their instance is reachable from the LAN (default bind is

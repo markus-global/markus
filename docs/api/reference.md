@@ -7,7 +7,7 @@
 > Flow, trade-offs and "which of these do I want" live in `docs/api/guides/`,
 > which is hand-written on purpose — the code cannot answer those questions.
 
-Routes: **401** · with a description: **104** · groups: **40**
+Routes: **406** · with a description: **107** · groups: **41**
 
 Base URL: `http://localhost:8056`. Authentication: JWT cookie `markus_token`, or `Authorization: Bearer <token>`.
 `min role` is the lowest org role that may call the route (`member` < `admin` < `owner`).
@@ -28,6 +28,7 @@ Base URL: `http://localhost:8056`. Authentication: JWT cookie `markus_token`, or
 - [Reviews](#reviews) — 3
 - [Requirements](#requirements) — 14
 - [Projects](#projects) — 6
+- [Milestones (里程碑)](#milestones-) — 5
 - [Notifications](#notifications) — 4
 - [Message search](#message-search) — 1
 - [Activity feed](#activity-feed) — 1
@@ -286,12 +287,22 @@ Base URL: `http://localhost:8056`. Authentication: JWT cookie `markus_token`, or
 | PUT | `/api/projects/:id` | member | Get project |
 | DELETE | `/api/projects/:id` | member | Get project |
 
+## Milestones (里程碑)
+
+| Method | Path | Min role | Description |
+|---|---|---|---|
+| GET | `/api/milestones` | member | List a project's milestones, each carrying progress derived from its requirements |
+| POST | `/api/milestones` | member | List a project's milestones, each carrying progress derived from its requirements |
+| GET | `/api/milestones/:id` | member | Get / update / delete one milestone; delete unlinks its requirements (never deletes them) |
+| PUT | `/api/milestones/:id` | member | Get / update / delete one milestone; delete unlinks its requirements (never deletes them) |
+| DELETE | `/api/milestones/:id` | member | Get / update / delete one milestone; delete unlinks its requirements (never deletes them) |
+
 ## Notifications
 
 | Method | Path | Min role | Description |
 |---|---|---|---|
-| GET | `/api/notifications` | member | List notifications for current user (supports `?unread=true&limit=N&offset=N&type=T`) |
-| POST | `/api/notifications` | member | List notifications for current user (supports `?unread=true&limit=N&offset=N&type=T`) |
+| GET | `/api/notifications` | member |  |
+| POST | `/api/notifications` | member |  |
 | POST | `/api/notifications/mark-all-read` | member | Mark all notifications as read |
 | POST | `/api/notifications/` | member | List notifications for current user (supports `?unread=true&limit=N&offset=N&type=T`) |
 

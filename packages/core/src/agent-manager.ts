@@ -69,7 +69,7 @@ import { createWorkflowTools, type WorkflowToolsContext } from './tools/workflow
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
-import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
+import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext, type MilestoneServiceBridge } from './tools/project-tools.js';
 import { extractTextFromFile } from './file-converter.js';
 import { createOfficeGenerateTool } from './tools/office-generate.js';
 import { createMemoryTools } from './tools/memory.js';
@@ -228,7 +228,7 @@ export interface RequirementServiceBridge {
   cancelRequirement(id: string, cancelledBy?: string, cancelledByType?: 'human' | 'agent' | 'system'): { id: string; title: string; status: string };
   updateRequirement(
     id: string,
-    data: { title?: string; description?: string; priority?: string; tags?: string[] }
+    data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null; milestoneId?: string | null }
   ): { id: string; title: string; status: string };
   resubmitRequirement(
     id: string,
@@ -486,6 +486,23 @@ export function defaultMaxWorkers(cores: number = cpus().length): number {
   return Math.min(8, Math.max(2, cores - 1));
 }
 
+/**
+ * The concrete milestone service (org-manager `MilestoneService`) as seen from core.
+ *
+ * Structural on purpose: core must not import org-manager. Every field is a fact or a command,
+ * never cached state — progress in particular is computed on read by the service.
+ */
+export interface MilestoneServiceHandle {
+  listWithProgress(filters: { orgId?: string; projectId?: string }): Array<{
+    id: string; projectId: string; name: string; description: string; dueDate: string | null;
+    progress: { total: number; done: number; active: number; blocked: number; percent: number };
+  }>;
+  getMilestone(id: string): { id: string; projectId: string; name: string; description: string; dueDate: string | null } | undefined;
+  createMilestone(o: { orgId: string; projectId: string; name: string; description?: string; dueDate?: string | null; createdBy?: string }): { id: string; name: string };
+  updateMilestone(id: string, d: { name?: string; description?: string; dueDate?: string | null }, actorId?: string): { id: string; name: string };
+  deleteMilestone(id: string, actorId?: string): { deleted: boolean; detachedRequirements: number };
+}
+
 export class AgentManager {
   private agents = new Map<string, Agent>();
   private eventBus: EventBus;
@@ -531,6 +548,7 @@ export class AgentManager {
   private sessionTitleUpdater?: (sessionId: string, title: string) => void;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
+  private milestoneService?: MilestoneServiceHandle;
   private deliverableService?: DeliverableServiceBridge;
   private webUiBaseUrl?: string;
   private semanticSearch?: SemanticMemorySearch;
@@ -1302,6 +1320,45 @@ export class AgentManager {
 
   setProjectService(projectService: ProjectServiceBridge): void {
     this.projectService = projectService;
+  }
+
+  /** The concrete MilestoneService (org-manager) — wired once at bootstrap. */
+  setMilestoneService(svc: MilestoneServiceHandle): void {
+    this.milestoneService = svc;
+  }
+
+  /**
+   * Adapter: concrete milestone service → tool-facing bridge.
+   *
+   * `assignRequirements` routes EVERY id through the requirement update path on purpose:
+   * `requirements.milestone_id` has exactly one writer, and an agent tool must not become the
+   * second one. Per-id results turn a partial bind into a visible fact instead of a silent
+   * half-success.
+   */
+  private buildMilestoneBridge(actorId?: string): MilestoneServiceBridge | undefined {
+    const ms = this.milestoneService;
+    const rs = this.requirementService;
+    if (!ms || !rs) return undefined;
+    return {
+      list: (opts) => ms.listWithProgress({ orgId: opts.orgId, projectId: opts.projectId }),
+      get: (id) => ms.getMilestone(id),
+      create: (o) => ms.createMilestone(o),
+      update: (mid, d) => ms.updateMilestone(mid, d, actorId),
+      delete: (mid) => ms.deleteMilestone(mid, actorId),
+      assignRequirements: (reqIds, milestoneId) => {
+        const updated: string[] = [];
+        const failed: Array<{ id: string; error: string }> = [];
+        for (const reqId of reqIds) {
+          try {
+            rs.updateRequirement(reqId, { milestoneId });
+            updated.push(reqId);
+          } catch (e) {
+            failed.push({ id: reqId, error: e instanceof Error ? e.message : String(e) });
+          }
+        }
+        return { updated, failed };
+      },
+    };
   }
 
   setRequirementService(requirementService: RequirementServiceBridge): void {
@@ -2273,6 +2330,7 @@ export class AgentManager {
         orgId: config.orgId,
         webUiBaseUrl: this.webUiBaseUrl,
         projectService: ps,
+        milestoneService: this.buildMilestoneBridge(id),
         requestApproval: ah ? (req) => ah(id, req) : undefined,
         getProjectInfo: async (projectId?: string) => {
           let resolvedId = projectId;
@@ -3214,6 +3272,7 @@ export class AgentManager {
         orgId: config.orgId,
         webUiBaseUrl: this.webUiBaseUrl,
         projectService: ps2,
+        milestoneService: this.buildMilestoneBridge(id),
         requestApproval: ah2 ? (req) => ah2(id, req) : undefined,
         getProjectInfo: async (projectId?: string) => {
           let resolvedId2 = projectId;

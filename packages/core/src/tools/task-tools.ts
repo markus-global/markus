@@ -183,7 +183,7 @@ export interface AgentTaskContext {
   /** Update a requirement's fields (title, description, priority, tags) */
   updateRequirement?: (
     id: string,
-    data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null }
+    data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null; milestoneId?: string | null }
   ) => Promise<{ id: string; title: string; status: string }>;
   /** Resubmit a rejected requirement for review, optionally updating fields */
   resubmitRequirement?: (
@@ -1327,6 +1327,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   type: 'string',
                   description: 'Project ID this requirement belongs to (required)',
                 },
+                milestone_id: {
+                  type: 'string',
+                  description:
+                    'Optional milestone (里程碑) of that project. Create it with milestone_create first; ' +
+                    'a milestone of another project is rejected.',
+                },
                 tags: {
                   type: 'array',
                   items: { type: 'string' },
@@ -1350,6 +1356,20 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   requirementId: req.id,
                   title: req.title,
                 });
+                // Milestone binding goes through the requirement UPDATE path — `milestone_id`
+                // has exactly one writer, and the proposal bridge must not become a second one.
+                const milestoneId = args['milestone_id'] as string | undefined;
+                if (milestoneId && ctx.updateRequirement) {
+                  try {
+                    await ctx.updateRequirement(req.id, { milestoneId });
+                  } catch (error) {
+                    return JSON.stringify({
+                      status: 'partial',
+                      requirement: req,
+                      error: `Requirement proposed but the milestone was NOT attached: ${String(error)}`,
+                    });
+                  }
+                }
                 return JSON.stringify({
                   status: 'success',
                   requirement: req,
@@ -1600,6 +1620,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                     'This is the repair path for a requirement whose project_id is wrong or missing — ' +
                     'tasks inherit it, so fixing it here unblocks re-linking cards onto this requirement.',
                 },
+                milestone_id: {
+                  type: ['string', 'null'],
+                  description:
+                    'Milestone (里程碑) of the requirement\'s own project, or null to detach. The server ' +
+                    'rejects a milestone of another project and leaves the requirement untouched.',
+                },
               },
               required: ['requirement_id'],
             },
@@ -1621,9 +1647,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   'priority',
                   'tags',
                   'project_id',
+                  'milestone_id',
                 ]);
                 if (unknownArgError) return unknownArgError;
-                const data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null } = {};
+                const data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null; milestoneId?: string | null } = {};
                 if (args['title']) data.title = args['title'] as string;
                 if (args['description']) data.description = args['description'] as string;
                 if (args['priority']) data.priority = args['priority'] as string;
@@ -1632,6 +1659,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 if (tagsCheck.tags) data.tags = tagsCheck.tags;
                 // Empty string clears the reference; a non-empty id is validated by the service.
                 if (args['project_id'] !== undefined) data.projectId = (args['project_id'] as string) || null;
+                // null/'' detaches; a non-empty id is validated (own-project rule) by the service.
+                if (args['milestone_id'] !== undefined) data.milestoneId = (args['milestone_id'] as string) || null;
                 const req = await ctx.updateRequirement!(
                   args['requirement_id'] as string,
                   data

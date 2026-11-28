@@ -9732,6 +9732,13 @@ export class Agent {
     // ── 文件系统：按路径细分（不同文件可并行）；定位不到路径则全域串行
     file_write:       { domain: 'fs', arg: ['path', 'filePath'] },
     file_edit:        { domain: 'fs', arg: ['path', 'filePath'] },
+    // ── 里程碑：域 = 该里程碑本身（不同里程碑可并行，同一里程碑的写必须串行）。
+    // 这几个是**写**工具，不能进 TOOL_LOCK_FREE（写工具进免锁名单 = 并发不串行化 = 两个
+    // 写者同时改同一实体）。`milestone_assign` 写的是需求归属，锁在目标里程碑上。
+    milestone_create: { domain: 'milestone' },
+    milestone_update: { domain: 'milestone', arg: ['milestone_id'] },
+    milestone_delete: { domain: 'milestone', arg: ['milestone_id'] },
+    milestone_assign: { domain: 'milestone', arg: ['milestone_id'] },
     // ── 可触及任意资源 → 全局独占
     package_install:  { domain: GLOBAL_LOCK_DOMAIN },
     hub_install:      { domain: GLOBAL_LOCK_DOMAIN },
@@ -9879,6 +9886,7 @@ export class Agent {
     'task_list', 'task_get', 'task_board_health', 'task_check_duplicates',
     'subtask_list', 'requirement_list', 'requirement_get',
     'goal_status', 'list_projects', 'get_project', 'project_stats',
+    'milestone_list',
     'deliverable_list', 'deliverable_search',
     'team_list', 'team_status', 'list_teams',
     // ── 纯读取：记忆 / 模型 / 包 / 工作流

@@ -302,6 +302,9 @@ CREATE TABLE IF NOT EXISTS requirements (
   id TEXT PRIMARY KEY,
   org_id TEXT NOT NULL REFERENCES organizations(id),
   project_id TEXT,
+  -- 里程碑（可选）：一个需求至多属于一个里程碑，且该里程碑必须属于本需求的 project_id。
+  -- 旧库靠 migrations 里的 ALTER 补这一列；新库直接在 DDL 里拥有。
+  milestone_id TEXT,
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'pending',
@@ -320,6 +323,28 @@ CREATE TABLE IF NOT EXISTS requirements (
 CREATE INDEX IF NOT EXISTS idx_requirements_org ON requirements(org_id);
 CREATE INDEX IF NOT EXISTS idx_requirements_project ON requirements(project_id);
 CREATE INDEX IF NOT EXISTS idx_requirements_status ON requirements(status);
+-- 注意：requirements(milestone_id) 的索引**不在这里**。旧库在这一步还没有该列，
+-- 写进 SCHEMA_SQL 会让「打开旧库」直接 no such column。它建在 migrations 之后的索引块里。
+
+-- 里程碑（2026-11-28）：项目内的可选检查点，把需求分组，让项目按「阶段」读进度。
+-- 两条刻意的结构决定（详见 docs/architecture/work-hierarchy.md）：
+--   1) 不存状态、不存计数 —— 完成度由需求状态派生（MilestoneService.progressOf 是唯一口径），
+--      存一列 progress 就是第二个事实源，需求一改状态它就过期。
+--   2) project_id 必填 —— 里程碑不能脱离项目存在；需求只能引用「自己项目」的里程碑。
+CREATE TABLE IF NOT EXISTS milestones (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  -- ISO 日期（YYYY-MM-DD）；NULL = 没有截止日。里程碑是检查点，不是带时刻的 deadline。
+  due_date TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id);
+CREATE INDEX IF NOT EXISTS idx_milestones_org ON milestones(org_id);
 
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
@@ -998,6 +1023,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'channel_messages', column: 'reply_to_id', sql: "ALTER TABLE channel_messages ADD COLUMN reply_to_id TEXT" },
     { table: 'approvals', column: 'approver_user_ids', sql: "ALTER TABLE approvals ADD COLUMN approver_user_ids TEXT" },
     { table: 'requirements', column: 'rejected_by', sql: 'ALTER TABLE requirements ADD COLUMN rejected_by TEXT' },
+    // 里程碑（2026-11-28）：旧库补列，新库已在 DDL 里。没有回填 —— NULL 就是「未归属」，
+    // 这正是既有需求的正确语义。
+    { table: 'requirements', column: 'milestone_id', sql: 'ALTER TABLE requirements ADD COLUMN milestone_id TEXT' },
     { table: 'projects', column: 'created_by', sql: 'ALTER TABLE projects ADD COLUMN created_by TEXT' },
     { table: 'approvals', column: 'target_user_id', sql: 'ALTER TABLE approvals ADD COLUMN target_user_id TEXT' },
     { table: 'users', column: 'deleted_at', sql: 'ALTER TABLE users ADD COLUMN deleted_at TEXT' },
@@ -1153,6 +1181,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
 
     // Indexes that depend on migrated columns (must run AFTER column migrations)
     _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
+    // 里程碑归属：按里程碑查需求（进度派生、里程碑筛选都走它）。列是迁移加上的，
+    // 所以索引必须在这里建，不能写进 SCHEMA_SQL。
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_requirements_milestone ON requirements(milestone_id)');
     // C10-0E（G8）：agent_activities 是 append-only —— 结构上拒绝任何改写。
     // 触发器与索引同类：幂等 DDL，打开旧库时补建，不动任何数据行。
     // 「更正」是 agent_activity_logs 里新的 activity_end 事件，读侧派生当前态。
@@ -2240,6 +2271,7 @@ export class SqliteRequirementRepo {
     source: string;
     createdBy: string;
     projectId?: string;
+    milestoneId?: string;
     approvedBy?: string;
     approvedAt?: Date;
     tags?: string[];
@@ -2247,8 +2279,8 @@ export class SqliteRequirementRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO requirements (id, org_id, title, description, status, priority, source, created_by, project_id, approved_by, approved_at, rejected_reason, rejected_by, tags, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO requirements (id, org_id, title, description, status, priority, source, created_by, project_id, milestone_id, approved_by, approved_at, rejected_reason, rejected_by, tags, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -2260,6 +2292,7 @@ export class SqliteRequirementRepo {
         data.source,
         data.createdBy,
         data.projectId ?? null,
+        data.milestoneId ?? null,
         data.approvedBy ?? null,
         data.approvedAt?.toISOString() ?? null,
         null,
@@ -2306,7 +2339,7 @@ export class SqliteRequirementRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null }
+    data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null; milestoneId?: string | null }
   ) {
     const sets: string[] = [];
     const vals: SqlParams = [];
@@ -2315,6 +2348,9 @@ export class SqliteRequirementRepo {
     if (data.priority !== undefined) { sets.push('priority = ?'); vals.push(data.priority); }
     if (data.tags !== undefined) { sets.push('tags = ?'); vals.push(arrayToJson(data.tags)); }
     if (data.projectId !== undefined) { sets.push('project_id = ?'); vals.push(data.projectId); }
+    // `milestoneId: null` is meaningful (detach) — an explicit null must reach the column,
+    // which is why the check is `!== undefined` and not truthiness.
+    if (data.milestoneId !== undefined) { sets.push('milestone_id = ?'); vals.push(data.milestoneId); }
     if (sets.length === 0) return;
     sets.push('updated_at = ?');
     vals.push(now());
@@ -2322,18 +2358,34 @@ export class SqliteRequirementRepo {
     this.db.prepare(`UPDATE requirements SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   }
 
-  listByOrg(orgId: string, filters?: { status?: string; source?: string; projectId?: string }) {
+  listByOrg(orgId: string, filters?: { status?: string; source?: string; projectId?: string; milestoneId?: string }) {
     let q = 'SELECT * FROM requirements WHERE org_id = ?';
     const vals: SqlParams = [orgId];
     if (filters?.status) { q += ' AND status = ?'; vals.push(filters.status); }
     if (filters?.source) { q += ' AND source = ?'; vals.push(filters.source); }
     if (filters?.projectId) { q += ' AND project_id = ?'; vals.push(filters.projectId); }
+    if (filters?.milestoneId) { q += ' AND milestone_id = ?'; vals.push(filters.milestoneId); }
     q += ' ORDER BY created_at DESC';
     return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
   }
 
   async delete(id: string) {
     this.db.prepare('DELETE FROM requirements WHERE id = ?').run(id);
+  }
+
+  /**
+   * Detach every requirement of a milestone (used when the milestone is deleted).
+   *
+   * Returns the affected ids so the caller can update its in-memory rows in the SAME order —
+   * deleting a milestone must never delete requirements (see MilestoneService.delete).
+   */
+  detachMilestone(milestoneId: string): string[] {
+    const ids = (this.db.prepare('SELECT id FROM requirements WHERE milestone_id = ?').all(milestoneId) as Array<{ id: string }>).map(r => r.id);
+    if (ids.length === 0) return ids;
+    this.db
+      .prepare('UPDATE requirements SET milestone_id = NULL, updated_at = ? WHERE milestone_id = ?')
+      .run(now(), milestoneId);
+    return ids;
   }
 
   async updateGoalConfig(id: string, goalConfig: Record<string, unknown> | null) {
@@ -2354,6 +2406,7 @@ export class SqliteRequirementRepo {
       id: r['id'],
       orgId: r['org_id'],
       projectId: r['project_id'] as string | null,
+      milestoneId: (r['milestone_id'] as string | null) ?? null,
       title: r['title'],
       description: r['description'],
       status: r['status'],
@@ -2768,6 +2821,96 @@ export class SqliteTaskCommentRepo {
 
   deleteByTask(taskId: string) {
     this.db.prepare('DELETE FROM task_comments WHERE task_id = ?').run(taskId);
+  }
+}
+
+/**
+ * Milestones (里程碑) — a project-owned checkpoint that groups requirements.
+ *
+ * The repo stores facts only: no progress, no status. Completion is derived by
+ * `MilestoneService.progressOf` (single definition), so there is nothing here that can go
+ * stale when a requirement changes status.
+ */
+export class SqliteMilestoneRepo {
+  constructor(private db: DatabaseSync) {}
+
+  async create(data: {
+    id: string;
+    orgId: string;
+    projectId: string;
+    name: string;
+    description?: string;
+    dueDate?: string | null;
+    createdBy?: string;
+  }) {
+    const ts = now();
+    this.db
+      .prepare(
+        `INSERT INTO milestones (id, org_id, project_id, name, description, due_date, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        data.id,
+        data.orgId,
+        data.projectId,
+        data.name,
+        data.description ?? '',
+        data.dueDate ?? null,
+        data.createdBy ?? null,
+        ts,
+        ts
+      );
+    return this.findById(data.id)!;
+  }
+
+  findById(id: string) {
+    const r = this.db.prepare('SELECT * FROM milestones WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this._map(r) : undefined;
+  }
+
+  async update(id: string, data: { name?: string; description?: string; dueDate?: string | null }) {
+    const sets: string[] = [];
+    const vals: SqlParams = [];
+    if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name); }
+    if (data.description !== undefined) { sets.push('description = ?'); vals.push(data.description); }
+    // `dueDate: null` = clear the deadline — an explicit null must reach the column, so the
+    // check is `!== undefined` rather than truthiness.
+    if (data.dueDate !== undefined) { sets.push('due_date = ?'); vals.push(data.dueDate); }
+    if (sets.length === 0) return;
+    sets.push('updated_at = ?');
+    vals.push(now());
+    vals.push(id);
+    this.db.prepare(`UPDATE milestones SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  async delete(id: string) {
+    this.db.prepare('DELETE FROM milestones WHERE id = ?').run(id);
+  }
+
+  listByProject(projectId: string) {
+    return (this.db
+      .prepare('SELECT * FROM milestones WHERE project_id = ? ORDER BY created_at ASC')
+      .all(projectId) as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  listByOrg(orgId: string) {
+    return (this.db
+      .prepare('SELECT * FROM milestones WHERE org_id = ? ORDER BY created_at ASC')
+      .all(orgId) as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  private _map(r: Record<string, unknown>) {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      projectId: r['project_id'] as string,
+      name: r['name'] as string,
+      description: (r['description'] as string | null) ?? '',
+      dueDate: (r['due_date'] as string | null) ?? null,
+      createdBy: (r['created_by'] as string | null) ?? undefined,
+      createdAt: toDate(r['created_at'] as string),
+      updatedAt: toDate(r['updated_at'] as string),
+    };
   }
 }
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
+import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo, type MilestoneInfo } from '../api.ts';
 import { isTerminal as isTerminalStatus, TERMINAL_REQUIREMENT_STATUSES } from '../lib/taskStatus.ts';
 import { BLOCKED_TONE, taskStatusLabel, taskStatusChip } from '../lib/stateVocabulary.ts';
 import { deriveReviewSessions, activeReviewSession, hasLiveReview, type ReviewSession } from '../lib/taskReview.ts';
@@ -11,6 +11,9 @@ import { matchReviewActivities, isWithinReviewWindow } from '../lib/reviewActivi
 import { taskIsLive, type WorkUnitLivenessRow } from '../lib/workUnitLiveness.ts';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
+import { MilestonePanel } from '../components/MilestonePanel.tsx';
+import { MILESTONE_ALL, MILESTONE_NONE, resolveMilestoneScope, requirementInScope, taskInScope } from '../lib/milestoneScope.ts';
+import { resolveDetailSlots, type RightDetailMode } from '../lib/workDetailLayout.ts';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
 import {
   type ScheduleDraft,
@@ -73,7 +76,6 @@ const WORKFLOWS_TEAM_KEY = 'markus_workflows_team';
 const WORKFLOWS_TEAM_ALL = '__all__';
 const BOARD_TYPE_ORDER = ['backlog', 'kanban', 'dag', 'workflows'] as const;
 type BoardType = typeof BOARD_TYPE_ORDER[number];
-type RightDetailMode = 'closed' | 'project' | 'item' | 'empty';
 type NavFocus = 'projects' | 'items';
 
 /**
@@ -3215,7 +3217,7 @@ function TaskDetailPanel({
 
 // ─── Project Settings Panel ─────────────────────────────────────────────────────
 
-function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeleteProject, onUpdateProject, onRefresh }: {
+function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeleteProject, onUpdateProject, onRefresh, milestoneSlot, milestoneFilter, milestones }: {
   project: ProjectInfo;
   tasks: TaskInfo[];
   requirements: RequirementInfo[];
@@ -3223,12 +3225,29 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
   onDeleteProject: () => void;
   onUpdateProject: (data: Partial<ProjectInfo>) => Promise<void>;
   onRefresh: () => void;
+  /** Milestones rendered as a sibling card between project status and task stats. */
+  milestoneSlot?: ReactNode;
+  /** Active milestone scope — the work-overview card counts inside it, never project-wide. */
+  milestoneFilter: string;
+  milestones: MilestoneInfo[];
 }) {
   const projTasks = useMemo(() => tasks.filter(t => t.projectId === project.id), [tasks, project.id]);
   const projReqs = useMemo(() => requirements.filter(r => r.projectId === project.id), [requirements, project.id]);
+  /**
+   * Scope resolution reuses the SAME rule the board filters with (lib/milestoneScope):
+   * requirements by `milestoneId`, tasks through their requirement. A second, panel-local
+   * predicate would be a second definition of "what is in this milestone".
+   */
+  const scope = useMemo(() => resolveMilestoneScope(projReqs, milestoneFilter), [projReqs, milestoneFilter]);
+  const scopedTasks = useMemo(() => (scope ? projTasks.filter(t => taskInScope(t, scope)) : projTasks), [projTasks, scope]);
+  const scopedReqs = useMemo(() => (scope ? projReqs.filter(r => requirementInScope(r, scope)) : projReqs), [projReqs, scope]);
+  /** The selected milestone (for the range label); its numbers come from the server. */
+  const activeMilestone = milestoneFilter !== MILESTONE_ALL && milestoneFilter !== MILESTONE_NONE
+    ? milestones.find(m => m.id === milestoneFilter)
+    : undefined;
   const stats = useMemo(() => {
-    const s = { total: projTasks.length, completed: 0, inProgress: 0, inReview: 0, blocked: 0, pending: 0, failed: 0, reqs: projReqs.length, reqsDone: 0 };
-    for (const t of projTasks) {
+    const s = { total: scopedTasks.length, completed: 0, inProgress: 0, inReview: 0, blocked: 0, pending: 0, failed: 0, reqs: scopedReqs.length, reqsDone: 0, reqsCancelled: 0 };
+    for (const t of scopedTasks) {
       if (t.status === 'completed' || t.status === 'accepted') s.completed++;
       else if (t.status === 'in_progress') s.inProgress++;
       else if (t.status === 'review' || t.status === 'revision') s.inReview++;
@@ -3236,9 +3255,14 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
       else if (t.status === 'failed') s.failed++;
       else s.pending++;
     }
-    for (const r of projReqs) { if (r.status === 'completed') s.reqsDone++; }
+    for (const r of scopedReqs) {
+      if (r.status === 'completed') s.reqsDone++;
+      else if (r.status === 'cancelled' || r.status === 'rejected') s.reqsCancelled++;
+    }
     return s;
-  }, [projTasks, projReqs]);
+  }, [scopedTasks, scopedReqs]);
+  /** Project-wide counts — only for statements about the whole project (e.g. delete confirm). */
+  const projectStats = useMemo(() => ({ tasks: projTasks.length, reqs: projReqs.length }), [projTasks, projReqs]);
   const assignedAgentIds = useMemo(() => new Set(projTasks.map(t => t.assignedAgentId).filter(Boolean)), [projTasks]);
   const projAgents = useMemo(() => agents.filter(a => assignedAgentIds.has(a.id)), [agents, assignedAgentIds]);
 
@@ -3321,9 +3345,30 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
         </div>
       </div>
 
-      {/* Task Statistics */}
+      {/* Milestones — one card among the project cards, between status and task stats */}
+      {milestoneSlot}
+
+      {/* Work overview — tasks AND requirements of the CURRENT scope (project / milestone / unassigned) */}
       <div className="bg-surface-elevated rounded-xl p-4">
-        <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('work:project.taskOverview')}</h4>
+        <div className="flex items-start justify-between gap-2 mb-3">
+          <h4 className="text-xs font-semibold text-fg-secondary">{t('work:project.workOverview')}</h4>
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-brand-500/15 text-brand-500 ring-1 ring-brand-500/30 truncate max-w-[65%]">
+            {milestoneFilter === MILESTONE_NONE
+              ? t('work:project.scopeUnassigned')
+              : activeMilestone
+                ? `${activeMilestone.name} · ${activeMilestone.progress?.done ?? 0}/${activeMilestone.progress?.total ?? 0}`
+                : t('work:project.scopeWholeProject')}
+          </span>
+        </div>
+        <h5 className="text-[11px] font-medium text-fg-tertiary mb-2">{t('work:project.requirementsHeading')}</h5>
+        <div className="grid grid-cols-4 gap-3">
+          <StatCard label={t('work:project.statTotal')} value={stats.reqs} color="text-fg-primary" />
+          <StatCard label={t('work:project.statCompleted')} value={stats.reqsDone} color="text-green-600" />
+          <StatCard label={t('work:project.statActive')} value={stats.reqs - stats.reqsDone - stats.reqsCancelled} color="text-brand-500" />
+          <StatCard label={t('work:project.statCancelled')} value={stats.reqsCancelled} color="text-fg-tertiary" />
+        </div>
+
+        <h5 className="text-[11px] font-medium text-fg-tertiary mt-4 mb-2 pt-3 border-t border-border-default/60">{t('work:project.tasksHeading')}</h5>
         <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
           <StatCard label={t('work:project.statTotal')} value={stats.total} color="text-fg-primary" />
           <StatCard label={t('work:project.statCompleted')} value={stats.completed} color="text-green-600" />
@@ -3342,16 +3387,6 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
             {stats.failed > 0 && <div className="bg-red-500" style={{ width: `${(stats.failed / stats.total) * 100}%` }} />}
           </div>
         )}
-      </div>
-
-      {/* Requirement Stats */}
-      <div className="bg-surface-elevated rounded-xl p-4">
-        <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('work:project.requirementsHeading')}</h4>
-        <div className="grid grid-cols-3 gap-3">
-          <StatCard label={t('work:project.statTotal')} value={stats.reqs} color="text-fg-primary" />
-          <StatCard label={t('work:project.statCompleted')} value={stats.reqsDone} color="text-green-600" />
-          <StatCard label={t('work:project.statActive')} value={stats.reqs - stats.reqsDone} color="text-brand-500" />
-        </div>
       </div>
 
       {/* Agents working on this project */}
@@ -3437,7 +3472,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
       {confirmDelete && (
         <ConfirmModal
           title={t('work:project.deleteProjectConfirmTitle')}
-          message={t('work:project.deleteProjectConfirmBody', { name: project.name, tasks: stats.total, reqs: stats.reqs })}
+          message={t('work:project.deleteProjectConfirmBody', { name: project.name, tasks: projectStats.tasks, reqs: projectStats.reqs })}
           confirmLabel={t('work:project.deleteProject')}
           onConfirm={() => { setConfirmDelete(false); onDeleteProject(); }}
           onCancel={() => setConfirmDelete(false)}
@@ -5185,12 +5220,33 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
   const [users, setUsers] = useState<HumanUserInfo[]>(previewData?.users ?? []);
   const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>(previewData?.allRequirements ?? []);
+  /** Milestones of the SELECTED project (progress derived server-side, never counted here). */
+  const [milestones, setMilestones] = useState<MilestoneInfo[]>([]);
+  /** Active milestone filter: MILESTONE_ALL | MILESTONE_NONE (未归属) | milestone id. */
+  const [milestoneFilter, setMilestoneFilter] = useState<string>(MILESTONE_ALL);
+
+  /** Load the selected project's milestones (progress is derived server-side). */
+  const refreshMilestones = useCallback(async (projectId?: string | null) => {
+    if (!projectId) { setMilestones([]); return; }
+    try {
+      const { milestones: list } = await api.milestones.list({ projectId });
+      setMilestones(list ?? []);
+    } catch {
+      // A milestone list is supporting context, not the page — keep the previous list and let
+      // the board's own error surface carry the message rather than blanking the section.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshMilestones(viewMode === 'project' ? selectedProjectId : null);
+  }, [viewMode, selectedProjectId, refreshMilestones]);
   const [loading, setLoading] = useState(previewData ? false : true);
   const [flash, setFlash] = useState('');
   const openCreateReq = useCallback(() => {
     setReqProjectId(selectedProjectId ?? '');
+    setReqMilestoneId(milestoneFilter !== MILESTONE_ALL && milestoneFilter !== MILESTONE_NONE ? milestoneFilter : '');
     setShowCreateReq(true);
-  }, [selectedProjectId]);
+  }, [selectedProjectId, milestoneFilter]);
 
   // Quick capture from the todo-group placeholder row.
   // A requirement is an idea and humans create auto-approved requirements, so we
@@ -5207,6 +5263,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     try {
       const { requirement } = await api.requirements.create({
         title, description: title, priority: 'medium', projectId: selectedProjectId,
+        milestoneId: milestoneFilter !== MILESTONE_ALL && milestoneFilter !== MILESTONE_NONE ? milestoneFilter : undefined,
       });
       msg(t('work:task.quickAddReqDone', { title }));
       refreshRequirements();
@@ -5294,6 +5351,11 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [reqDesc, setReqDesc] = useState('');
   const [reqPriority, setReqPriority] = useState('medium');
   const [reqProjectId, setReqProjectId] = useState('');
+  /**
+   * Milestone carried by the create-requirement dialog. Seeded from the ACTIVE milestone filter:
+   * creating work while looking at "Phase 2" should land in Phase 2, not in "unassigned".
+   */
+  const [reqMilestoneId, setReqMilestoneId] = useState('');
   const [rejectReqId, setRejectReqId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [reqCreateError, setReqCreateError] = useState('');
@@ -5445,9 +5507,17 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     try { const { users: u } = await api.users.list(authUser?.orgId); setUsers(u); } catch { /* */ }
   }, [authUser?.orgId]);
 
+  /**
+   * Requirement refresh — also refreshes milestone progress.
+   *
+   * Milestone completion is DERIVED from requirement statuses, so a requirement create / status
+   * change / delete silently invalidates every progress bar in the panel. Refreshing only on
+   * milestone CRUD left the badges stale until a project switch (found in review 2026-11-28).
+   */
   const refreshRequirements = useCallback(async () => {
     try { const { requirements: r } = await api.requirements.list({}); setAllRequirements(r); } catch { /* */ }
-  }, []);
+    void refreshMilestones(selectedProjectId ?? undefined);
+  }, [refreshMilestones, selectedProjectId]);
 
   const refresh = useCallback(async () => {
     await Promise.all([refreshProjects(), refreshBoard(), refreshAgents(), refreshUsers(), refreshRequirements(), refreshTeams()]);
@@ -5627,6 +5697,25 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         }
       })
     );
+    // Milestones: another window created / renamed / deleted a checkpoint. Progress is derived from
+    // requirements, so a delete also invalidates the requirement list (its members get unlinked).
+    let msDebounce: ReturnType<typeof setTimeout> | null = null;
+    const debouncedRefreshMilestones = () => {
+      if (msDebounce) return;
+      msDebounce = setTimeout(() => { msDebounce = null; void refreshMilestones(selectedProjectId ?? undefined); }, 800);
+    };
+    const msUnsubs = ['milestone:created', 'milestone:updated', 'milestone:deleted'].map(evt =>
+      wsClient.on(evt, (event: { payload?: { id?: string } }) => {
+        invalidateApiCache('/milestones');
+        // Another window deleted the milestone this page is filtered on: the filter would match
+        // nothing and read as "no work here". Reset it to ALL instead of showing an empty board.
+        if (evt === 'milestone:deleted' && event?.payload?.id && event.payload.id === milestoneFilter) {
+          setMilestoneFilter(MILESTONE_ALL);
+        }
+        debouncedRefreshMilestones();
+        debouncedRefreshReqs();
+      })
+    );
     const onDataChanged = () => {
       invalidateApiCache('/taskboard');
       invalidateApiCache('/tasks');
@@ -5645,8 +5734,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       }
     };
     window.addEventListener('markus:data-changed', onDataChanged);
-    return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); window.removeEventListener('markus:data-changed', onDataChanged); if (boardDebounce) clearTimeout(boardDebounce); if (reqDebounce) clearTimeout(reqDebounce); };
-  }, [previewMode, isActive, refreshBoard, refreshAgents, refreshRequirements]);
+    return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); msUnsubs.forEach(u => u()); window.removeEventListener('markus:data-changed', onDataChanged); if (boardDebounce) clearTimeout(boardDebounce); if (reqDebounce) clearTimeout(reqDebounce); if (msDebounce) clearTimeout(msDebounce); };
+  }, [previewMode, isActive, refreshBoard, refreshAgents, refreshRequirements, refreshMilestones, selectedProjectId, milestoneFilter]);
 
   // Refs for event handlers that need current state without re-registering
   const boardRef = useRef(board);
@@ -5823,11 +5912,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     setProjectFilter(new Set());
     setSelectedProjectId(projectId);
     setViewMode('project');
+    // A milestone id belongs to exactly one project — switching project drops the filter.
+    setMilestoneFilter(MILESTONE_ALL);
     setNavFocus(l1Collapsed ? 'items' : 'projects');
     if (!opts?.keepItemDetail) {
       setSelectedTask(null);
       setSelectedReq(null);
-      setRightDetailMode(prev => (prev === 'closed' ? prev : 'project'));
+      // Owner 2026-11-28: selecting a project means "look at this project", so its detail
+      // panel opens now. It is mutually exclusive with the item detail panel (max 3 columns).
+      setRightDetailMode('project');
     }
     history.replaceState(null, '', hashPath(PAGE.WORK, projectId));
   }, [l1Collapsed]);
@@ -5836,6 +5929,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     setProjectFilter(new Set());
     setSelectedProjectId(null);
     setViewMode('all');
+    setMilestoneFilter(MILESTONE_ALL);
     setNavFocus(l1Collapsed ? 'items' : 'projects');
     if (!opts?.keepItemDetail) {
       setSelectedTask(null);
@@ -6026,6 +6120,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     try {
       const { requirement } = await api.requirements.create({
         title: inlineReqTitle.trim(), description: inlineReqTitle.trim(), priority: 'medium', projectId: taskProjectId,
+        // Same rule as the dialog: work created while a milestone is in scope lands in it.
+        milestoneId: milestoneFilter !== MILESTONE_ALL && milestoneFilter !== MILESTONE_NONE ? milestoneFilter : undefined,
       });
       setInlineReqTitle(''); setShowInlineReq(false);
       msg(t('work:task.requirementCreated'));
@@ -6073,7 +6169,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     setReqCreateError('');
     setReqCreating(true);
     try {
-      const { requirement } = await api.requirements.create({ title: reqTitle.trim(), description: reqDesc.trim(), priority: reqPriority, projectId: reqProjectId });
+      const { requirement } = await api.requirements.create({ title: reqTitle.trim(), description: reqDesc.trim(), priority: reqPriority, projectId: reqProjectId, milestoneId: reqMilestoneId || undefined });
       msg(t('work:task.requirementCreated'));
       setReqTitle(''); setReqDesc(''); setShowCreateReq(false);
       refreshRequirements();
@@ -6169,8 +6265,11 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
    * `includeArchived` argument — which is exactly why "查看任务" on a finished
    * run opened an empty dependency graph.
    */
-  const filterTasks = (tasks: TaskInfo[], includeArchived = false) =>
-    filterBoardTasks(tasks, {
+  /** Milestone scope, resolved once per (requirements, filter) — see lib/milestoneScope.ts. */
+  const milestoneScope = useMemo(() => resolveMilestoneScope(allRequirements, milestoneFilter), [allRequirements, milestoneFilter]);
+
+  const filterTasks = (tasks: TaskInfo[], includeArchived = false) => {
+    const base = filterBoardTasks(tasks, {
       showClosed,
       includeClosed: includeArchived,
       statusFilter,
@@ -6181,6 +6280,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       myTasksOnly,
       currentUserId: authUser?.id,
     });
+    // Milestone scope: a task belongs to milestone M iff its requirement does (derived — the
+    // task model carries no milestone column). ONE helper, used by columns / backlog / counts.
+    return milestoneScope ? base.filter(t => taskInScope(t, milestoneScope)) : base;
+  };
 
   const boardTaskMap = useMemo(() => {
     const m = new Map<string, TaskInfo>();
@@ -6198,12 +6301,13 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     if (!showClosed) list = list.filter(r => !isClosed(r));
     if (viewMode === 'project' && selectedProjectId) list = list.filter(r => r.projectId === selectedProjectId);
     if (projectFilter.size > 0) list = list.filter(r => r.projectId && projectFilter.has(r.projectId));
+    if (milestoneScope) list = list.filter(r => requirementInScope(r, milestoneScope));
     if (agentFilter.size > 0) {
       list = list.filter(r => agentFilter.has(r.createdBy));
     }
     if (myTasksOnly && authUser?.id) list = list.filter(r => r.createdBy === authUser.id);
     return list;
-  }, [allRequirements, showClosed, viewMode, selectedProjectId, projectFilter, agentFilter, myTasksOnly, authUser?.id, agentIds]);
+  }, [allRequirements, showClosed, viewMode, selectedProjectId, projectFilter, agentFilter, myTasksOnly, authUser?.id, agentIds, milestoneScope]);
 
   const getColumnReqs = useCallback((col: typeof BOARD_COLUMNS_BASE[number] & { label: string }) =>
     filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id), [filteredReqs]);
@@ -6605,9 +6709,66 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
 
   if (loading) return <PageLoading label={t('work:task.loadingPage')} />;
 
-  const hasDetail = rightDetailMode !== 'closed' || !!(selectedTask || selectedReq);
+  // Which slot is open — ONE derivation (lib/workDetailLayout.ts). The old gate was
+  // `mode !== 'closed'`, which also mounted the RIGHT container while the project panel was open
+  // on the LEFT, leaving an empty column (Owner report 2026-11-28).
+  const hasSelectedItem = !!(selectedTask || selectedReq);
+  const { showProjectSlot, showDetailSlot } = resolveDetailSlots({
+    isMobile,
+    mode: rightDetailMode,
+    hasSelectedItem,
+    hasProject: !!selectedProject,
+    mobileShowDetail,
+  });
+  /** Any detail surface visible — used by the DAG view to reserve room. */
+  const hasDetail = showProjectSlot || showDetailSlot;
   const dualDetail = !isMobile && !!(selectedTask && selectedReq) && rightDetailMode === 'item';
   const showRightPanel = !isMobile ? hasDetail : mobileShowDetail;
+
+  /**
+   * The project detail panel — ONE definition, two mount points.
+   *
+   * Desktop: rendered to the LEFT of the board (Owner 2026-11-28: "open the detail panel on the
+   * left when a project is clicked"). Mobile: no L1 column exists, so it takes the detail slot.
+   * Defining it once keeps the two mount points from drifting.
+   *
+   * Mutual exclusion with the item detail is structural: selecting a task/requirement sets
+   * `rightDetailMode = 'item'`, which unmatches every branch below — at most 3 columns exist.
+   */
+  const projectDetailPanel = selectedProject ? (
+    <div className="flex-1 min-w-0 overflow-y-auto">
+      <div className="px-4 py-3 flex items-center gap-2 border-b border-border-default/60 sticky top-0 bg-surface-primary z-10">
+        <h3 className="text-sm font-semibold text-fg-primary truncate flex-1">{t('work:project.settingsTitle')}</h3>
+        <button type="button" onClick={handleCloseDetail}
+          className="w-7 h-7 flex items-center justify-center rounded-md text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
+          aria-label={t('common:close')}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+        </button>
+      </div>
+      <ProjectSettingsPanel
+        project={selectedProject}
+        tasks={Object.values(board).flat().filter(t => t.projectId === selectedProject.id)}
+        requirements={allRequirements.filter(r => r.projectId === selectedProject.id)}
+        agents={agents}
+        onDeleteProject={() => handleDeleteProject(selectedProject.id)}
+        onUpdateProject={async (data) => { await api.projects.update(selectedProject.id, data); refreshProjects(); }}
+        onRefresh={() => { refreshProjects(); }}
+        milestoneSlot={
+          <MilestonePanel
+            projectId={selectedProject.id}
+            milestones={milestones}
+            selected={milestoneFilter}
+            onSelect={setMilestoneFilter}
+            onChanged={() => { void refreshMilestones(selectedProject.id); }}
+            onDeleted={(id) => { if (milestoneFilter === id) setMilestoneFilter(MILESTONE_ALL); }}
+            previewMode={previewMode}
+          />
+        }
+        milestoneFilter={milestoneFilter}
+        milestones={milestones}
+      />
+    </div>
+  ) : null;
 
   return (
     <div ref={workContainerRef} className="flex-1 overflow-hidden flex bg-surface-primary">
@@ -6648,6 +6809,20 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           focused={keyboardPane === 'l1' && navFocus === 'projects' && !l1Collapsed}
           onActivate={() => setNavFocus('projects')}
         />
+      )}
+
+      {/* ── Project detail panel — LEFT of the board (desktop). Shares the item detail
+           panel's width and never coexists with it (see projectDetailPanel). ── */}
+      {!isMobile && showProjectSlot && projectDetailPanel && (
+        <>
+          <div className="shrink-0 overflow-hidden min-w-0 flex border-r border-border-default/60"
+            style={{ width: effectiveDetailWidth }}>
+            {projectDetailPanel}
+          </div>
+          <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={onDetailResizeStart}>
+            <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />
+          </div>
+        </>
       )}
 
       {/* ── Task Board + Project Context (main) ── */}
@@ -7170,36 +7345,18 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       </div>
 
       {/* Resize handle — desktop only, when detail is open */}
-      {!isMobile && showRightPanel && (
+      {!isMobile && showDetailSlot && (
         <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={onDetailResizeStart}>
           <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />
         </div>
       )}
 
       {/* Detail panel(s) */}
-      {showRightPanel && (
+      {showDetailSlot && (
         <div className={`${isMobile ? 'flex-1' : dualDetail ? 'flex-1' : 'shrink-0'} overflow-hidden min-w-0 flex border-l border-border-default/60`}
           style={isMobile || dualDetail ? undefined : { width: effectiveDetailWidth }}>
-          {rightDetailMode === 'project' && selectedProject ? (
-            <div className="flex-1 min-w-0 overflow-y-auto">
-              <div className="px-4 py-3 flex items-center gap-2 border-b border-border-default/60 sticky top-0 bg-surface-primary z-10">
-                <h3 className="text-sm font-semibold text-fg-primary truncate flex-1">{t('work:project.settingsTitle')}</h3>
-                <button type="button" onClick={handleCloseDetail}
-                  className="w-7 h-7 flex items-center justify-center rounded-md text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
-                  aria-label={t('common:close')}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                </button>
-              </div>
-              <ProjectSettingsPanel
-                project={selectedProject}
-                tasks={Object.values(board).flat().filter(t => t.projectId === selectedProject.id)}
-                requirements={allRequirements.filter(r => r.projectId === selectedProject.id)}
-                agents={agents}
-                onDeleteProject={() => handleDeleteProject(selectedProject.id)}
-                onUpdateProject={async (data) => { await api.projects.update(selectedProject.id, data); refreshProjects(); }}
-                onRefresh={() => { refreshProjects(); }}
-              />
-            </div>
+          {isMobile && rightDetailMode === 'project' && projectDetailPanel ? (
+            projectDetailPanel
           ) : rightDetailMode === 'empty' ? (
             <div className="flex-1 flex items-center justify-center p-8">
               <div className="max-w-xs w-full text-center space-y-3">
@@ -7828,6 +7985,23 @@ function RequirementDetailPanel({
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(req.description);
   const [savingDesc, setSavingDesc] = useState(false);
+  /**
+   * Milestones of this requirement's project — loaded by the panel itself.
+   *
+   * Self-contained because the panel mounts in two layouts (single + dual detail) and the list
+   * is tiny; the WRITE still goes through `api.requirements.update`, so the server stays the
+   * single writer of `milestone_id`.
+   */
+  const [reqMilestones, setReqMilestones] = useState<MilestoneInfo[]>([]);
+  useEffect(() => {
+    const projectId = req.projectId;
+    if (!projectId) { setReqMilestones([]); return; }
+    let cancelled = false;
+    void api.milestones.list({ projectId })
+      .then(r => { if (!cancelled) setReqMilestones(r.milestones ?? []); })
+      .catch(() => { if (!cancelled) setReqMilestones([]); });
+    return () => { cancelled = true; };
+  }, [req.projectId]);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   /** 状态下拉改成"按钮 + 合法流转菜单"（原生 select 看不出后果，也会展示一堆禁用项） */
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
@@ -7946,7 +8120,7 @@ function RequirementDetailPanel({
   useEffect(() => { setTagsDraft((req.tags ?? []).join(', ')); setEditingTags(false); }, [req.id, req.tags]);
   useEffect(() => { if (editingTitle) titleInputRef.current?.focus(); }, [editingTitle]);
 
-  const updateReq = async (patch: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null }) => {
+  const updateReq = async (patch: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null; milestoneId?: string | null }) => {
     try { await api.requirements.update(req.id, patch); onRefresh?.(); }
     catch { /* keep the current value on failure */ }
   };
@@ -8078,6 +8252,14 @@ function RequirementDetailPanel({
           {/* Config — editable fields, two pairs per row on wide panels */}
           <div className="border-t border-border-default/60 pt-4">
             <div className={ROW_GRID_2COL_CLS}>
+              <label className={ROW_LABEL_CLS}>{t('work:milestone.fieldLabel')}</label>
+              <SearchableSelect
+                size="sm"
+                disabled={isTerminal || !req.projectId}
+                options={[{ value: '', label: t('work:milestone.fieldNone') }, ...reqMilestones.map(m => ({ value: m.id, label: m.name }))]}
+                value={req.milestoneId ?? ''}
+                onChange={v => { void updateReq({ milestoneId: v || null }); }}
+              />
               <label className={ROW_LABEL_CLS}>{t('work:task.projectLabel')}</label>
               <SearchableSelect
                 size="sm"

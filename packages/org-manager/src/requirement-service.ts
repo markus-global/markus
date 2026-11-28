@@ -28,6 +28,8 @@ export interface CreateRequirementRequest {
   description: string;
   priority?: TaskPriority;
   projectId?: string;
+  /** Milestone (里程碑) of `projectId` to attach this requirement to; omit for unassigned. */
+  milestoneId?: string;
   source: RequirementSource;
   createdBy: string;
   tags?: string[];
@@ -61,6 +63,12 @@ export class RequirementService implements ApprovalTargetPort {
   private requirementRepo?: any;
   /** Project lookup — a requirement's projectId is a reference, validated on write. */
   private projectService?: ProjectLookupBridge;
+  /**
+   * Milestone lookup — `milestoneId` is a reference too, and a stronger one: it must resolve
+   * to a milestone of THIS requirement's project. Function rather than service object so the
+   * dependency is one-way (MilestoneService depends on requirements, not the reverse).
+   */
+  private milestoneLookup?: (milestoneId: string) => { id: string; projectId: string; name: string } | null | undefined;
   private statusTransitionRepo?: { record(data: { entityType: 'task' | 'requirement'; entityId: string; fromStatus: string; toStatus: string; changedById?: string | null; changedByType: 'human' | 'agent' | 'system'; changedByName?: string | null; reason?: string | null }): void; getByEntity(entityType: 'task' | 'requirement', entityId: string, limit?: number): unknown[] };
   private userNameLookup?: (userId: string) => string | null;
   private ws?: WSBroadcaster;
@@ -77,6 +85,55 @@ export class RequirementService implements ApprovalTargetPort {
 
   setProjectService(projectService: ProjectLookupBridge): void {
     this.projectService = projectService;
+  }
+
+  setMilestoneLookup(fn: (milestoneId: string) => { id: string; projectId: string; name: string } | null | undefined): void {
+    this.milestoneLookup = fn;
+  }
+
+  /**
+   * The ONE enforcement point for "a requirement's milestone belongs to its own project".
+   *
+   * Called by both create and update, before any mutation, and fails closed:
+   * - an unwired lookup refuses rather than writing an unverifiable reference;
+   * - a missing milestone refuses;
+   * - a milestone of another project refuses with an actionable message (the caller must pass
+   *   a milestone of the new project, or `null` to detach). Silently clearing it would be data
+   *   loss the caller never asked for.
+   *
+   * `undefined` = "not touching the field"; `null` = "detach", which is always allowed.
+   */
+  private assertMilestoneBelongsToProject(
+    milestoneId: string | null | undefined,
+    projectId: string | undefined
+  ): void {
+    if (milestoneId === undefined || milestoneId === null) return;
+    if (!this.milestoneLookup) {
+      throw new Error(
+        'Cannot set milestoneId on a requirement: milestone lookup is unavailable in this ' +
+          'process, so the target cannot be verified. Refusing rather than writing an ' +
+          'unvalidated milestone reference.'
+      );
+    }
+    const milestone = this.milestoneLookup(milestoneId);
+    if (!milestone) {
+      throw new Error(
+        `Milestone "${milestoneId}" does not exist. Create it first (milestone_create) or pass an existing milestone id.`
+      );
+    }
+    if (!projectId) {
+      throw new Error(
+        `Cannot attach milestone "${milestone.name}" (${milestoneId}): a requirement must belong to a project, ` +
+          'and a milestone is only meaningful inside the requirement\'s own project. Set projectId first.'
+      );
+    }
+    if (milestone.projectId !== projectId) {
+      throw new Error(
+        `Milestone "${milestone.name}" (${milestoneId}) belongs to project ${milestone.projectId}, ` +
+          `but this requirement is in project ${projectId}. Pass a milestone of project ${projectId}, ` +
+          'or milestoneId: null to leave the requirement unassigned.'
+      );
+    }
   }
 
   setRequirementRepo(repo: any): void {
@@ -345,6 +402,9 @@ export class RequirementService implements ApprovalTargetPort {
     if (request.priority && !validPriorities.includes(request.priority)) {
       throw new Error(`Invalid priority "${request.priority}". Must be one of: ${validPriorities.join(', ')}.`);
     }
+    // Validate the (project, milestone) PAIR before anything is minted: an orphan milestone
+    // reference is exactly the failure mode this guard exists to prevent.
+    this.assertMilestoneBelongsToProject(request.milestoneId, request.projectId);
     const isAutoApproved = request.source === 'user' || request.source === 'workflow';
     const now = new Date().toISOString();
 
@@ -352,6 +412,7 @@ export class RequirementService implements ApprovalTargetPort {
       id: genRequirementId(),
       orgId: request.orgId,
       projectId: request.projectId,
+      milestoneId: request.milestoneId,
       title: request.title,
       description: request.description,
       status: isAutoApproved ? 'in_progress' : 'pending',
@@ -380,6 +441,7 @@ export class RequirementService implements ApprovalTargetPort {
           source: req.source,
           createdBy: req.createdBy,
           projectId: req.projectId,
+          milestoneId: req.milestoneId,
           approvedBy: req.approvedBy ?? undefined,
           approvedAt: req.approvedAt ? new Date(req.approvedAt) : undefined,
           tags: req.tags,
@@ -746,21 +808,36 @@ export class RequirementService implements ApprovalTargetPort {
    */
   updateRequirement(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; tags?: string[]; projectId?: string | null }
+    data: {
+      title?: string;
+      description?: string;
+      priority?: TaskPriority;
+      tags?: string[];
+      projectId?: string | null;
+      /** `null` detaches from the current milestone; `undefined` leaves it untouched. */
+      milestoneId?: string | null;
+    }
   ): Requirement {
     const req = this.requirements.get(id);
     if (!req) throw new Error(`Requirement ${id} not found`);
+
+    // Resolve the EFFECTIVE (project, milestone) pair and validate it BEFORE any mutation —
+    // a rejected call must leave the requirement exactly as it was. Moving a requirement
+    // while keeping a foreign milestone is refused, not silently cleared (data loss the
+    // caller never asked for).
+    const effectiveProjectId = data.projectId !== undefined ? (data.projectId ?? undefined) : req.projectId;
+    const effectiveMilestoneId = data.milestoneId !== undefined ? (data.milestoneId ?? undefined) : req.milestoneId;
+    if (data.projectId) assertValidProjectReference(this.projectService, data.projectId, 'requirement');
+    if (data.milestoneId !== undefined || data.projectId !== undefined) {
+      this.assertMilestoneBelongsToProject(effectiveMilestoneId, effectiveProjectId);
+    }
 
     if (data.title !== undefined) req.title = data.title;
     if (data.description !== undefined) req.description = data.description;
     if (data.priority !== undefined) req.priority = data.priority;
     if (data.tags !== undefined) req.tags = data.tags;
-    if (data.projectId !== undefined) {
-      // Fail-closed BEFORE mutation: an unverifiable/absent project is not written at all,
-      // so a rejected call leaves the requirement exactly as it was.
-      if (data.projectId) assertValidProjectReference(this.projectService, data.projectId, 'requirement');
-      req.projectId = data.projectId ?? undefined;
-    }
+    if (data.projectId !== undefined) req.projectId = data.projectId ?? undefined;
+    if (data.milestoneId !== undefined) req.milestoneId = data.milestoneId ?? undefined;
     req.updatedAt = new Date().toISOString();
 
     if (this.requirementRepo) {
@@ -773,6 +850,47 @@ export class RequirementService implements ApprovalTargetPort {
 
     this.broadcast('requirement:updated', req);
     return req;
+  }
+
+  /**
+   * All requirements in memory — read side used by MilestoneService.listWithProgress to score
+   * every milestone in ONE pass instead of re-scanning the corpus per milestone.
+   */
+  listAll(): Requirement[] {
+    return [...this.requirements.values()];
+  }
+
+  /**
+   * Requirements currently attached to a milestone — read side of the milestone bridge.
+   * `MilestoneService.progressOf` derives completion from exactly this list.
+   */
+  listByMilestone(milestoneId: string): Requirement[] {
+    return [...this.requirements.values()].filter(r => r.milestoneId === milestoneId);
+  }
+
+  /**
+   * Detach every requirement from a milestone (called when the milestone is deleted).
+   *
+   * This lives here because `requirements.milestone_id` has exactly ONE writer: the
+   * requirement service. MilestoneService asks; it never writes the column itself.
+   * Returns how many requirements were detached so the caller can report it.
+   */
+  detachMilestone(milestoneId: string): number {
+    const affected = [...this.requirements.values()].filter(r => r.milestoneId === milestoneId);
+    for (const req of affected) {
+      req.milestoneId = undefined;
+      req.updatedAt = new Date().toISOString();
+      if (this.requirementRepo) {
+        this.requirementRepo
+          .update(req.id, { milestoneId: null })
+          .catch((e: unknown) => log.error('Failed to detach requirement from milestone', { id: req.id, error: String(e) }));
+      }
+      this.broadcast('requirement:updated', req);
+    }
+    if (affected.length > 0) {
+      log.info('Requirements detached from milestone', { milestoneId, count: affected.length });
+    }
+    return affected.length;
   }
 
   /**
@@ -886,6 +1004,7 @@ export class RequirementService implements ApprovalTargetPort {
   listRequirements(filters?: {
     orgId?: string;
     projectId?: string;
+    milestoneId?: string;
     status?: RequirementStatus;
     source?: RequirementSource;
     createdBy?: string;
@@ -894,6 +1013,7 @@ export class RequirementService implements ApprovalTargetPort {
 
     if (filters?.orgId) result = result.filter(r => r.orgId === filters.orgId);
     if (filters?.projectId) result = result.filter(r => r.projectId === filters.projectId);
+    if (filters?.milestoneId) result = result.filter(r => r.milestoneId === filters.milestoneId);
     if (filters?.status) result = result.filter(r => r.status === filters.status);
     if (filters?.source) result = result.filter(r => r.source === filters.source);
     if (filters?.createdBy) result = result.filter(r => r.createdBy === filters.createdBy);
@@ -913,6 +1033,7 @@ export class RequirementService implements ApprovalTargetPort {
           id: row.id,
           orgId: row.orgId,
           projectId: row.projectId ?? undefined,
+          milestoneId: (row as { milestoneId?: string | null }).milestoneId ?? undefined,
           title: row.title,
           description: row.description,
           status: row.status as RequirementStatus,

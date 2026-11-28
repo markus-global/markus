@@ -21,6 +21,55 @@ const TOOLS = [
   'memory_search', 'shell_execute', 'file_read', 'web_search', 'spawn_subagent',
 ];
 
+describe('work family (requirements + milestones + tasks) travels together', () => {
+  const REQ = ['requirement_propose', 'requirement_list', 'requirement_update', 'requirement_comment'];
+  const MS = ['milestone_list', 'milestone_create', 'milestone_update', 'milestone_delete', 'milestone_assign'];
+  const TK = ['task_create', 'task_list', 'task_note'];
+  const TOOLS2 = [...REQ, ...MS, ...TK, 'list_projects', 'get_project', 'create_project', 'project_stats', 'agent_send_message', 'shell_execute'];
+  const face = (msg: string) => new ToolSelector()
+    .selectTools({ allTools: makeToolMap(TOOLS2), userMessage: msg, pack: 'converse' })
+    .map((t) => t.name);
+
+  it('a message about 里程碑 / milestone brings the WHOLE family', () => {
+    for (const msg of ['帮我看下这个里程碑的进度', 'add a milestone for phase 2', '现在这个阶段还差什么']) {
+      const names = face(msg);
+      expect(names, msg).toContain('milestone_list');
+      // The seam we are guarding: milestone without requirement tools is half a toolkit —
+      // creating a checkpoint is followed immediately by attaching requirements.
+      expect(names, msg).toContain('requirement_list');
+    }
+  });
+
+  it('a message about 需求 also brings the milestone tools', () => {
+    const names = face('把这个需求排到第二阶段');
+    expect(names).toContain('requirement_propose');
+    expect(names).toContain('milestone_assign');
+  });
+
+  it('a message about 项目 / project also brings the whole family (project tools had no home at all)', () => {
+    for (const msg of ['这个项目现在什么情况', 'which project should own this milestone']) {
+      const names = face(msg);
+      expect(names, msg).toContain('list_projects');
+      expect(names, msg).toContain('milestone_list');
+      expect(names, msg).toContain('requirement_list');
+    }
+  });
+
+  it('an unrelated message drags in neither (the group really gates)', () => {
+    const names = face('hello there');
+    expect(names).not.toContain('milestone_list');
+    expect(names).not.toContain('requirement_propose');
+  });
+
+  it('a task-execution turn sees the milestone tools it needs to place work in a phase', () => {
+    const names = new ToolSelector()
+      .selectTools({ allTools: makeToolMap(TOOLS2), userMessage: 'work on it', pack: 'converse', isTaskExecution: true })
+      .map((t) => t.name);
+    expect(names).toContain('milestone_list');
+    expect(names).toContain('milestone_assign');
+  });
+});
+
 describe('P1-12 · deliverable_create 在 converse 下的激活语义', () => {
   it('未激活 → converse 下被剔除（保持 discover-only）', () => {
     const selector = new ToolSelector();

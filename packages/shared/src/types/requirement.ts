@@ -49,6 +49,14 @@ export interface Requirement {
   id: string;
   orgId: string;
   projectId?: string;
+  /**
+   * Milestone (里程碑) this requirement belongs to, or undefined = unassigned.
+   *
+   * The milestone MUST belong to this requirement's own `projectId` — enforced fail-closed
+   * by `RequirementService` (one write path, one validation point). A requirement belongs to
+   * at most one milestone; it may be moved between milestones, never held by two.
+   */
+  milestoneId?: string;
   title: string;
   description: string;
   status: RequirementStatus;

@@ -26,6 +26,7 @@ export {
   SqliteTaskLogRepo,
   SqliteRequirementRepo,
   SqliteProjectRepo,
+  SqliteMilestoneRepo,
   SqliteChatSessionRepo,
   SqliteChannelMessageRepo,
   SqliteUserRepo,
