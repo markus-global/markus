@@ -23,6 +23,9 @@ import {
 import {
   CREDIT_EXCEEDED_MSG,
   UPSTREAM_BILLING_MISMATCH_MSG,
+  PROVIDER_TOS_BLOCKED_CODE,
+  PROVIDER_TOS_BLOCKED_HINT,
+  isProviderTosBlockedMessage,
   defaultVoiceForModel,
   formatUpstreamMediaError,
   isCreditExhaustedHttp,
@@ -347,6 +350,14 @@ function describeUpstreamFailure(
   // so a genuine reply always carries `cf-ray`. Its absence is the single
   // cheapest way to prove the answer did not come from OpenRouter at all.
   const who = `server=${diag?.server ?? '(none)'}; cf-ray=${diag?.cfRay ?? '(none)'}`;
+  // A provider Terms-of-Service access block is an entitlement refusal, not a
+  // fault. The vendor body alone ("…violation of provider Terms Of Service")
+  // reads like a moderation or key problem, which is what sends readers hunting
+  // an innocent prompt or balance. Named apart it is actionable: switching model
+  // works, retrying cannot, and a proxy "fix" puts the account at risk.
+  if (status === 403 && isProviderTosBlockedMessage(body)) {
+    return `${PROVIDER_TOS_BLOCKED_CODE}: ${text} — ${PROVIDER_TOS_BLOCKED_HINT} (request: ${endpoint}; ${who})`;
+  }
   const pathRejected = /cannot be relayed|invalid (request )?path|not a valid (api )?path/i.test(body);
   if (!pathRejected) return `${text} (request: ${endpoint}; ${who})`;
   return `${text} (request: ${endpoint}; baseUrl: ${base || 'default'}; ${who}) — ` +

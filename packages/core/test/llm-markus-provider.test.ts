@@ -938,6 +938,41 @@ describe('MarkusProvider CU tracking', () => {
     expect(String(err)).not.toMatch(/openrouter\.ai/i);
   });
 
+  it('names an OpenRouter 403 provider ToS denial as PROVIDER_TOS_BLOCKED, not as credits or auth', async () => {
+    const dual = new MarkusProvider({
+      apiKey: 'sk-or-member',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5.1',
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse(
+        {
+          error: {
+            message: 'The request is prohibited due to a violation of provider Terms Of Service.',
+            code: 403,
+            metadata: { provider_name: null, previous_errors: [{ code: 403 }] },
+          },
+          user_id: 'user_abc',
+        },
+        403,
+      ),
+    );
+    let err: unknown;
+    try {
+      await dual.chat({ messages: [{ role: 'user', content: 'hi' }], model: 'openai/gpt-5.1' });
+    } catch (e) {
+      err = e;
+    }
+    const message = String(err);
+    expect(message).toContain('PROVIDER_TOS_BLOCKED');
+    // The actionable lever must be in the text the agent reads...
+    expect(message).toMatch(/switch to a different model/i);
+    // ...and the two wrong diagnoses must not be.
+    expect(message).not.toMatch(/CU_EXCEEDED|insufficient|top up/i);
+    // The vendor body carries admin/settings links; we deliberately do not echo it.
+    expect(message).not.toMatch(/settings\/privacy|workspaces/i);
+  });
+
   it('OR path sends catalog OR slug as-is (no alias remap)', async () => {
     clearMarkusModelListCache();
     const dual = new MarkusProvider({

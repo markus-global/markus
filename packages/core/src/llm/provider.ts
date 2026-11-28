@@ -139,6 +139,46 @@ export const UPSTREAM_BILLING_MISMATCH_MSG =
   'MARKUS_UPSTREAM_ERROR: Upstream returned a payment/credit error, but Hub still shows remaining credits. Please retry shortly or switch model.';
 
 /**
+ * Marker for a provider **Terms-of-Service access block** (OpenRouter 403
+ * `The request is prohibited due to a violation of provider Terms Of Service`).
+ *
+ * This is an entitlement refusal, not a fault: the model provider does not
+ * authorise this account / this network origin to use the model (OpenRouter
+ * ToS §5.7 "Restricted Models" — providers restrict by country, region and
+ * entity). Retrying, lowering max_tokens or trimming the prompt cannot help,
+ * and the failure says nothing about the balance, the key or the content.
+ *
+ * Kept as a marker + one shared predicate so the agent/CLI text, the media
+ * tools and the chat UI all classify the *same* upstream wording; the UI adds
+ * its own localisation on top (web-ui cannot import core).
+ */
+export const PROVIDER_TOS_BLOCKED_CODE = 'PROVIDER_TOS_BLOCKED';
+
+/** Vendor wordings that mean "provider refused under its own terms". */
+const PROVIDER_TOS_BLOCKED_PATTERN =
+  /violation of provider Terms Of Service|prohibited due to (?:a )?violation of [^"]{0,60}terms|not authorized to (?:access|use) (?:this|the) model/i;
+
+/** True when `text` is (or contains) a provider Terms-of-Service access block. */
+export function isProviderTosBlockedMessage(text: string): boolean {
+  if (!text) return false;
+  if (text.includes(PROVIDER_TOS_BLOCKED_CODE)) return true;
+  return PROVIDER_TOS_BLOCKED_PATTERN.test(text);
+}
+
+/**
+ * The one actionable sentence for a ToS access block — reused by every
+ * non-UI surface (agent tool results, CLI, logs), so the diagnosis never
+ * degrades back into the bare vendor sentence.
+ *
+ * Written for the caller, not for the end user: the agent needs to know the
+ * only lever is *switching model*, and that more turns on this model are wasted.
+ * Compliance/side-channel advice (VPN, proxies, vendor account state) does not
+ * belong here — it is neither actionable for an agent nor ours to instruct.
+ */
+export const PROVIDER_TOS_BLOCKED_HINT =
+  'the upstream provider refuses this model for this account or network origin under its own terms, so retrying or rephrasing cannot succeed. Switch to a different model (e.g. deepseek-*, qwen-*, glm-*) and continue — do not spend further turns on this model.';
+
+/**
  * OpenRouter 402 bodies often include:
  *   "You requested up to N tokens, but can only afford M."
  * When `max_tokens` is omitted, OR still reserves against a high default

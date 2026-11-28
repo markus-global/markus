@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentToolHandler } from '../agent.js';
-import type { ImageResult, MultiModalProviderInterface, MultiModalToolSchemas, VideoResult, VideoReference, VideoFrameImage, TTSOptions, DecisionAnswer, DecisionCriteria, DecisionEntry, DecisionQuestion, DecisionQuestionType, DecisionResult } from '../llm/provider.js';
+import { isProviderTosBlockedMessage, type ImageResult, type MultiModalProviderInterface, type MultiModalToolSchemas, type VideoResult, type VideoReference, type VideoFrameImage, type TTSOptions, type DecisionAnswer, type DecisionCriteria, type DecisionEntry, type DecisionQuestion, type DecisionQuestionType, type DecisionResult } from '../llm/provider.js';
 import { createLogger, markusPath, type ModelCapabilityType, type LLMRequest } from '@markus/shared';
 import { toolErr, toolOk } from './result.js';
 
@@ -1172,16 +1172,24 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         const tried = candidates.map(c => c.model ?? c.name).join(', ');
         log.error(`Video generation failed on all ${candidates.length} provider(s)`);
         const errMsg = lastError instanceof Error ? lastError.message : String(lastError);
-        const tosBlocked = /403|Terms Of Service|TOS/i.test(errMsg);
+        // `403` alone is ambiguous (auth / moderation / entitlement). Classify the
+        // *worded* provider-terms denial with the one shared predicate so video
+        // and chat never disagree about what this error means.
+        const tosBlocked = isProviderTosBlockedMessage(errMsg);
+        const forbidden = tosBlocked || /\b403\b/.test(errMsg);
         return toolErr(
           `Video generation failed (tried: ${tried}): ${errMsg}` +
             (tosBlocked
-              ? ' This is often an OpenRouter provider/privacy policy block or content TOS denial — retry with a different model (e.g. x-ai/grok-imagine-video-1.5 or openai/sora-*), or check https://openrouter.ai/settings/privacy.'
-              : ''),
+              ? ' The video provider refuses this model for this account or network origin under its own terms — that is an access restriction, not a bad prompt: retry with a different model (e.g. x-ai/grok-imagine-video-1.5 or openai/sora-*).'
+              : forbidden
+                ? ' This is a 403 from the media provider: an access/permission problem, not a bad prompt — retry with a different model (e.g. x-ai/grok-imagine-video-1.5 or openai/sora-*).'
+                : ''),
           {
             hint: tosBlocked
-              ? 'HTTP 403 TOS: try another video model, soften the prompt, or enable the provider in OpenRouter privacy settings. Do not stop the whole task — continue other pending steps.'
-              : ROUTING_HINT,
+              ? 'HTTP 403 provider Terms-of-Service block: switch to another video model. Do not stop the whole task — continue other pending steps.'
+              : forbidden
+                ? 'HTTP 403 TOS: try another video model, soften the prompt, or enable the provider in OpenRouter privacy settings. Do not stop the whole task — continue other pending steps.'
+                : ROUTING_HINT,
             tried_models: candidates.map(c => c.model).filter(Boolean),
           },
         );

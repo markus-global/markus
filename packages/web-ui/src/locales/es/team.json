@@ -322,6 +322,7 @@
     "ai503": "⚠ Servicio de inteligencia artificial no disponible: {{detail}}. Inténtelo más tarde..",
     "aiUpstreamBillingMismatch": "⚠ Error de facturación de arriba, pero sus créditos de Markus aún permanecen. Por favor vuelva a entrar en breve o cambie el modelo. {{detail}}",
     "aiRegionBlocked": "⚠ Modelo {{model}} no está disponible en su región. Por favor, cambie a otro modelo en el compositor de chat.",
+    "aiProviderTosBlocked": "⚠ El modelo {{model}} no está disponible en este momento; esta solicitud no se ha cobrado. Es una limitación de disponibilidad de este modelo por nuestra parte y reintentar no ayudará — cambie a otro modelo para continuar, p. ej. DeepSeek / Qwen / GLM.",
     "aiGeneric": "⚠ Error de servicio AI: {{detail}}",
     "defaultUpstreamDown": "proveedor de LLM devuelto 502 Bad Gateway",
     "defaultUpstreamBillingMismatch": "Error de pago inicial con créditos locales restantes",
