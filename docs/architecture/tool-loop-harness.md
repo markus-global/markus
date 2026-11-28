@@ -50,7 +50,30 @@ blocked; the lock is released even when the wrapped call throws. Note this seria
 *single tool call*, not an entire multi-step flow — see the known-limitations section of
 that doc.
 
-`spawn_subagent` and `spawn_subagents` let the model delegate focused subtasks to lightweight LLM subagents; `spawn_subagents` runs several in parallel. They are registered on the Agent like other built-in tools. All subagent limits (max parallel count, LLM retry policy, preview truncation lengths) are centralized in `packages/shared/src/limits.ts` — not hardcoded in the subagent module.
+`spawn_subagent` and `spawn_subagents` let the model delegate focused subtasks to lightweight LLM subagents; `spawn_subagents` runs several in parallel. They are registered on the Agent like other built-in tools. All subagent limits (max parallel count, the per-child default budget, LLM retry policy, the wrap-up output cap, preview truncation lengths) are centralized in `packages/shared/src/limits.ts` — not hardcoded in the subagent module.
+
+**The budget contract.** A child's iteration budget is a spend ceiling: not a schedule, and not a gag.
+
+- Each child owns a **finite, independent** budget (`iteration_budget`, else `SUBAGENT_DEFAULT_ITERATION_BUDGET`) and can never spend a sibling's.
+- The child is **told** that budget — appended to the tail of its user turn, never to the system
+  prompt, so the head stays byte-identical across spawns and a provider's prefix cache is not
+  invalidated by a per-spawn value. It is warned **once** at `SUBAGENT_BUDGET_NOTICE_AT` (80 %) to
+  stop expanding scope and start closing out.
+- When the budget runs out the child gets **one final turn with no tools at all**. That turn is not
+  an iteration and does not consume the aggregate breaker; its text becomes the result, so a
+  truncated child hands back *what it finished / what is left / what to verify* instead of dying
+  mid-sentence. A child that did nothing (0 iterations) spends nothing on it.
+- `output` always carries a **machine-counted digest** (iterations used, tool calls and failures,
+  writes, files touched, top tools) *after* the model's prose. The model's account can be wrong;
+  the digest cannot be edited by it.
+- `finalReport` states where that prose came from: `'model'` (the child's closing report),
+  `'digest'` (the wrap-up failed, timed out or said nothing — only the counters are true) or `null`
+  (the child completed normally, no wrap-up was spent).
+- A wrap-up that fails **degrades to the digest and never throws**: a reporting improvement must not
+  become a new failure point.
+
+Consequence for the parent: `budget_exhausted` is a **half-result, not a lost one** — read the
+report and re-dispatch only the work it says is still undone.
 
 Large tool results (>50K chars) are offloaded to `{agentDataDir}/tool-outputs/` with a preview in context (Manus-inspired "restorable compression").
 

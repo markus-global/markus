@@ -195,8 +195,10 @@ describe('runSubagentLoop', () => {
 
     // Budget bounded the work: exactly `remaining` iterations consumed, then stop.
     expect(sharedBudget.remaining).toBe(0);
-    // init chat + 2 iteration chats = 3 total (bounded, not 1000).
-    expect((router.chat as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(3);
+    // init chat + 2 iteration chats + 1 wrap-up chat (D3: a stopped child gets one final
+    // NO-TOOL turn so the parent receives a report instead of a bare notice) = 4 total,
+    // still bounded — never 1000.
+    expect((router.chat as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(4);
     // H6: the shared pool is a breaker — its stop is explicit, never an empty success.
     expect(result.status).toBe('budget_exhausted');
     expect(result.aggregateCeilingReached).toBe(true);

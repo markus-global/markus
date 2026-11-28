@@ -767,7 +767,35 @@ export const SUBAGENT_ERROR_PREVIEW_CHARS = 500;
 export const SUBAGENT_MAX_PARALLEL = 10;
 
 /**
- * C7-B — **circuit breaker, not a schedule**.
+ * D3 — the **finite** per-child iteration budget when neither the caller
+ * (`iteration_budget`) nor a WorkUnit ledger supplies one.
+ *
+ * Why finite: the 6b patch made the per-child default unbounded (`Infinity`). An
+ * unbounded child budget meant a wide fan-out had no per-child rope at all, so the
+ * only stop was the shared pool — de facto "the circuit breaker is the schedule".
+ * A finite default is what makes sibling independence real: each child owns exactly
+ * this many iterations and can never spend a sibling's.
+ *
+ * Why 30 and not 10: the old value was *derived* from the aggregate breaker
+ * (`100 / 10 parallel`) — the very "breaker is the schedule" thinking that C7-B
+ * removed from the code. Measured on a live instance (2026-11-28, `work_units`
+ * delegation rows, n=123): with `budget=10` **11 of 13 children hit the wall**
+ * (10 of them ending `paused_budget`), while children that finished on their own
+ * (n=49, budget>=20) used a median of 35 iterations. A default of 10 therefore made
+ * the median-sized task die at the ceiling — the budget was scheduling, and it was
+ * scheduling too small. 30 covers the band below the median and leaves the larger
+ * jobs to explicit `iteration_budget`; it is a product decision, not a derivation.
+ *
+ * Budgeting is a *spend ceiling*, never the expected work: a child that finishes
+ * early costs what it used. What a stop now costs is bounded separately — see
+ * `SUBAGENT_FINAL_REPORT_MAX_TOKENS` (one no-tool wrap-up turn), so a truncated
+ * child always hands back a report instead of a bare stop notice.
+ */
+export const SUBAGENT_DEFAULT_ITERATION_BUDGET = 30;
+
+/**
+ * C7-B — **circuit breaker, not a schedule** — and, since D3, derived FROM the
+ * per-child default rather than feeding it.
  *
  * History (kept as a lesson, not narrative): the prompt text already called this a
  * circuit breaker, but the code pre-allocated it as a shared iteration POOL for every
@@ -777,26 +805,33 @@ export const SUBAGENT_MAX_PARALLEL = 10;
  * **abnormal fallback ceiling** — the worst case a full-width fan-out may reach when
  * per-child budgets are misconfigured.
  *
- * Derivation of the per-child default keeps the two facts consistent: a full-width
- * fan-out (`SUBAGENT_MAX_PARALLEL` children) at the default budget lands exactly on
- * this breaker, so the breaker cannot be exceeded by a correctly configured fan-out.
+ * Direction of the dependency matters: the budget is the product decision, the breaker
+ * is the cost ceiling that follows from it, so a correctly configured full-width
+ * fan-out cannot exceed the breaker.
  */
-export const SUBAGENT_MAX_AGGREGATE_ITERATIONS = 100;
+export const SUBAGENT_MAX_AGGREGATE_ITERATIONS =
+  SUBAGENT_DEFAULT_ITERATION_BUDGET * SUBAGENT_MAX_PARALLEL;
 
 /**
- * C7-B — the **finite** per-child iteration budget when neither the caller
- * (`iteration_budget`) nor a WorkUnit ledger supplies one.
- *
- * Why finite: the 6b patch made the per-child default unbounded (`Infinity`). An
- * unbounded child budget meant a wide fan-out had no per-child rope at all, so the
- * only stop was the shared pool — de facto "the circuit breaker is the schedule".
- * A finite default is what makes sibling independence real: each child owns exactly
- * this many iterations and can never spend a sibling's.
+ * D3 — output cap for the wrap-up turn a child gets AFTER its iteration budget is
+ * exhausted. The turn carries no tools (the model cannot keep working), so this only
+ * bounds the report: what was finished, what is left, what the parent must verify.
  */
-export const SUBAGENT_DEFAULT_ITERATION_BUDGET = Math.max(
-  1,
-  Math.floor(SUBAGENT_MAX_AGGREGATE_ITERATIONS / SUBAGENT_MAX_PARALLEL),
-);
+export const SUBAGENT_FINAL_REPORT_MAX_TOKENS = 700;
+
+/**
+ * D3 — fraction of a child's iteration budget at which it is told to stop expanding
+ * scope and start closing out. Injected once, as a tail message, so a child reaches
+ * the wall with a written conclusion instead of a half-applied edit.
+ */
+export const SUBAGENT_BUDGET_NOTICE_AT = 0.8;
+
+/**
+ * D3 — a wrap-up turn shorter than this is treated as "no report" and the platform's
+ * deterministic digest is used instead. Guards against a model that answers the
+ * wrap-up prompt with "OK" (which would be a report that says nothing).
+ */
+export const SUBAGENT_FINAL_REPORT_MIN_CHARS = 40;
 
 /** Max LLM call retries for transient errors within a subagent. */
 export const SUBAGENT_MAX_LLM_RETRIES = 2;
