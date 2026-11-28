@@ -104,19 +104,23 @@ push tag v*
   │     │
   │     ├─→ build-server-binary  Linux x64 (.deb + .tar.gz)
   │     │
-  │     ├─→ build-desktop        3-platform Electron desktop build (macOS + Linux)
-  │     │     ├── macOS arm64    (.dmg)
-  │     │     ├── macOS x64      (.dmg)
+  │     ├─→ build-desktop        Electron desktop build (macOS + Linux)
+  │     │     ├── macOS          1 job, both arches (.dmg + update .zip, arm64 + x64)
   │     │     └── Linux x64      (.AppImage)
   │     │
   │     └─→ build-desktop-windows  Windows x64 (.exe, signed)
   │
   ├─→ github-release            Create GitHub Release
   │
-  └─→ upload-to-hub             Upload to R2 (stable releases only)
+  └─→ upload-to-hub             Upload artifacts + channel feeds to R2
+        ├── prerelease writes rc-mac.yml / rc.yml / rc-linux.yml, never meta.json
+        ├── stable writes latest*.yml + meta.json
+        └── verify: feeds and every file they advertise must be in the bucket
+            (gate); the markus.global edge copy may lag and only fails the job
+            when the domain answers nothing
 ```
 
-**6 CI jobs, 7 artifacts.**
+**6 CI jobs.**
 
 ### Required Secrets
 
