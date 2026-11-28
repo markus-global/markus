@@ -34,6 +34,18 @@ import { useLayout, type RightPanelMode, type RightPanelPayload, type RightPanel
 
 type TabOwner = { agentId: string; agentName: string };
 
+/**
+ * 选中态的统一视觉语言（品牌色 15% 底）。
+ *
+ * 右侧栏里有两个“被选中”概念 —— 模式按钮（浏览器/命令行）与标签页 —— 它们必须同色，
+ * 否则同一行 chrome 里会出现两套“我选中了”的暗示（Owner 2026-11-28：标签选中是中性灰、
+ * 模式按钮是品牌色，看着不一致）。
+ *
+ * 抽成常量而不是两处各写一遍字面量：以后只有“一处可改”，不会再只改一边。
+ * 测试 `rightPanelSelection.test.tsx` 守的就是“两边用同一个 token”。
+ */
+const SELECTED_SURFACE = 'bg-brand-500/15';
+
 function toFileUrl(filePath: string): string {
   if (/^(https?|file):\/\//i.test(filePath)) return filePath;
   // Windows: C:\foo → file:///C:/foo ; POSIX: /foo → file:///foo
@@ -886,7 +898,7 @@ export function RightPanel({
                 aria-pressed={panelMode === 'browser'}
                 className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
                   panelMode === 'browser'
-                    ? 'bg-brand-500/15 text-brand-500'
+                    ? `${SELECTED_SURFACE} text-brand-500`
                     : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                 }`}
               >
@@ -903,7 +915,7 @@ export function RightPanel({
                 aria-pressed={panelMode === 'terminal'}
                 className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
                   panelMode === 'terminal'
-                    ? 'bg-brand-500/15 text-brand-500'
+                    ? `${SELECTED_SURFACE} text-brand-500`
                     : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                 }`}
               >
@@ -949,9 +961,9 @@ export function RightPanel({
                       key={tab.id}
                       className={`group shrink-0 flex items-center max-w-[200px] rounded-md text-[11px] border transition-colors ${
                         active
-                          ? owner
-                            ? 'bg-brand-500/10 border-brand-500/35 text-fg-primary'
-                            : 'bg-surface-elevated border-border-default text-fg-primary'
+                          // 选中态 = 模式按钮同一口径的品牌色底（owner 与否不再改底色，
+                          // 「被 agent 控制」靠上方的名字胶囊区分，不靠背景色抢戏）。
+                          ? `${SELECTED_SURFACE} border-brand-500/35 text-fg-primary`
                           : owner
                             ? 'border-brand-500/25 text-fg-secondary hover:bg-brand-500/8'
                             : 'border-transparent text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
