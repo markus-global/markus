@@ -82,7 +82,7 @@ h1 { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
   <h1>Markus</h1>
   <div class="sub" id="sub">Digital Workforce</div>
   <div class="bar"></div>
-  <p id="status">正在启动服务...</p>
+  <p id="status">正在准备 Markus…</p>
   <div id="tip"></div>
 </div>
 <script>
@@ -92,7 +92,7 @@ h1 { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
   // not on a screen the user stares at.
   const statusEl = document.getElementById('status');
 
-  statusEl.textContent = zh ? '正在启动服务...' : 'Starting server...';
+  statusEl.textContent = zh ? '正在准备 Markus…' : 'Preparing Markus…';
   document.getElementById('sub').textContent = zh ? '数字劳动力平台' : 'Digital Workforce';
 
   // Tips rotate so a long boot still feels alive, and teach something while waiting.

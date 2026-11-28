@@ -203,6 +203,27 @@ app.whenReady().then(async () => {
     ).catch(() => {});
   };
 
+  // Splash copy is owned HERE, keyed by the stage id the backend reports.
+  //
+  // The backend's own `message` strings are English diagnostics —
+  // "services ready on :8056", "server ready at http://…" — and forwarding them
+  // straight to the splash is how the screen ended up half-translated ("数字劳动力
+  // 平台" above an English line) while leaking an internal port the user can
+  // neither use nor act on. Diagnostics stay in the startup log; the user sees
+  // this table, written in one place.
+  const SPLASH_STAGE: Record<string, { en: string; zh: string }> = {
+    boot: { en: 'Preparing Markus…', zh: '正在准备 Markus…' },
+    config: { en: 'Loading your settings…', zh: '正在加载你的设置…' },
+    llm: { en: 'Connecting your models…', zh: '正在连接模型服务…' },
+    services: { en: 'Restoring agents and workspaces…', zh: '正在恢复智能体与工作区…' },
+    ready: { en: 'Opening your workspace…', zh: '正在打开工作区…' },
+  };
+  const splashStageText = (step: string): string => {
+    const entry = SPLASH_STAGE[step];
+    if (!entry) return t('Starting services…', '正在启动服务…');
+    return isZh ? entry.zh : entry.en;
+  };
+
   try {
     const port = 8056;
     const health = await probeHealth(backendUrl);
@@ -227,7 +248,9 @@ app.whenReady().then(async () => {
       ));
       await new Promise(resolve => setTimeout(resolve, 150));
       const instance = await startMarkusBackend({
-        onProgress: (_step, message) => updateSplash(message),
+        // Only the step id crosses the boundary: the message is backend English
+        // diagnostics and belongs in the log, not on screen.
+        onProgress: (step) => updateSplash(splashStageText(step)),
       });
       backendUrl = instance.url;
       setProtocolBackendUrl(backendUrl);
