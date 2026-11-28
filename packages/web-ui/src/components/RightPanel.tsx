@@ -16,6 +16,7 @@ import { DeliverableShareModal } from './DeliverableShareModal.tsx';
 import { oneLineLabel, type ChipKind } from '../lib/chatChips.ts';
 import { createDeliverableShareService, canShareDeliverableFormat, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import TabScrollRail from './TabScrollRail.tsx';
+import { activeTabScrollDelta } from '../lib/tabStripScroll.ts';
 import { BrowserHistoryMenu } from './BrowserHistoryMenu.tsx';
 import {
   clearBrowserHistory,
@@ -186,6 +187,8 @@ export function RightPanel({
   const layout = useLayout();
   const contentRef = useRef<HTMLDivElement>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
+  /** 新建标签按钮的贴边区：溢出时它盖住滚动视口右缘，算滚动量时要扣它的宽度。 */
+  const newTabAnchorRef = useRef<HTMLDivElement>(null);
   const historyWrapRef = useRef<HTMLDivElement>(null);
   const activeTabBtnRef = useRef<HTMLButtonElement>(null);
   const terminalApiRef = useRef<EmbeddedTerminalApi | null>(null);
@@ -327,16 +330,27 @@ export function RightPanel({
   const contentKey = previewIdentity(payload, activeTabId);
 
   // Keep the active tab in view (new tabs open on the left; selecting an
-  // off-screen tab also scrolls it into the strip). `inline: 'nearest'` is
-  // accurate here because the strip's own clientWidth already excludes the
-  // pinned new-tab button (it is a sibling, not a child).
+  // off-screen tab also scrolls it into the strip).
+  //
+  // 不用 scrollIntoView：新建按钮是 sticky 覆盖层，浏览器不知道它遮住了滚动视口右缘，
+  // `inline: 'nearest'` 会把标签停在按钮底下（点开一个新标签却看不见它）。
+  // 偏移量由纯函数算（lib/tabStripScroll.ts），几何判断可单独单测。
   useEffect(() => {
     if (!activeTabId) return;
     const btn = activeTabBtnRef.current;
     const strip = tabStripRef.current;
     if (!btn || !strip) return;
     const id = requestAnimationFrame(() => {
-      btn.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+      const stripRect = strip.getBoundingClientRect();
+      const btnRect = btn.getBoundingClientRect();
+      const delta = activeTabScrollDelta({
+        stripLeft: stripRect.left,
+        stripRight: stripRect.right,
+        tabLeft: btnRect.left,
+        tabRight: btnRect.right,
+        reserved: newTabAnchorRef.current?.offsetWidth ?? 0,
+      });
+      if (delta !== 0) strip.scrollBy({ left: delta, behavior: 'smooth' });
     });
     return () => cancelAnimationFrame(id);
   }, [activeTabId, tabs?.length]);
@@ -903,15 +917,11 @@ export function RightPanel({
               点标签下缘就会变成拖拽滚动条（更早的一次误操作根因）。 */}
           {(showTabs || onNewTab) ? (
             <div data-no-drag className="relative flex-1 min-w-0 self-stretch flex flex-col justify-center">
-              {/* 「可滚动的标签」与「不可滚的镀铬按钮」必须分属两个盒子：
-                  新建按钮一旦放进滚动容器，标签够多时就会被一起推到视口外（本次缺陷）。
-                  结构上分开后，浏览器没有任何机会把它滚走。 */}
-              <div className="flex items-center min-w-0">
-                <div
-                  ref={tabStripRef}
-                  role="tablist"
-                  className="flex-1 min-w-0 flex flex-nowrap items-center gap-0.5 overflow-x-auto overflow-y-hidden overscroll-x-contain scrollbar-hide"
-                  onWheel={e => {
+              <div
+                ref={tabStripRef}
+                role="tablist"
+                className="min-w-0 flex flex-nowrap items-center gap-0.5 overflow-x-auto overflow-y-hidden overscroll-x-contain scrollbar-hide"
+                onWheel={e => {
                     const el = e.currentTarget;
                     if (el.scrollWidth <= el.clientWidth) return;
                     if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
@@ -1000,28 +1010,35 @@ export function RightPanel({
                     </div>
                   );
                 })}
-              </div>
-              {onNewTab && (
-                <div data-tab-new-tab className="shrink-0 flex items-center pl-0.5">
-                  <button
-                    type="button"
-                    onClick={onNewTab}
-                    className="w-7 h-7 flex items-center justify-center rounded-md text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/60 transition-colors"
-                    title={t('common:newTab', { defaultValue: 'New Tab' })}
-                    aria-label={t('common:newTab', { defaultValue: 'New Tab' })}
+                {onNewTab && (
+                  // 新建按钮待在标签条**内部**，`sticky right-0`：
+                  //   · 标签没占满时 —— 它就是普通行内元素，紧贴着最后一个标签（左侧）；
+                  //   · 标签占满开始滚动时 —— 它钉在滚动视口右缘，永远点得到。
+                  // 背景必须是不透明的：溢出时标签会从它底下穿过，没背景就会两张皮叠在一起。
+                  <div
+                    ref={newTabAnchorRef}
+                    data-tab-new-tab
+                    className="sticky right-0 z-10 shrink-0 flex items-center pl-1 bg-surface-primary"
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-            </div>
-            {/* 轨道绝对定位：它不占布局，所以「有/没有溢出」不会把标签行推上推下。
-                放在流内则标签行被它顶到偏离垂直中线 — 与两侧居中的图标对不齐。 */}
-            <div className="absolute inset-x-0 bottom-0 pointer-events-none">
-              <TabScrollRail scrollRef={tabStripRef} watch={`${tabs?.length ?? 0}:${activeTabId ?? ''}`} />
-            </div>
+                    <button
+                      type="button"
+                      onClick={onNewTab}
+                      className="w-7 h-7 flex items-center justify-center rounded-md text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/60 transition-colors"
+                      title={t('common:newTab', { defaultValue: 'New Tab' })}
+                      aria-label={t('common:newTab', { defaultValue: 'New Tab' })}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+              </div>
+              {/* 轨道绝对定位：它不占布局，所以「有/没有溢出」不会把标签行推上推下。
+                  放在流内则标签行被它顶到偏离垂直中线 — 与两侧居中的图标对不齐。 */}
+              <div className="absolute inset-x-0 bottom-0 pointer-events-none">
+                <TabScrollRail scrollRef={tabStripRef} watch={`${tabs?.length ?? 0}:${activeTabId ?? ''}`} />
+              </div>
             </div>
           ) : (
             <span className="text-sm font-semibold text-fg-primary truncate flex-1 min-w-0 px-1.5" title={reference || title}>
