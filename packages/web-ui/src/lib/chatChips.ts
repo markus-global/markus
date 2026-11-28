@@ -15,6 +15,7 @@
  */
 
 /** What a chip points at. Keep the set small — each kind needs an icon + a word. */
+import type { IconName } from '../components/Icon.tsx';
 export type ChipKind =
   | 'task'
   | 'requirement'
@@ -63,6 +64,28 @@ export const CHIP_ICONS: Record<ChipKind, string> = {
   web: '🌐',
   terminal: '⌘',
   note: '💬',
+};
+
+/**
+ * 胶囊上实际画的图标（SVG 名字）。
+ *
+ * **为什么不能直接改 `CHIP_ICONS`**：那组 emoji 是草稿文本的序列化格式 ——
+ * `[📄 a.md]` 会写进输入框并被 `parseNavChips` 解析回来，它是**线上协议**、不是图标。
+ * 所以「文本用 emoji（保持不变）／渲染用 SVG（新增）」必须分成两份：
+ * 一份管数据契约，一份管像素。
+ */
+export const CHIP_ICON_NAMES: Record<ChipKind, IconName> = {
+  task: 'check-circle',
+  requirement: 'pin',
+  project: 'folder',
+  deliverable: 'package',
+  workflow: 'gear',
+  agent: 'robot',
+  file: 'file',
+  selection: 'pencil-line',
+  web: 'globe',
+  terminal: 'keyboard',
+  note: 'message',
 };
 
 /**

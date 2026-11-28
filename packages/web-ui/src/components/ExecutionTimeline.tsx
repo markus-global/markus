@@ -16,6 +16,7 @@ import { ConfirmModal } from './ConfirmModal.tsx';
 import { CodingToolCard, type CodingToolSession } from './CodingToolCard.tsx';
 import { NamedIcon } from '../lib/namedIcons.tsx';
 import { TONE, type Tone } from '../lib/tone.ts';
+import { Icon, type IconName } from './Icon.tsx';
 import {
   getToolMeta, getShellCommand, formatDuration, formatLogTime, truncate, prettyJson, formatArgsDetail, suppressVirtualScrollAdjust,
   filterCompletedStarts, streamEntryToExecEntry,
@@ -167,11 +168,11 @@ function ToolDetailContent({ info, time }: { info: ToolCallInfo; time?: string }
               <div className="text-[10px] text-fg-tertiary pb-1">… {t('execution.earlierStepsOmitted', { n: logCount - SUBAGENT_LOG_RENDER_LIMIT })}</div>
             )}
             {visibleSubagentLogs.map((log, idx) => {
-              const icon = log.eventType === 'started' ? '▶' : log.eventType === 'completed' ? '✓' : log.eventType === 'error' ? '✗' : log.eventType === 'tool_start' ? '◎' : log.eventType === 'tool_end' ? '●' : log.eventType === 'thinking' ? '·' : '→';
+              const icon = log.eventType === 'started' ? 'play' : log.eventType === 'completed' ? 'check' : log.eventType === 'error' ? 'x' : log.eventType === 'tool_start' ? 'dot' : log.eventType === 'tool_end' ? 'dot' : log.eventType === 'thinking' ? 'dot' : 'arrow-right';
               const color = log.eventType === 'error' ? 'text-fg-tertiary' : log.eventType === 'completed' ? 'text-green-500' : log.eventType === 'started' || log.eventType === 'tool_start' ? 'text-brand-500' : 'text-fg-tertiary';
               return (
                 <div key={idx} className="flex items-start gap-1.5 text-xs">
-                  <span className={`shrink-0 ${color}`}>{icon}</span>
+                  <span className={`shrink-0 ${color}`}><Icon name={icon} size={12} /></span>
                   <span className={`font-mono break-all ${color}`}>{truncate(log.content, 500)}</span>
                 </div>
               );
@@ -258,20 +259,20 @@ const toneCls = (t: Tone) => ({
   textClass: TONE[t].text,
 });
 
-const TASK_STATUS_CONFIG: Record<string, { icon: string; labelKey: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
-  pending:     { icon: '⏳', labelKey: 'execution.card.pendingApproval', ...toneCls('attention') },
-  approving:   { icon: '⏳', labelKey: 'execution.card.approving',      ...toneCls('attention') },
-  rejecting:   { icon: '⏳', labelKey: 'execution.card.rejecting',      ...toneCls('attention') },
-  in_progress: { icon: '▶',  labelKey: 'execution.card.inProgress',     ...toneCls('active') },
-  completed:   { icon: '✅', labelKey: 'execution.card.completed',      ...toneCls('success') },
-  review:      { icon: '👀', labelKey: 'execution.card.inReview',       ...toneCls('attention') },
-  blocked:     { icon: '🚫', labelKey: 'execution.card.blocked',        ...toneCls('blocked') },
-  failed:      { icon: '❌', labelKey: 'execution.card.failed',         ...toneCls('danger') },
-  rejected:    { icon: '❌', labelKey: 'execution.card.rejected',       ...toneCls('danger') },
-  revision:    { icon: '✏️', labelKey: 'execution.card.revision',       ...toneCls('active') },
-  cancelled:   { icon: '⊘',  labelKey: 'execution.card.cancelled',     ...toneCls('neutral') },
-  archived:    { icon: '📦', labelKey: 'execution.card.archived',       ...toneCls('neutral') },
-  loading:     { icon: '⏳', labelKey: 'execution.card.loading',        ...toneCls('neutral') },
+const TASK_STATUS_CONFIG: Record<string, { icon: IconName; labelKey: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
+  pending:     { icon: 'hourglass', labelKey: 'execution.card.pendingApproval', ...toneCls('attention') },
+  approving:   { icon: 'hourglass', labelKey: 'execution.card.approving',      ...toneCls('attention') },
+  rejecting:   { icon: 'hourglass', labelKey: 'execution.card.rejecting',      ...toneCls('attention') },
+  in_progress: { icon: 'play',  labelKey: 'execution.card.inProgress',     ...toneCls('active') },
+  completed:   { icon: 'check-circle', labelKey: 'execution.card.completed',      ...toneCls('success') },
+  review:      { icon: 'eye', labelKey: 'execution.card.inReview',       ...toneCls('attention') },
+  blocked:     { icon: 'ban', labelKey: 'execution.card.blocked',        ...toneCls('blocked') },
+  failed:      { icon: 'x-circle', labelKey: 'execution.card.failed',         ...toneCls('danger') },
+  rejected:    { icon: 'x-circle', labelKey: 'execution.card.rejected',       ...toneCls('danger') },
+  revision:    { icon: 'pencil', labelKey: 'execution.card.revision',       ...toneCls('active') },
+  cancelled:   { icon: 'ban',  labelKey: 'execution.card.cancelled',     ...toneCls('neutral') },
+  archived:    { icon: 'package', labelKey: 'execution.card.archived',       ...toneCls('neutral') },
+  loading:     { icon: 'hourglass', labelKey: 'execution.card.loading',        ...toneCls('neutral') },
 };
 
 export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
@@ -338,7 +339,7 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
   return (
     <div className={`my-2 rounded-lg border ${cfg.borderClass} ${cfg.bgClass} p-3 max-w-md transition-colors`}>
       <div className="flex items-start gap-2 mb-1 cursor-pointer group" role="button" tabIndex={0} onClick={goToTask} onKeyDown={e => e.key === 'Enter' && goToTask()}>
-        <span className="text-sm mt-0.5">{cfg.icon}</span>
+        <span className="text-sm mt-0.5"><Icon name={cfg.icon} size={14} /></span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${cfg.badgeClass}`}>{t('execution.taskBadge')}</span>
@@ -417,16 +418,16 @@ const REQ_STATUS_TO_CARD_STATE: Record<string, ReqCardState> = {
   archived: 'archived',
 };
 
-const REQ_STATUS_CONFIG: Record<string, { icon: string; labelKey: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
-  pending:     { icon: '📋', labelKey: 'execution.card.pendingApproval', ...toneCls('attention') },
-  approving:   { icon: '⏳', labelKey: 'execution.card.approving',      ...toneCls('attention') },
-  rejecting:   { icon: '⏳', labelKey: 'execution.card.rejecting',      ...toneCls('attention') },
-  in_progress: { icon: '▶',  labelKey: 'execution.card.inProgress',     ...toneCls('active') },
-  completed:   { icon: '✅', labelKey: 'execution.card.completed',      ...toneCls('success') },
-  rejected:    { icon: '❌', labelKey: 'execution.card.rejected',       ...toneCls('danger') },
-  cancelled:   { icon: '⊘',  labelKey: 'execution.card.cancelled',     ...toneCls('neutral') },
-  archived:    { icon: '📦', labelKey: 'execution.card.archived',       ...toneCls('neutral') },
-  loading:     { icon: '⏳', labelKey: 'execution.card.loading',        ...toneCls('neutral') },
+const REQ_STATUS_CONFIG: Record<string, { icon: IconName; labelKey: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
+  pending:     { icon: 'clipboard', labelKey: 'execution.card.pendingApproval', ...toneCls('attention') },
+  approving:   { icon: 'hourglass', labelKey: 'execution.card.approving',      ...toneCls('attention') },
+  rejecting:   { icon: 'hourglass', labelKey: 'execution.card.rejecting',      ...toneCls('attention') },
+  in_progress: { icon: 'play',  labelKey: 'execution.card.inProgress',     ...toneCls('active') },
+  completed:   { icon: 'check-circle', labelKey: 'execution.card.completed',      ...toneCls('success') },
+  rejected:    { icon: 'x-circle', labelKey: 'execution.card.rejected',       ...toneCls('danger') },
+  cancelled:   { icon: 'ban',  labelKey: 'execution.card.cancelled',     ...toneCls('neutral') },
+  archived:    { icon: 'package', labelKey: 'execution.card.archived',       ...toneCls('neutral') },
+  loading:     { icon: 'hourglass', labelKey: 'execution.card.loading',        ...toneCls('neutral') },
 };
 
 const REQ_WS_EVENTS = [
@@ -510,7 +511,7 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
   return (
     <div className={`my-2 rounded-lg border ${cfg.borderClass} ${cfg.bgClass} p-3 max-w-md transition-colors`}>
       <div className="flex items-start gap-2 mb-1 cursor-pointer group" role="button" tabIndex={0} onClick={goToReq} onKeyDown={e => e.key === 'Enter' && goToReq()}>
-        <span className="text-sm mt-0.5">{cfg.icon}</span>
+        <span className="text-sm mt-0.5"><Icon name={cfg.icon} size={14} /></span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${cfg.badgeClass}`}>{t('execution.reqBadge')}</span>
@@ -1009,7 +1010,7 @@ export function ExecEntryRow({ entry, showTime, isLast, defaultThinkingExpanded,
   if (entry.type === 'text') {
     // Rate-limit / agent failures are stored as ⚠-prefixed prose — render calmly in
     // tertiary grey instead of the default answer style (and never as a red bar).
-    if (entry.content.startsWith('⚠')) {
+    if (entry.content.startsWith('alert-triangle')) {
       return (
         <div className="min-w-0 pl-[23px] pr-1 overflow-hidden">
           <p className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap break-words">
@@ -1087,21 +1088,21 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
 
   if (!isActive) {
     if (errorCount > 0 && lastEntry?.type === 'error') {
-      statusIcon = '❌';
+      statusIcon = 'x-circle';
       statusLabel = t('execution.compact.failed');
     } else {
       const lastStatus = [...entries].reverse().find(e => e.type === 'status');
       const statusContent = lastStatus?.content ?? '';
       if (statusContent === 'completed' || statusContent === 'execution_finished') {
-        statusIcon = '✅';
+        statusIcon = 'check-circle';
         statusLabel = t('execution.compact.completed');
       } else {
-        statusIcon = '●';
+        statusIcon = 'dot';
         statusLabel = t('execution.compact.toolsExecuted', { count: toolCount });
       }
     }
   } else if (streamingText) {
-    statusIcon = '✍';
+    statusIcon = 'pen-line';
     statusLabel = t('execution.compact.writingResponse');
     statusDetail = truncate(streamingText.split('\n').pop() ?? '', 80);
   } else if (lastEntry?.type === 'tool_start') {
@@ -1117,7 +1118,7 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
     statusIcon = meta.icon;
     statusLabel = t(`execution.tools.${meta.key}`, { defaultValue: meta.label });
   } else {
-    statusIcon = '💭';
+    statusIcon = 'thought';
     statusLabel = t('execution.compact.thinking');
   }
 
