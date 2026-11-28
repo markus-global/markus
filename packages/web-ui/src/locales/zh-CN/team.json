@@ -322,6 +322,7 @@
     "ai503": "⚠ AI 服务不可用：{{detail}}。请稍后重试。",
     "aiUpstreamBillingMismatch": "⚠ 上游返回计费错误，但您的 Markus 积分仍有余额。请稍后重试或切换模型。{{detail}}",
     "aiRegionBlocked": "⚠ 当前地区无法使用模型 {{model}}。请在输入框右下角手动切换到其他可用模型。",
+    "aiProviderTosBlocked": "⚠ 模型 {{model}} 当前不可用，本次请求未扣积分。这是我们这边该模型的可用性限制，重试也不会成功 —— 请切换到其他模型继续，例如 DeepSeek / Qwen / GLM。",
     "aiGeneric": "⚠ AI 服务错误：{{detail}}",
     "defaultUpstreamDown": "LLM 供应商返回 502 Bad Gateway",
     "defaultUpstreamBillingMismatch": "上游计费异常且本地仍有余额",

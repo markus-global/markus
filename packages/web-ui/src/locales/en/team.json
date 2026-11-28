@@ -322,6 +322,7 @@
     "ai503": "⚠ AI service unavailable: {{detail}}. Please try again later.",
     "aiUpstreamBillingMismatch": "⚠ Upstream billing error, but your Markus credits still remain. Please retry shortly or switch model. {{detail}}",
     "aiRegionBlocked": "⚠ Model {{model}} is not available in your region. Please switch to another model in the chat composer.",
+    "aiProviderTosBlocked": "⚠ Model {{model}} is currently unavailable; this request was not charged. It is an availability limit on our side for this model, and retrying will not help — please switch to another model to continue, e.g. DeepSeek / Qwen / GLM.",
     "aiGeneric": "⚠ AI service error: {{detail}}",
     "defaultUpstreamDown": "LLM provider returned 502 Bad Gateway",
     "defaultUpstreamBillingMismatch": "Upstream payment error with remaining local credits",

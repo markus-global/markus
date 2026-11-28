@@ -310,6 +310,15 @@ export function friendlyAgentError(err: unknown, t: TFunction): string {
   if (/not available in your region/i.test(raw))
     return e('aiRegionBlocked', { model: (raw.match(/\[(?:markus|openrouter):([^\]]+)\]/i)?.[1] || '').trim() || '—' });
 
+  // Provider Terms-of-Service access block (OpenRouter 403 "…violation of
+  // provider Terms Of Service"). It is NOT a balance, key or moderation
+  // problem, and retrying cannot fix it — the only real move is switching
+  // model. Matching both the core marker and the vendor wording keeps stored
+  // messages and BYOK providers (which never pass through the markus provider)
+  // classified the same way.
+  if (raw.includes('PROVIDER_TOS_BLOCKED') || /violation of provider Terms Of Service/i.test(raw))
+    return e('aiProviderTosBlocked', { model: (raw.match(/\[(?:markus|openrouter):([^\]]+)\]/i)?.[1] || '').trim() || '—' });
+
   const status = providerStatus(raw);
   if (status === 401 || /unauthorized|invalid.?api.?key/i.test(raw))
     return e('ai401', { detail: detail || e('defaultInvalidApiKey') });

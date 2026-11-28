@@ -30,6 +30,7 @@ const TEMPLATES: Record<string, string> = {
   'team:errors.ai502': 'GATEWAY detail={{detail}}',
   'team:errors.ai503': 'UNAVAILABLE detail={{detail}}',
   'team:errors.aiGeneric': 'GENERIC detail={{detail}}',
+  'team:errors.aiProviderTosBlocked': 'TOS model={{model}}',
   'team:errors.defaultInvalidApiKey': 'DEFAULT_KEY',
   'team:errors.defaultTooManyRequests': 'DEFAULT_429',
   'team:errors.defaultConflict': 'DEFAULT_409',
@@ -92,6 +93,59 @@ describe('friendlyAgentError — status codes are matched structurally', () => {
     expect(friendlyAgentError('HTTP 409: conflict', t)).toContain('CONFLICT');
     expect(friendlyAgentError('OpenAI API error 502: bad gateway', t)).toContain('GATEWAY');
     expect(friendlyAgentError('OpenAI API error 503: unavailable', t)).toContain('UNAVAILABLE');
+  });
+});
+
+describe('friendlyAgentError — provider Terms-of-Service access block', () => {
+  /**
+   * The row this platform actually stored, taken verbatim from
+   * `chat_messages.id = cm_86569ff16855b24e3b0185ff` (2026-11-28T14:35:59Z,
+   * 502 chars; the tail is further identical `previous_errors` entries and is
+   * trimmed here). History rows keep the raw provider text and are re-derived
+   * at render time (`dbMsgToChat` → `errorRaw` → this function), so this
+   * fixture is what decides whether existing error bubbles get the new copy.
+   */
+  const STORED_ROW_403 =
+    '⚠ Error: [markus:openai/gpt-6.2-sol] Markus proxy error 403: ' +
+    '{"error":{"message":"The request is prohibited due to a violation of provider Terms Of Service.",' +
+    '"code":403,"metadata":{"provider_name":null,"previous_errors":[' +
+    '{"code":403,"message":"The request is prohibited due to a violation of provider Terms Of Service."},' +
+    '{"code":403,"message":"The request is prohibited due to a violation of provider Terms Of Service."}]}}';
+
+  /** Production payload with the core marker (new errors). */
+  const TOS_BLOCK_403 =
+    '⚠ Error: [markus:openai/gpt-5.1] PROVIDER_TOS_BLOCKED: Markus proxy error 403: ' +
+    '{"error":{"message":"The request is prohibited due to a violation of provider Terms Of Service.",' +
+    '"code":403,"metadata":{"provider_name":null,"previous_errors":[{"code":403}]}},"user_id":"user_abc"}';
+
+  it('a STORED history row (raw vendor text, no marker) also gets the new copy', () => {
+    const message = friendlyAgentError(STORED_ROW_403, t);
+    expect(message).toContain('TOS');
+    expect(message).toContain('openai/gpt-6.2-sol');
+    expect(message).not.toContain('GENERIC');
+  });
+
+  it('names the blocked model and never falls back to the generic AI-service prefix', () => {
+    const message = friendlyAgentError(TOS_BLOCK_403, t);
+    expect(message).toContain('TOS');
+    expect(message).toContain('openai/gpt-5.1');
+    expect(message).not.toContain('GENERIC');
+    // The vendor sentence alone was the whole defect: it reads like moderation.
+    expect(message).not.toContain('Terms Of Service');
+  });
+
+  it('also classifies the bare vendor wording (stored messages, BYOK providers)', () => {
+    const raw =
+      '⚠ Error: [openai:gpt-5.4] OpenAI API error 403: ' +
+      '{"error":{"message":"The request is prohibited due to a violation of provider Terms Of Service."}}';
+    expect(friendlyAgentError(raw, t)).toContain('TOS');
+  });
+
+  it('does not swallow other 403s into the ToS message', () => {
+    const keyLimit =
+      '⚠ Error: [markus:deepseek/deepseek-chat] Markus proxy error 403: ' +
+      '{"error":{"message":"Key limit exceeded (total limit)"}}';
+    expect(friendlyAgentError(keyLimit, t)).not.toContain('TOS');
   });
 });
 
