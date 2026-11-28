@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { resizedWidth } from '../lib/panelResize.ts';
 
 interface UseResizablePanelOptions {
   side: 'left' | 'right';
@@ -56,8 +57,8 @@ export function useResizablePanel({
 
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return;
-      const diff = side === 'left' ? ev.clientX - startX : startX - ev.clientX;
-      setWidth(Math.max(minRef.current, Math.min(maxRef.current, startW + diff)));
+      // Direction lives in lib/panelResize — the same rule the Work page's detail handler uses.
+      setWidth(resizedWidth({ startWidth: startW, dx: ev.clientX - startX, side, min: minRef.current, max: maxRef.current }));
     };
 
     const onUp = () => {
