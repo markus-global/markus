@@ -119,6 +119,7 @@ import { useConversationBuffers, makeConvKey, isSessionScopedConvKey, NEW_CHAT_P
 import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStream.ts';
 // (chatStore 的客户端 agent-busy 近似已整体删除 —— 见 lib/sessionStreamState.ts)
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
+import { Icon, type IconName } from '../components/Icon.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 // 实体图标唯一权威：EntityCard 导出的 ENTITY_TYPE_ICON。
@@ -4337,11 +4338,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const getFileIcon = (name: string, dataUrl: string) => {
     if (isImageFile({ name, dataUrl })) return null;
     const ext = name.split('.').pop()?.toLowerCase() ?? '';
-    const iconMap: Record<string, string> = {
-      pdf: '📄', docx: '📝', doc: '📝', xlsx: '📊', xls: '📊',
-      pptx: '📎', csv: '📊', json: '🔧', xml: '🔧', html: '🌐', epub: '📚',
+    const iconMap: Record<string, IconName> = {
+      pdf: 'file', docx: 'file-text', doc: 'file-text', xlsx: 'bar-chart', xls: 'bar-chart',
+      pptx: 'paperclip', csv: 'bar-chart', json: 'wrench', xml: 'wrench', html: 'globe', epub: 'book',
     };
-    return iconMap[ext] ?? '📁';
+    return iconMap[ext] ?? 'folder';
   };
 
   const addFiles = useCallback((files: FileList | File[]) => {
@@ -5385,7 +5386,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                           : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
                       }`}
                     >
-                      <span>{tabIcon(tab)}</span>
+                      <span><Icon name={tabIcon(tab)} size={12} /></span>
                       {tabLabel(tab, t)}
                     </button>
                   ))}
@@ -5453,7 +5454,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
                       className="opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-fg-secondary transition-opacity shrink-0"
                     >
-                      ✕
+                      <Icon name="x" size={12} />
                     </button>
                   )}
                 </div>
@@ -5548,7 +5549,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             >
               <div className="px-4 py-3 border-b border-border-default flex items-center justify-between">
                 <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t('page.historyTitle')}</span>
-                <button onClick={() => setShowSessions(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">✕</button>
+                <button onClick={() => setShowSessions(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs"><Icon name="x" size={12} /></button>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
                 {sessionsLoading && sessions.length === 0 ? (
@@ -6188,7 +6189,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     i === mentionSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
                   }`}
                 >
-                  <span className="w-6 h-6 flex items-center justify-center text-sm shrink-0">{ (ENTITY_TYPE_ICON as Record<string, string>)[item.entity.entityType] ?? '📄' }</span>
+                  <span className="w-6 h-6 flex items-center justify-center text-sm shrink-0">{ <Icon name={((ENTITY_TYPE_ICON as Record<string, IconName>)[item.entity.entityType] ?? 'file')} size={14} /> }</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay text-fg-tertiary shrink-0">{t(`page.mentionType.${item.entity.entityType}`, { defaultValue: item.entity.entityType })}</span>
                   <span className="flex-1 min-w-0 truncate">{item.entity.name}</span>
                   <span className="text-xs text-fg-tertiary ml-auto shrink-0">{item.entity.role}</span>
@@ -6211,7 +6212,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     i === slashSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
                   }`}
                 >
-                  <span className="text-xs w-5 h-5 flex items-center justify-center shrink-0">🔧</span>
+                  <span className="text-xs w-5 h-5 flex items-center justify-center shrink-0"><Icon name="wrench" size={11} /></span>
                   <span className="flex-1 min-w-0 truncate font-mono text-[13px]">/{cmd.name}</span>
                   <span className="text-[10px] text-fg-tertiary ml-auto shrink-0 max-w-[100px] truncate">{cmd.description}</span>
                 </button>
@@ -6244,7 +6245,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <img src={img.dataUrl} alt={img.name} className="w-16 h-16 rounded-lg object-cover border border-border-default" />
                   ) : (
                     <div className="w-16 h-16 rounded-lg border border-border-default bg-surface-elevated flex flex-col items-center justify-center gap-0.5" title={img.name}>
-                      <span className="text-xl leading-none">{getFileIcon(img.name, img.dataUrl)}</span>
+                      <span className="leading-none">{getFileIcon(img.name, img.dataUrl) && <Icon name={getFileIcon(img.name, img.dataUrl)!} size={16} />}</span>
                       <span className="text-[9px] text-fg-tertiary truncate max-w-[56px] px-0.5">{img.name.split('.').pop()?.toUpperCase()}</span>
                     </div>
                   )}

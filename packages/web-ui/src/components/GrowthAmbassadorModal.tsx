@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Icon } from './Icon.tsx';
 import { useTranslation } from 'react-i18next';
 import { hubApi } from '../api.ts';
 import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
@@ -92,7 +93,7 @@ export function GrowthAmbassadorModal({ onClose }: Props) {
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-start gap-2 mb-4">
-          <span className="text-xl leading-none">🎁</span>
+          <span className="leading-none"><Icon name="gift" size={18} /></span>
           <div className="min-w-0 flex-1">
             <h3 className="text-base font-semibold text-fg-primary">{t('ambassador.title')}</h3>
             <p className="text-xs text-fg-tertiary mt-1 leading-relaxed">

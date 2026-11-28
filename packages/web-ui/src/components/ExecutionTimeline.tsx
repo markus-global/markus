@@ -1163,9 +1163,9 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
 
         <div className="flex items-center justify-between mt-2">
           <div className="flex items-center gap-2 text-[10px] text-fg-tertiary">
-            {toolCount > 0 && <span>🔧 {t('execution.compact.toolsLine', { count: toolCount })}</span>}
-            {entries.some(e => e.type === 'text' && !e.metadata?.isThinking) && <span>💬 {t('execution.compact.text')}</span>}
-            {entries.some(e => e.type === 'text' && e.metadata?.isThinking) && <span className="text-purple-400">💭 {t('execution.compact.thinkingTag')}</span>}
+            {toolCount > 0 && <span><Icon name="wrench" size={11} /> {t('execution.compact.toolsLine', { count: toolCount })}</span>}
+            {entries.some(e => e.type === 'text' && !e.metadata?.isThinking) && <span><Icon name="message" size={11} /> {t('execution.compact.text')}</span>}
+            {entries.some(e => e.type === 'text' && e.metadata?.isThinking) && <span className="text-purple-400"><Icon name="thought" size={11} /> {t('execution.compact.thinkingTag')}</span>}
             {hasMultipleRounds && currentRound != null && (
               <>
                 <span className="opacity-30">·</span>

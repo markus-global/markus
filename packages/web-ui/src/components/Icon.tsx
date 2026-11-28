@@ -27,7 +27,8 @@ export type IconName =
   | 'toolbox' | 'mail' | 'tools' | 'image' | 'volume' | 'microphone'
   | 'film' | 'megaphone' | 'paperclip' | 'smartphone' | 'check' | 'x'
   | 'arrow-right' | 'pen-line' | 'wrench' | 'folder' | 'robot' | 'link'
-  | 'heart' | 'brain' | 'signal' | 'hourglass' | 'play' | 'dot' | 'keyboard' | 'alarm' | 'spark' | 'mention';
+  | 'heart' | 'brain' | 'signal' | 'hourglass' | 'play' | 'dot' | 'keyboard' | 'alarm' | 'spark' | 'mention'
+  | 'sun' | 'moon' | 'star' | 'gift' | 'eye-off' | 'compass' | 'hexagon' | 'key';
 
 export const ICON_PATHS: Record<IconName, string> = {
   message:        'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
@@ -94,6 +95,14 @@ export const ICON_PATHS: Record<IconName, string> = {
   alarm:          'M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M12 9v4l2 2 M5 3 2 6 M22 6l-3-3',
   spark:          'M12 2v4 M12 18v4 M4.9 4.9l2.8 2.8 M16.3 16.3l2.8 2.8 M2 12h4 M18 12h4 M4.9 19.1l2.8-2.8 M16.3 7.7l2.8-2.8',
   mention:        'M16 8a4 4 0 1 0-4 4v1a3 3 0 0 0 6 0v-1a8 8 0 1 0-3.5 6.6',
+  sun:            'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10z M12 1v2 M12 21v2 M4.2 4.2l1.4 1.4 M18.4 18.4l1.4 1.4 M1 12h2 M21 12h2 M4.2 19.8l1.4-1.4 M18.4 5.6l1.4-1.4',
+  moon:           'M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z',
+  star:           'm12 2 3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z',
+  gift:           'M20 12v10H4V12 M2 7h20v5H2z M12 22V7 M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z',
+  'eye-off':      'M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94 M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19 M1 1l22 22 M14.12 14.12a3 3 0 1 1-4.24-4.24',
+  compass:        'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88z',
+  hexagon:        'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z',
+  key:            'M21 2 19 4 M15.5 7.5 21 2 M10.5 13.5a5 5 0 1 1-7-7 5 5 0 0 1 7 7z M10.5 13.5 15 18l3-3 3 3',
 };
 
 export function Icon({

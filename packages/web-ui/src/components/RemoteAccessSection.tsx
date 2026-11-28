@@ -19,6 +19,7 @@
  * All state-machine logic lives in `lib/remoteAccess.ts` (pure + unit-tested); this
  * file is the presentation layer only.
  */
+import { Icon } from './Icon.tsx';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -649,7 +650,7 @@ function MethodChooser({
                 </span>
                 {m.recommended && (
                   <span className="px-1.5 py-0.5 text-[11px] font-medium rounded bg-brand-500/15 text-brand-500">
-                    ★ {t('settings:remoteAccess.badgeRecommended')}
+                    <Icon name="star" size={11} /> {t('settings:remoteAccess.badgeRecommended')}
                   </span>
                 )}
               </div>
@@ -675,7 +676,7 @@ function MethodChooser({
                 </Chip>
                 {ok !== null && (
                   <Chip tone={ok ? 'good' : 'warn'}>
-                    {ok ? '✓ ' : '✕ '}
+                    {ok ? <Icon name="check" size={12} /> : <Icon name="x" size={12} />}{' '}
                     {m.binary} {ok ? t('settings:remoteAccess.badgeDetected') : t('settings:remoteAccess.badgeNotDetected')}
                   </Chip>
                 )}
@@ -723,7 +724,7 @@ function WizardProgress({ t, phase }: { t: TFn; phase: WizardPhase }) {
                         : 'bg-surface-secondary text-fg-tertiary'
                 }`}
               >
-                {done ? '✓' : isError ? '!' : i + 1}
+                {done ? <Icon name="check" size={12} /> : isError ? '!' : i + 1}
               </span>
               <span
                 className={`text-[10px] leading-tight text-center truncate ${

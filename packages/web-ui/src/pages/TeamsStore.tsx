@@ -13,7 +13,7 @@ import { Masonry } from '../components/Masonry.tsx';
 const TEAM_CATEGORY_ICONS: Record<string, string> = {
   development: '{ }',
   review: '⊘',
-  operations: '⚙',
+  operations: 'gear',
   general: '◎',
 };
 

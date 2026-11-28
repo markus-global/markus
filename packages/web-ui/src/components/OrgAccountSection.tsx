@@ -14,6 +14,7 @@
  * `syncHubOrgIdentity` 会拿 Hub 的值覆盖本地 —— 用户改了个 Hub 不知道的名字，
  * 下次登录被静默回滚，且完全不知道为什么。任何"本地可编辑"的方案都会重演这个问题。
  */
+import { Icon } from './Icon.tsx';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, hubApi, getHubUser, getHubToken } from '../api';
@@ -184,7 +185,7 @@ export function OrgSummarySection({ authUser }: { authUser?: AuthUser }) {
               : 'border border-red-500/20 bg-red-500/10 text-red-500'
           }`}
         >
-          <span>{msg.type === 'ok' ? '✓' : '✕'}</span>
+          <span>{msg.type === 'ok' ? <Icon name="check" size={12} /> : <Icon name="x" size={12} />}</span>
           <span>{msg.text}</span>
         </div>
       )}

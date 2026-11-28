@@ -9,6 +9,7 @@ import { DeliverableDetailModal } from './DeliverableDetailModal.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { taskStatusPresentation } from '../lib/stateVocabulary.ts';
 import { TONE, entityTone } from '../lib/tone.ts';
+import { Icon, type IconName } from './Icon.tsx';
 
 // ─── Entity types & metadata ─────────────────────────────────────────────────
 
@@ -27,8 +28,8 @@ export function chipTypeToEntityType(chipType: string): EntityType | undefined {
   return map[chipType];
 }
 
-export const ENTITY_TYPE_ICON: Record<EntityType, string> = {
-  task: '☑️', requirement: '🎯', project: '📁', deliverable: '📦', agent: '🤖', team: '👥',
+export const ENTITY_TYPE_ICON: Record<EntityType, IconName> = {
+  task: 'check-square', requirement: 'target', project: 'folder', deliverable: 'package', agent: 'robot', team: 'users',
 };
 
 export const ENTITY_TYPE_LABEL: Record<EntityType, string> = {
@@ -220,7 +221,7 @@ function shortId(id: string): string {
 export function EntityChip({ id, type: typeHint, label }: { id: string; type?: EntityType; label?: React.ReactNode }) {
   const meta = useEntityMeta(id, typeHint);
   const layout = useLayout();
-  const icon = ENTITY_TYPE_ICON[meta.type] ?? '🔗';
+  const icon: IconName = ENTITY_TYPE_ICON[meta.type] ?? 'link';
   const display = label ?? (meta.loading || meta.notFound ? shortId(id) : meta.title);
   const handleClick = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -239,7 +240,7 @@ export function EntityChip({ id, type: typeHint, label }: { id: string; type?: E
       onClick={handleClick}
       title={`${ENTITY_TYPE_LABEL[meta.type]}: ${meta.notFound ? id : meta.title} (${id})`}
     >
-      <span className="text-[10px]">{icon}</span>
+      <span className="text-[10px]"><Icon name={icon} size={11} /></span>
       <span className="truncate max-w-[240px] align-baseline">{display}</span>
     </span>
   );
@@ -256,7 +257,7 @@ export function EntityCard({ id, type: typeHint, label }: { id: string; type?: E
   const meta = useEntityMeta(id, typeHint);
   const [showDeliverable, setShowDeliverable] = useState(false);
   const layout = useLayout();
-  const icon = ENTITY_TYPE_ICON[meta.type] ?? '🔗';
+  const icon: IconName = ENTITY_TYPE_ICON[meta.type] ?? 'link';
 
   const handleClick = () => {
     if (meta.type === 'deliverable' && meta.deliverable) {
@@ -279,7 +280,7 @@ export function EntityCard({ id, type: typeHint, label }: { id: string; type?: E
         onClick={handleClick}
         className="w-full max-w-md text-left rounded-xl border border-border-default bg-surface-elevated/30 hover:border-brand-500/40 hover:bg-surface-elevated/50 transition-colors px-3 py-2.5 flex items-start gap-2.5"
       >
-        <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm shrink-0 bg-brand-500/10">{icon}</span>
+        <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm shrink-0 bg-brand-500/10"><Icon name={icon} size={16} /></span>
         <span className="flex-1 min-w-0 block">
           <span className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px] uppercase tracking-wide text-fg-tertiary font-medium">{ENTITY_TYPE_LABEL[meta.type]}</span>

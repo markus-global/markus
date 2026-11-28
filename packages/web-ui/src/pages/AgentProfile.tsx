@@ -21,6 +21,7 @@ import { Avatar } from '../components/Avatar.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { friendlyAgentError, ProcessTimeline } from './ChatComponents.tsx';
 import { DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
+import { Icon, type IconName } from '../components/Icon.tsx';
 import { getToolMeta } from '../components/execution-utils.ts';
 import { categorizeTools } from '../lib/toolCategories.ts';
 import { canCancelMailboxItem } from '../lib/mailboxCancelable.ts';
@@ -92,9 +93,9 @@ export const LEGACY_TAB_SECTION: Partial<Record<ProfileTab, OverviewSectionId>> 
  * 所以原 mind / files / tools / memory 的正文没有堆在概览里，而是变成概览页里
  * **默认收起、展开才挂载**的折叠分组（见 OverviewTab 与 CollapsibleSection）。
  */
-export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
-  { key: 'overview', icon: '▦' },
-  { key: 'deliverables', icon: '📦' },
+export const TAB_DEF: Array<{ key: ProfileTab; icon: IconName }> = [
+  { key: 'overview', icon: 'eye' },
+  { key: 'deliverables', icon: 'package' },
 ];
 
 /**
@@ -236,7 +237,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
               className={`px-3 py-1.5 text-xs rounded-t-lg border border-b-0 transition-colors whitespace-nowrap ${
                 tab === tabRow.key ? 'bg-surface-primary text-fg-primary border-border-default' : 'text-fg-tertiary border-transparent hover:text-fg-secondary hover:bg-surface-elevated/50'
               }`}
-            ><span className="mr-1">{tabRow.icon}</span>{tabRow.label}</button>
+            ><span className="mr-1"><Icon name={tabRow.icon} size={12} /></span>{tabRow.label}</button>
           ))}
         </div>
       </div>
@@ -1054,7 +1055,7 @@ function FilesTab({ agentId }: { agentId: string }) {
     <div className="space-y-4">
       {hasUpdates && (
         <div className="bg-amber-500/8 border border-amber-500/25 rounded-xl p-4 flex items-start gap-3">
-          <span className="text-amber-600 text-sm mt-0.5">↻</span>
+          <span className="text-amber-600 text-sm mt-0.5"><Icon name="refresh" size={14} /></span>
           <div className="flex-1 min-w-0">
             <div className="text-xs text-amber-600 font-medium">{t('agent:profilePage.filesTab.templateUpdateAvailable')}</div>
             <div className="text-[11px] text-amber-600/70 mt-0.5">
@@ -1432,7 +1433,7 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
           className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-600 space-y-1.5"
         >
           <div className="font-semibold flex items-center gap-1.5">
-            <span aria-hidden>⚠️</span>
+            <Icon name="alert-triangle" size={14} />
             {t('agent:profilePage.skillsTab.missingSkillsTitle', { count: missingSkills.length })}
           </div>
           <ul className="list-disc list-inside space-y-0.5">
@@ -1978,7 +1979,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
           <div className="divide-y divide-gray-800/50 -mx-5">
             {data.wakeups.map(w => (
               <div key={w.id} className="flex items-center gap-2.5 px-5 py-2.5">
-                <span className="text-sm shrink-0 opacity-60">⏰</span>
+                <span className="text-sm shrink-0 opacity-60"><Icon name="alarm" size={14} /></span>
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-fg-secondary truncate">{w.note || t('agent:profilePage.heartbeatTab.wakeupNoNote')}</div>
                   <div className="text-[10px] text-fg-tertiary">
@@ -2005,7 +2006,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
           <div className="divide-y divide-gray-800/50 -mx-5">
             {data.pendingCallbacks.map(c => (
               <div key={c.id} className="flex items-center gap-2.5 px-5 py-2.5">
-                <span className="text-sm shrink-0 opacity-60">{c.type === 'background_exec' ? '⚙' : '↔'}</span>
+                <span className="text-sm shrink-0 opacity-60"><Icon name={c.type === 'background_exec' ? 'gear' : 'reply'} size={14} /></span>
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-fg-secondary truncate font-mono">{c.label}</div>
                   <div className="text-[10px] text-fg-tertiary">
@@ -2063,7 +2064,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
       ) : !data.lastHeartbeat ? (
         <Card title={t('agent:profilePage.heartbeatTab.recentRuns')}>
           <div className="flex flex-col items-center justify-center py-8 text-center">
-            <div className="text-xl mb-2 opacity-40">♡</div>
+            <div className="text-xl mb-2 opacity-40"><Icon name="heart" size={24} /></div>
             <p className="text-xs text-fg-tertiary">{t('agent:profilePage.heartbeatTab.noRunsYet')}</p>
             <p className="text-[10px] text-fg-tertiary mt-1">
               {data.running
@@ -2344,8 +2345,8 @@ const STATUS_COLORS: Record<string, string> = {
 
 const ACTIVITY_FILTER_KEYS: Array<AgentActivityType | 'all'> = ['all', 'task', 'chat', 'heartbeat', 'a2a', 'internal', 'respond_in_session'];
 
-const ACTIVITY_ICONS: Record<string, string> = {
-  task: '☑', chat: '💬', heartbeat: '♡', a2a: '🔗', internal: '⚙', respond_in_session: '↩',
+const ACTIVITY_ICONS: Record<string, IconName> = {
+  task: 'check-square', chat: 'message', heartbeat: 'heart', a2a: 'link', internal: 'gear', respond_in_session: 'reply',
 };
 
 const STATUS_DISPLAY_COLORS: Record<string, string> = {
@@ -2902,7 +2903,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
 
         {agentRunning && hasStaleProcessingItems && (
           <div className="mb-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center gap-2">
-            <span className="text-amber-500 text-sm">⚠</span>
+            <span className="text-amber-500 text-sm"><Icon name="alert-triangle" size={14} /></span>
             <span className="text-[11px] text-amber-600 flex-1">{t('agent:profilePage.mind.staleProcessingWarning')}</span>
             {canManageAgents && (
               <button
@@ -2968,7 +2969,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           <section className="bg-surface-elevated rounded-lg border border-border-subtle p-3">
             <details>
               <summary className="flex items-center gap-2 cursor-pointer list-none">
-                <span className="text-sm">📓</span>
+                <span className="text-sm"><Icon name="book" size={14} /></span>
                 <h4 className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('agent:profilePage.mind.notebook')}</h4>
                 <span className="text-[10px] text-fg-muted ml-auto">
                   {t('agent:profilePage.mind.notebookEntries', { count: mind!.notebook!.length })}
@@ -3072,6 +3073,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           <div className="w-full @2xl:w-48 shrink-0 space-y-1 max-h-[30rem] overflow-y-auto pr-1">
             {groups.map((g) => {
               const isActive = (activeGroup?.key ?? '') === g.key;
+              const entityIcon = workUnitEntityIcon(g.key);
               return (
                 <button key={g.key || '__none__'} onClick={() => { setUnitKey(g.key); setGroupCap(GROUP_RENDER_CAP); setDrawerOpen(true); }}
                   className={`w-full text-left px-2 py-1.5 rounded-md border transition-colors ${
@@ -3083,7 +3085,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                   <div className="flex items-center gap-1.5">
                     {/* 字形区分类别、中性色；颜色留给状态（红边 = 投递失败） */}
                     <span className="w-4 shrink-0 text-center text-[11px]">
-                      {workUnitEntityIcon(g.key)}
+                      {entityIcon && <Icon name={entityIcon} size={11} />}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
                       {g.name || (g.kind === 'none' || !g.key ? t('agent:profilePage.mind.unitOrphan', '历史记录') : workUnitEntityLabel(g.key))}
@@ -3124,7 +3126,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
               <span className="text-[11px] font-medium text-fg-secondary truncate flex-1">
                 {activeGroup?.name || (activeGroup?.key ? workUnitEntityLabel(activeGroup.key) : '')}
               </span>
-              <button onClick={() => setDrawerOpen(false)} className="text-fg-tertiary hover:text-fg-primary text-sm px-1" aria-label={t('common:close')}>✕</button>
+              <button onClick={() => setDrawerOpen(false)} className="text-fg-tertiary hover:text-fg-primary text-sm px-1" aria-label={t('common:close')}><Icon name="x" size={14} /></button>
             </div>
           {/* 「本轮决策」——把这条实体下所有记录的决策聚合成一行一条。
               数据来源是邮箱响应里已经带的 `decisions`（
@@ -3443,7 +3445,7 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
   if (items.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
-        <span className="text-3xl mb-3">📦</span>
+        <span className="text-3xl mb-3"><Icon name="package" size={36} /></span>
         <p className="text-sm text-fg-secondary">{t('agent:deliverables.empty')}</p>
         <p className="text-xs text-fg-tertiary mt-1">{t('agent:deliverables.emptyHint')}</p>
       </div>
@@ -3457,7 +3459,8 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
           {t('agent:deliverables.count', { count: items.length })}
         </div>
         {items.map(item => {
-          const typeMeta = DELIVERABLE_TYPE_META[item.type] ?? { icon: '📎', color: 'bg-surface-elevated text-fg-secondary' };
+          const typeMeta: { icon: IconName; color: string } =
+            DELIVERABLE_TYPE_META[item.type] ?? { icon: 'paperclip', color: 'bg-surface-elevated text-fg-secondary' };
           const statusMeta = DELIVERABLE_STATUS_META[item.status] ?? DELIVERABLE_STATUS_META.active!;
           return (
             <button
@@ -3466,7 +3469,7 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
               className="w-full text-left rounded-xl border border-border-default bg-surface-elevated/30 overflow-hidden transition-colors hover:border-brand-500/40 hover:bg-surface-elevated/50 px-4 py-3 flex items-start gap-3"
             >
               <span className={`inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm shrink-0 ${typeMeta.color}`}>
-                {typeMeta.icon}
+                <Icon name={typeMeta.icon} size={16} />
               </span>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">

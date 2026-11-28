@@ -30,6 +30,7 @@
  * the name is simply the first field of the credentials.
  */
 
+import { Icon } from '../Icon.tsx';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api.ts';
@@ -672,7 +673,7 @@ export function InstanceCard({
                   <div data-testid={`instance-credentials-configured-${uid}`} className="space-y-3">
                     <div className="flex items-center gap-2">
                       <span className="inline-flex items-center gap-1.5 text-xs text-green-600">
-                        <span aria-hidden="true">✓</span>
+                        <span aria-hidden="true"><Icon name="check" size={12} /></span>
                         {t('settings:instances.credentialsSet', { defaultValue: 'Credentials set' })}
                       </span>
                       <button
@@ -690,7 +691,7 @@ export function InstanceCard({
                     {credentialsConfigured && (
                       <div className="flex items-center gap-2">
                         <span className="inline-flex items-center gap-1.5 text-xs text-green-600">
-                          <span aria-hidden="true">✓</span>
+                          <span aria-hidden="true"><Icon name="check" size={12} /></span>
                           {t('settings:instances.credentialsSet', { defaultValue: 'Credentials set' })}
                         </span>
                         <button

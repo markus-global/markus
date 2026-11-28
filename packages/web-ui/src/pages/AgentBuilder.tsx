@@ -21,7 +21,7 @@ function shortenPath(p: string): string {
 const BUILDER_PROMPTS = [
   {
     id: 'hireAgent' as const,
-    icon: '✦',
+    icon: 'spark',
     color: 'from-brand-500 to-purple-600',
     borderColor: 'border-brand-500/30 hover:border-brand-400/50',
     bgColor: 'bg-brand-500/10',
@@ -35,7 +35,7 @@ const BUILDER_PROMPTS = [
   },
   {
     id: 'createSkill' as const,
-    icon: '⬡',
+    icon: 'hexagon',
     color: 'from-green-500 to-green-600',
     borderColor: 'border-green-500/30 hover:border-green-400/50',
     bgColor: 'bg-green-500/10',

@@ -21,6 +21,7 @@
  * Nothing here knows what a platform is called, and nothing here saves.
  */
 
+import { Icon } from '../Icon.tsx';
 import { useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ConnectionState } from '../../lib/instanceIntegrations.ts';
@@ -317,7 +318,7 @@ export function FieldInput({
               onClick={() => setReveal((v) => !v)}
               className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-fg-tertiary hover:text-fg-secondary transition-colors"
             >
-              {reveal ? '🙈' : '👁'}
+              {reveal ? <Icon name="eye-off" size={14} /> : <Icon name="eye" size={14} />}
             </button>
           )}
         </div>

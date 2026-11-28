@@ -9,6 +9,7 @@
  */
 import { useTranslation } from 'react-i18next';
 import { Avatar } from '../components/Avatar.tsx';
+import { Icon } from '../components/Icon.tsx';
 import type { SearchResult } from '../api.ts';
 
 /** Group-chat member row handed to the panel (a safe projection of groupChats. */ 
@@ -51,7 +52,7 @@ export function ChatSearchPanel({
         <button
           onClick={onClose}
           className="text-fg-tertiary hover:text-fg-secondary text-xs px-1"
-        >✕</button>
+        ><Icon name="x" size={12} /></button>
       </div>
       {searchLoading && (
         <div className="flex items-center gap-2 text-xs text-fg-tertiary py-1">

@@ -1,4 +1,5 @@
 import { useMemo, useState, useRef, useEffect, useCallback, memo } from 'react';
+import { Icon } from './Icon.tsx';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -223,8 +224,8 @@ function CopyMenu({ content, contentRef, variant }: {
                 </button>
               </div>
               <div><span className="font-medium text-fg-primary">{t('markdown.mdAbbrev')}</span> — {t('markdown.infoMdDesc')}</div>
-              <div><span className="font-medium text-fg-primary">☀️</span> — {t('markdown.infoHtmlLightDesc')}</div>
-              <div><span className="font-medium text-fg-primary">🌙</span> — {t('markdown.infoHtmlDarkDesc')}</div>
+              <div><span className="font-medium text-fg-primary"><Icon name="sun" size={13} /></span> — {t('markdown.infoHtmlLightDesc')}</div>
+              <div><span className="font-medium text-fg-primary"><Icon name="moon" size={13} /></span> — {t('markdown.infoHtmlDarkDesc')}</div>
             </div>
           ) : (
             <>
@@ -263,14 +264,14 @@ function CopyMenu({ content, contentRef, variant }: {
                 onClick={() => handleCopyHtml('light')}
                 className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
               >
-                <span className="w-4 text-center shrink-0 text-[10px]">☀️</span>
+                <span className="w-4 flex justify-center shrink-0"><Icon name="sun" size={11} /></span>
                 {isNarrow ? t('markdown.copyHtmlLightShort') : t('markdown.copyHtmlLight')}
               </button>
               <button
                 onClick={() => handleCopyHtml('dark')}
                 className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
               >
-                <span className="w-4 text-center shrink-0 text-[10px]">🌙</span>
+                <span className="w-4 flex justify-center shrink-0"><Icon name="moon" size={11} /></span>
                 {isNarrow ? t('markdown.copyHtmlDarkShort') : t('markdown.copyHtmlDark')}
               </button>
             </>
