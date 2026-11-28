@@ -486,7 +486,9 @@ export function EmbeddedTerminal({
   }, [active]);
 
   return (
-    <div className="relative flex-1 min-h-0 flex flex-col rounded-lg overflow-hidden border border-border-default bg-surface-primary">
+    // 不画外框：终端是「铺满面板的主体」，不是卡片。框 + 圆角会在右栏里再套一层
+    // 边框，与左栏分隔线打成两份“边界”（Owner 2026-11-28）。
+    <div data-terminal-host className="relative flex-1 min-h-0 flex flex-col overflow-hidden bg-surface-primary">
       {searchOpen && (
         <div className="shrink-0 flex items-center gap-1.5 px-2 py-1.5 border-b border-border-default bg-surface-elevated">
           <input
