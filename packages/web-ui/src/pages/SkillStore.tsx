@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { Icon } from '../components/Icon.tsx';
 import { useTranslation } from 'react-i18next';
 import { api, hubApi, ownsHubItem, type HubItem } from '../api.ts';
 import { AssetCard } from '../components/AssetCard.tsx';
@@ -530,7 +531,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
             {skill.hasInstructions && (
               <div className="flex items-center gap-2">
                 <span className="text-fg-tertiary w-24">{t('skillStore.instructions')}</span>
-                <span className="text-green-500 text-xs">✓</span>
+                <Icon name="check" size={12} className="text-green-500" />
               </div>
             )}
           </div>
@@ -763,7 +764,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
                       onClick={() => window.open(skill.homepage, '_blank', 'noopener,noreferrer')}
                       footerLeft={
                         <span className="flex items-center gap-2 text-[10px] text-fg-tertiary">
-                          {skill.stars > 0 && <span className="text-amber-600">★ {skill.stars.toLocaleString()}</span>}
+                          {skill.stars > 0 && <span className="text-amber-600"><Icon name="star" size={11} /> {skill.stars.toLocaleString()}</span>}
                           {skill.downloads > 0 && <span>{skill.downloads >= 10000 ? formatCompactCount(skill.downloads, i18n.language) : skill.downloads.toLocaleString()} {t('skillStore.downloads')}</span>}
                         </span>
                       }
@@ -827,7 +828,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
             <div className="text-center text-fg-tertiary py-20"><div className="animate-pulse">{t('skillStore.loadingSkillssh')}</div></div>
           ) : filteredSkillssh.length === 0 ? (
             <div className="text-center text-fg-tertiary py-20">
-              <div className="text-4xl mb-3 opacity-30">⬡</div>
+              <div className="text-4xl mb-3 opacity-30"><Icon name="hexagon" size={36} /></div>
               <div>{t('skillStore.browseSkillssh')}</div>
               <div className="text-xs mt-1">{t('skillStore.browseSkillsshHint')}</div>
             </div>

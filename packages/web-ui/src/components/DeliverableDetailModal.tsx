@@ -3,12 +3,13 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api.ts';
 import type { DeliverableInfo } from '../api.ts';
+import { Icon, type IconName } from './Icon.tsx';
 
 const LazyMarkdownMessage = lazy(() => import('./MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 
-export const DELIVERABLE_TYPE_META: Record<string, { icon: string; color: string }> = {
-  file:      { icon: '📄', color: 'bg-green-500/10 text-green-600' },
-  directory: { icon: '📁', color: 'bg-blue-500/10 text-blue-600' },
+export const DELIVERABLE_TYPE_META: Record<string, { icon: IconName; color: string }> = {
+  file:      { icon: 'file-text', color: 'bg-green-500/10 text-green-600' },
+  directory: { icon: 'folder', color: 'bg-blue-500/10 text-blue-600' },
 };
 
 export const DELIVERABLE_STATUS_META: Record<string, { color: string }> = {
@@ -27,7 +28,8 @@ export function DeliverableDetailModal({ item, onClose, onOpenInPage }: {
   onOpenInPage: (id: string) => void;
 }) {
   const { t } = useTranslation(['agent', 'common']);
-  const typeMeta = DELIVERABLE_TYPE_META[item.type] ?? { icon: '📎', color: 'bg-surface-elevated text-fg-secondary' };
+  const typeMeta: { icon: IconName; color: string } =
+    DELIVERABLE_TYPE_META[item.type] ?? { icon: 'paperclip', color: 'bg-surface-elevated text-fg-secondary' };
   const statusMeta = DELIVERABLE_STATUS_META[item.status] ?? DELIVERABLE_STATUS_META.active!;
   const isUrl = /^https?:\/\//i.test(item.reference ?? '');
 
@@ -51,7 +53,7 @@ export function DeliverableDetailModal({ item, onClose, onOpenInPage }: {
         {/* Header */}
         <div className="sticky top-0 bg-surface-primary/95 backdrop-blur-sm border-b border-border-default px-5 py-4 flex items-start gap-3 rounded-t-2xl z-10">
           <span className={`inline-flex items-center justify-center w-10 h-10 rounded-xl text-lg shrink-0 ${typeMeta.color}`}>
-            {typeMeta.icon}
+            <Icon name={typeMeta.icon} size={18} />
           </span>
           <div className="flex-1 min-w-0">
             <h3 className="text-base font-semibold text-fg-primary">{item.title}</h3>

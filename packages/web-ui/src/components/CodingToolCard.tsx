@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatDuration } from './execution-utils.ts';
+import { Icon, type IconName } from './Icon.tsx';
 
 export type CodingToolName = 'claude-code' | 'codex' | 'cursor-agent';
 
@@ -31,10 +32,10 @@ export interface CodingToolSession {
   completedAt?: string;
 }
 
-const TOOL_META: Record<string, { label: string; icon: string; badgeClass: string }> = {
-  'claude-code': { label: 'Claude Code', icon: '🤖', badgeClass: 'bg-orange-500/15 text-orange-500' },
-  codex: { label: 'Codex', icon: '⬡', badgeClass: 'bg-emerald-500/15 text-emerald-500' },
-  'cursor-agent': { label: 'Cursor', icon: '▶', badgeClass: 'bg-blue-500/15 text-blue-500' },
+const TOOL_META: Record<string, { label: string; icon: IconName; badgeClass: string }> = {
+  'claude-code': { label: 'Claude Code', icon: 'robot', badgeClass: 'bg-orange-500/15 text-orange-500' },
+  codex: { label: 'Codex', icon: 'spark', badgeClass: 'bg-emerald-500/15 text-emerald-500' },
+  'cursor-agent': { label: 'Cursor', icon: 'play', badgeClass: 'bg-blue-500/15 text-blue-500' },
 };
 
 const STATUS_PIPELINE = ['created', 'context_injected', 'running'] as const;
@@ -53,7 +54,7 @@ const STATUS_LABELS: Record<string, string> = {
 function getToolMeta(tool: string) {
   return TOOL_META[tool] ?? {
     label: tool.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-    icon: '⚙',
+    icon: 'gear',
     badgeClass: 'bg-surface-elevated text-fg-tertiary',
   };
 }
@@ -117,7 +118,7 @@ export function CodingToolCard({ session, className }: CodingToolCardProps) {
     <div className={`my-2 rounded-lg border ${borderClass} p-3 max-w-2xl transition-colors ${className ?? ''}`}>
       {/* Header */}
       <div className="flex items-start gap-2">
-        <span className="text-sm mt-0.5">{meta.icon}</span>
+        <span className="text-sm mt-0.5"><Icon name={meta.icon} size={14} /></span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${meta.badgeClass}`}>

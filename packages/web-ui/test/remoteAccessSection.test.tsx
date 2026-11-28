@@ -64,9 +64,12 @@ describe('RemoteAccessSection — onboarding wizard', () => {
     ]) {
       expect(screen.getByText(label), `method "${label}" must be offered`).toBeTruthy();
     }
-    // The recommended long-term choice is flagged (badge is "★ Recommended";
-    // the description also contains the bare word, so match the star too).
-    expect(screen.getByText('★ Recommended')).toBeTruthy();
+    // 推荐的长期方案要打徽标。字形现在是自绘 SVG（不再是 ★），所以按**文案**定位，
+    // 并额外断言星形图标确实画出来了 —— 只查文字的话，徽标丢了图标也能绿。
+    const badge = Array.from(document.querySelectorAll('span'))
+      .find(el => el.textContent?.trim() === 'Recommended');
+    expect(badge, 'recommended badge must be rendered').toBeTruthy();
+    expect(badge!.querySelector('svg'), 'badge must carry the drawn star icon').not.toBeNull();
   });
 
   it('asks for a Hub sign-in before offering setup when signed out', async () => {

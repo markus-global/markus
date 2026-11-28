@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Icon } from '../components/Icon.tsx';
 import { useTranslation } from 'react-i18next';
 import { api, type SearchSettingsStatus } from '../api.ts';
 
@@ -208,7 +209,7 @@ export function WebSearchSettings() {
     if (!r) return null;
     return (
       <div className={`text-[11px] flex items-start gap-1.5 ${r.ok ? 'text-green-500' : 'text-red-500'}`}>
-        <span className="shrink-0 mt-px">{r.ok ? '✓' : '✕'}</span>
+        <span className="shrink-0 mt-px">{r.ok ? <Icon name="check" size={12} /> : <Icon name="x" size={12} />}</span>
         <span className="break-all">{r.text}</span>
       </div>
     );

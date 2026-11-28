@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
-import { CHIP_ICONS, chipKindI18nKey, type ChipKind } from '../lib/chatChips.ts';
+import { CHIP_ICON_NAMES, chipKindI18nKey, type ChipKind } from '../lib/chatChips.ts';
+import { Icon } from './Icon.tsx';
 
 /**
  * One chip pill: icon + TYPE WORD + title.
@@ -31,7 +32,7 @@ export function ChatChipPill({ kind, label, title, onRemove, removeLabel, tone =
       title={title}
       data-chip-kind={kind}
     >
-      <span aria-hidden className="shrink-0 leading-none">{CHIP_ICONS[kind]}</span>
+      <span aria-hidden className="shrink-0 leading-none"><Icon name={CHIP_ICON_NAMES[kind]} size={12} /></span>
       <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide opacity-80">{kindWord}</span>
       <span className="truncate min-w-0">{label}</span>
       {onRemove && (

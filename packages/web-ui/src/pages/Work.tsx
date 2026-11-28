@@ -25,6 +25,7 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer } from '../components/ContentRenderer.tsx';
 import { OfficePreviewer } from '../components/OfficePreviewer.tsx';
 import { Avatar } from '../components/Avatar.tsx';
+import { Icon, type IconName } from '../components/Icon.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
@@ -1163,7 +1164,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
                       </span>
                     )}
                     <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
-                    <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
+                    <span className="ml-auto text-[10px] text-fg-tertiary"><Icon name="arrow-right" size={10} className="inline-block align-[-0.125em]" /></span>
                   </div>
                   {activities.length > 0 && (
                     <div className="ml-8 mt-1">
@@ -1588,7 +1589,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
             <div key={i} className="relative group">
               <img src={att.url} alt={att.name} className="w-16 h-16 object-cover rounded-lg border border-border-default" />
               <button onClick={() => setImageAttachments(prev => prev.filter((_, j) => j !== i))}
-                className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100">×</button>
+                className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100"><Icon name="x" size={10} /></button>
             </div>
           ))}
         </div>
@@ -1599,7 +1600,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
           placeholder={t('work:task.commentInstructionPlaceholder')}
           className="flex-1 px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-blue-500 outline-none text-fg-primary placeholder-gray-600" />
         <input type="file" ref={fileInputRef} accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
-        <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-fg-secondary hover:text-fg-primary text-sm" title={t('work:task.attachImage')}>📎</button>
+        <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-fg-secondary hover:text-fg-primary text-sm" title={t('work:task.attachImage')}><Icon name="paperclip" size={15} /></button>
         <button onClick={() => void submitComment()} disabled={submitting || (!commentText.trim() && imageAttachments.length === 0)}
           className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-xs disabled:opacity-50">{t('common:send')}</button>
       </div>
@@ -1615,24 +1616,24 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
     const isInProgress = task.status === 'in_progress';
     const noAgent = !task.assignedAgentId;
 
-    let emptyIcon = '📋';
+    let emptyIcon: IconName = 'clipboard';
     let emptyMsg = t('work:task.emptyLogs.default');
     let emptyHint = t('work:task.emptyLogs.defaultHint');
 
     if (noAgent) {
-      emptyIcon = '👤';
+      emptyIcon = 'users';
       emptyMsg = t('work:task.emptyLogs.noAgent');
       emptyHint = t('work:task.emptyLogs.noAgentHint');
     } else if (isPending) {
-      emptyIcon = '⏳';
+      emptyIcon = 'hourglass';
       emptyMsg = t('work:task.emptyLogs.pending');
       emptyHint = t('work:task.emptyLogs.pendingHint');
     } else if (isInProgress && agentBusy) {
-      emptyIcon = '🔄';
+      emptyIcon = 'refresh';
       emptyMsg = t('work:task.emptyLogs.agentBusy', { agent: agent?.name ?? task.assignedAgentId });
       emptyHint = t('work:task.emptyLogs.agentBusyHint');
     } else if (isInProgress) {
-      emptyIcon = '⏳';
+      emptyIcon = 'hourglass';
       emptyMsg = t('work:task.emptyLogs.starting');
       emptyHint = t('work:task.emptyLogs.startingHint');
     }
@@ -1658,14 +1659,14 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
                 {relatedActivities.map(act => {
                   // C9-B：这一行是**历史**。它是否“未结束”不是状态，绝不能拿来判在跑；
                   // 在跑与否只看上面从 work_units 得来的 taskLive（页面级）。
-                  const typeIcon = act.type === 'task' ? '🔧' : act.type === 'chat' ? '💬' : act.type === 'respond_in_session' ? '💬' : act.type === 'heartbeat' ? '💓' : '📋';
+                  const typeIcon: IconName = act.type === 'task' ? 'tools' : act.type === 'chat' ? 'message' : act.type === 'respond_in_session' ? 'message' : act.type === 'heartbeat' ? 'heart' : 'clipboard';
                   return (
                     <button
                       key={act.id}
                       className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-elevated hover:bg-surface-elevated/80 border border-border-default/50 text-left transition-colors group"
                       onClick={() => navBus.navigate(PAGE.TEAM, { agentId: task.assignedAgentId })}
                     >
-                      <span className="text-sm shrink-0">{typeIcon}</span>
+                      <span className="text-sm shrink-0"><Icon name={typeIcon} size={14} /></span>
                       <div className="flex-1 min-w-0">
                         <div className="text-xs text-fg-primary truncate">{act.label}</div>
                         <div className="text-[10px] text-fg-tertiary">
@@ -1674,11 +1675,11 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
                         </div>
                       </div>
                       {act.success ? (
-                        <span className="shrink-0 text-[10px] text-fg-tertiary">✓</span>
+                        <span className="shrink-0 text-[10px] text-fg-tertiary"><Icon name="check" size={10} className="inline-block align-[-0.125em]" /></span>
                       ) : (
-                        <span className="shrink-0 text-[10px] text-red-400">✗</span>
+                        <span className="shrink-0 text-[10px] text-red-400"><Icon name="x" size={10} className="inline-block align-[-0.125em]" /></span>
                       )}
-                      <span className="shrink-0 text-fg-tertiary text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">→</span>
+                      <span className="shrink-0 text-fg-tertiary text-[10px] opacity-0 group-hover:opacity-100 transition-opacity"><Icon name="arrow-right" size={10} className="inline-block align-[-0.125em]" /></span>
                     </button>
                   );
                 })}
@@ -1687,7 +1688,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
           ) : (
             <div className="flex items-center justify-center py-8">
               <div className="text-center text-fg-tertiary">
-                <div className="text-2xl mb-2">{emptyIcon}</div>
+                <div className="text-2xl mb-2"><Icon name={emptyIcon} size={28} /></div>
                 <div className="text-xs">{emptyMsg}<br /><span className="text-fg-muted">{emptyHint}</span></div>
               </div>
             </div>
@@ -1736,10 +1737,10 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
             const live = s.status === 'reviewing';
             const rEntries = reviewEntries.get(s.id);
             const rLoading = loadingReviewIds.has(s.id);
-            const icon = live ? '🔄'
-              : s.outcome === 'approved' ? '✅'
-              : s.outcome === 'revision_requested' ? '↩️'
-              : '⏹';
+            const icon: IconName = live ? 'refresh'
+              : s.outcome === 'approved' ? 'check-circle'
+              : s.outcome === 'revision_requested' ? 'reply'
+              : 'ban';
             return (
               <div key={s.id} className="border border-border-default/50 rounded-lg overflow-hidden">
                 <button
@@ -1747,7 +1748,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
                   className="w-full flex items-center justify-between px-3 py-2 bg-surface-elevated/30 hover:bg-surface-elevated/50 transition-colors"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-sm">{icon}</span>
+                    <span className="text-sm"><Icon name={icon} size={14} /></span>
                     <span className="text-xs text-fg-secondary font-medium">{t('work:task.reviewRoundLabel', { round: s.round })}</span>
                     <span className="text-[10px] text-fg-tertiary">{s.reviewerName ?? t('work:task.reviewerUnknown')}</span>
                     {live && <span className="text-[10px] text-purple-400">{s.reviewerType === 'human' ? t('work:task.reviewWaiting') : t('work:task.reviewLive')}</span>}
@@ -1783,10 +1784,10 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
           const logs = roundLogs.get(rs.round);
           const isLoading = loadingRounds.has(rs.round);
           const roundComments = getCommentsForRound(rs);
-          const statusIcon = rs.status === 'completed' || rs.status === 'execution_finished' ? '✅'
-            : rs.status === 'failed' ? '❌'
-            : rs.status === 'cancelled' ? '⏹'
-            : '🔄';
+          const statusIcon: IconName = rs.status === 'completed' || rs.status === 'execution_finished' ? 'check-circle'
+            : rs.status === 'failed' ? 'x-circle'
+            : rs.status === 'cancelled' ? 'ban'
+            : 'refresh';
           const elapsed = rs.lastAt && rs.firstAt
             ? Math.max(0, new Date(rs.lastAt).getTime() - new Date(rs.firstAt).getTime())
             : 0;
@@ -1801,10 +1802,10 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
                 className="w-full flex items-center justify-between px-3 py-2 bg-surface-elevated/30 hover:bg-surface-elevated/50 transition-colors"
               >
                 <div className="flex items-center gap-2">
-                  <span className="text-sm">{statusIcon}</span>
+                  <span className="text-sm"><Icon name={statusIcon} size={14} /></span>
                   <span className="text-xs text-fg-secondary font-medium">{t('work:task.roundHeader', { n: rs.round })}</span>
                   {roundComments.length > 0 && (
-                    <span className="text-[10px] text-blue-400">💬 {roundComments.length}</span>
+                    <span className="text-[10px] text-blue-400"><Icon name="message" size={10} className="inline-block align-[-0.125em]" /> {roundComments.length}</span>
                   )}
                   {isLatest && isExecuting && (
                     <svg className="w-3 h-3 animate-spin text-brand-500" viewBox="0 0 24 24" fill="none">
@@ -1865,7 +1866,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
                       )}
                       <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
                     </div>
-                    <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
+                    <span className="ml-auto text-[10px] text-fg-tertiary"><Icon name="arrow-right" size={10} className="inline-block align-[-0.125em]" /></span>
                   </div>
                   {activities.length > 0 && (
                     <div className="ml-9 mt-1">
@@ -1961,15 +1962,15 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
   const fileName = currentPath.split('/').pop() ?? currentPath;
   const isDir = data?.type === 'directory';
 
-  const extIcon = (ext: string, isDirectory: boolean) => {
-    if (isDirectory) return '📁';
+  const extIcon = (ext: string, isDirectory: boolean): IconName => {
+    if (isDirectory) return 'folder';
     const mdExts = ['.md', '.markdown'];
     const imgExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
-    if (mdExts.includes(ext)) return '📝';
-    if (imgExts.includes(ext)) return '🖼';
-    if (['.json', '.yaml', '.yml', '.toml', '.xml'].includes(ext)) return '⚙';
-    if (['.js', '.ts', '.jsx', '.tsx', '.py', '.sh'].includes(ext)) return '💻';
-    return '📄';
+    if (mdExts.includes(ext)) return 'file-text';
+    if (imgExts.includes(ext)) return 'image';
+    if (['.json', '.yaml', '.yml', '.toml', '.xml'].includes(ext)) return 'gear';
+    if (['.js', '.ts', '.jsx', '.tsx', '.py', '.sh'].includes(ext)) return 'tools';
+    return 'file';
   };
 
   return (
@@ -1996,7 +1997,7 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
             <button onClick={() => onOpenExternal ? onOpenExternal() : openInFinder(currentPath)} className="text-fg-tertiary hover:text-fg-primary p-1.5 rounded hover:bg-surface-elevated/60 transition-colors" title={onOpenExternal ? t('work:task.openInDeliverables') : t('work:task.openInFinder')}>
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
             </button>
-            <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg shrink-0">×</button>
+            <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg shrink-0"><Icon name="x" size={14} /></button>
           </div>
         </div>
         <div className="px-4 py-1 border-b border-border-default/60">
@@ -2018,7 +2019,7 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
                   onClick={() => handleEntryClick(entry)}
                   className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-surface-elevated/40 transition-colors text-left group"
                 >
-                  <span className="text-sm shrink-0">{extIcon(entry.ext, entry.isDirectory)}</span>
+                  <span className="text-sm shrink-0"><Icon name={extIcon(entry.ext, entry.isDirectory)} size={14} /></span>
                   <span className="flex-1 min-w-0 truncate text-sm text-fg-primary group-hover:text-brand-400 transition-colors">{entry.name}</span>
                   {!entry.isDirectory && entry.size != null && (
                     <span className="text-[10px] text-fg-tertiary shrink-0">{fmtSize(entry.size)}</span>
@@ -2421,7 +2422,7 @@ function TaskDetailPanel({
             onClick={() => setSendToChatOpen(true)}
             label={t('work:task.sendToChat', { defaultValue: '发送到对话' })}
           />
-          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">×</button>
+          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1"><Icon name="x" size={14} /></button>
         </div>
       </div>
 
@@ -2564,7 +2565,7 @@ function TaskDetailPanel({
                       const blockerDone = blockerTask && (blockerTask.status === 'completed' || blockerTask.status === 'cancelled');
                       return (
                         <span key={blockerId} className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full ${blockerDone ? 'bg-green-500/10 text-green-600' : 'bg-amber-500/10 text-amber-600'}`}>
-                          <span className="text-[9px]">{blockerDone ? '✓' : '⏳'}</span>
+                          <span className="text-[9px]"><Icon name={blockerDone ? 'check' : 'hourglass'} size={10} className="inline-block align-[-0.125em]" /></span>
                           <span className={`font-mono ${blockerDone ? 'line-through opacity-60' : ''}`}>{blockerTask ? blockerTask.title.slice(0, 30) : blockerId.slice(-8)}</span>
                           {!isTerminal && (
                             <button
@@ -2575,7 +2576,7 @@ function TaskDetailPanel({
                               }}
                               className="ml-0.5 text-current opacity-40 hover:opacity-100 transition-opacity"
                               title={t('work:task.removeDependency')}
-                            >×</button>
+                            ><Icon name="x" size={9} className="inline-block align-[-0.125em]" /></button>
                           )}
                         </span>
                       );
@@ -2601,8 +2602,8 @@ function TaskDetailPanel({
                     placeholder={t('work:task.addDependency')}
                     noMatchesText={t('work:task.noMatches')}
                     itemSuffix={(o) => {
-                      if (o.status === 'completed' || o.status === 'archived') return <span className="text-[9px] text-green-600 shrink-0">✓</span>;
-                      if (o.status === 'cancelled') return <span className="text-[9px] text-fg-tertiary shrink-0">✕</span>;
+                      if (o.status === 'completed' || o.status === 'archived') return <span className="text-[9px] text-green-600 shrink-0"><Icon name="check" size={9} className="inline-block align-[-0.125em]" /></span>;
+                      if (o.status === 'cancelled') return <span className="text-[9px] text-fg-tertiary shrink-0"><Icon name="x" size={9} className="inline-block align-[-0.125em]" /></span>;
                       return null;
                     }}
                     onSelect={async (depId) => {
@@ -2732,7 +2733,7 @@ function TaskDetailPanel({
                             : sub.status === 'cancelled' ? 'line-through text-fg-muted'
                             : 'text-fg-secondary'
                           }`}>{sub.title}</span>
-                          <button onClick={() => setPendingDelete(sub)} className="shrink-0 opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-red-500 transition-all text-xs">✕</button>
+                          <button onClick={() => setPendingDelete(sub)} className="shrink-0 opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-red-500 transition-all text-xs"><Icon name="x" size={11} /></button>
                         </div>
                       ))}
                     </div>
@@ -3050,7 +3051,7 @@ function TaskDetailPanel({
                     <button onClick={() => { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim() || t('work:task.revisionsNeededDefault'), authUser?.id)); setShowRevision(false); setRevisionReason(''); }}
                       disabled={actionInFlight} className="px-2.5 py-1 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">{t('common:send')}</button>
                     <button onClick={() => { setShowRevision(false); setRevisionReason(''); }}
-                      className="px-1.5 py-1 text-xs text-fg-secondary hover:text-fg-primary">✕</button>
+                      className="px-1.5 py-1 text-xs text-fg-secondary hover:text-fg-primary"><Icon name="x" size={11} /></button>
                   </div>
                 )}
               </>
@@ -3711,7 +3712,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       >
         <div className="flex items-center gap-2 min-w-0">
           {typeBadge}
-          {isHold && <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${BLOCKED_TONE.hold.chip}`}>⚠</span>}
+          {isHold && <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${BLOCKED_TONE.hold.chip}`}><Icon name="alert-triangle" size={10} className="inline-block align-[-0.125em]" /></span>}
           <span className="text-sm text-fg-primary truncate flex-1">{row.data.title}</span>
         </div>
         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -3760,7 +3761,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       <div className="w-12 shrink-0">{typeBadge}</div>
       <div className="flex-1 min-w-[200px] text-sm text-fg-primary truncate flex items-center gap-1.5">
         <span className="truncate">{row.data.title}</span>
-        {isHold && <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold shrink-0 ${BLOCKED_TONE.hold.chip}`}>⚠</span>}
+        {isHold && <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold shrink-0 ${BLOCKED_TONE.hold.chip}`}><Icon name="alert-triangle" size={10} className="inline-block align-[-0.125em]" /></span>}
       </div>
       <div className="w-[130px] shrink-0" onClick={e => e.stopPropagation()}>
         <TagPicker
@@ -7073,8 +7074,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                     <span className="text-[10px] text-fg-muted">{t('work:task.byCreator', { name: creatorName })}</span>
                                   </div>
                                   <div className="flex items-center gap-1">
-                                    {req.goalConfig?.loopEnabled && <span className="text-[10px] text-brand-500/70 bg-brand-500/8 px-1.5 py-0.5 rounded-md" title={req.goalConfig.completionCriteria}>🎯 {req.goalConfig.currentIteration}/{req.goalConfig.maxIterations}</span>}
-                                    {req.taskIds.length > 0 && <span className="text-[10px] text-brand-500/70 bg-brand-500/8 px-1.5 py-0.5 rounded-md">📋 {req.taskIds.length}</span>}
+                                    {req.goalConfig?.loopEnabled && <span className="text-[10px] text-brand-500/70 bg-brand-500/8 px-1.5 py-0.5 rounded-md" title={req.goalConfig.completionCriteria}><Icon name="target" size={10} className="inline-block align-[-0.125em]" /> {req.goalConfig.currentIteration}/{req.goalConfig.maxIterations}</span>}
+                                    {req.taskIds.length > 0 && <span className="text-[10px] text-brand-500/70 bg-brand-500/8 px-1.5 py-0.5 rounded-md"><Icon name="clipboard" size={10} className="inline-block align-[-0.125em]" /> {req.taskIds.length}</span>}
                                   </div>
                                 </div>
                                 {needsReview && (
@@ -7123,7 +7124,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                     const chip = taskStatusChip(task.status, t, cardBlockedReason) ?? badge;
                                     return chip ? <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${chip.cls}`}>{chip.label}</span> : null;
                                   })()}
-                                  {cardNeedsHuman && <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 font-medium ${BLOCKED_TONE.hold.chip}`}>⚠</span>}
+                                  {cardNeedsHuman && <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 font-medium ${BLOCKED_TONE.hold.chip}`}><Icon name="alert-triangle" size={11} className="inline-block align-[-0.125em]" /></span>}
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{task.title}</div>
                                 {task.description && <div className="text-[11px] text-fg-tertiary line-clamp-1 mb-1.5">{task.description}</div>}
@@ -7131,7 +7132,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   <div className="flex flex-wrap gap-1 mb-1.5">
                                     {taskProjName && <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-fg-secondary rounded-md truncate max-w-[100px]" title={taskProjName}>{taskProjName}</span>}
                                     {taskReqTitle && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/8 text-brand-500 rounded-md truncate max-w-[110px]" title={taskReqTitle}># {taskReqTitle}</span>}
-                                    {task.blockedBy && task.blockedBy.length > 0 && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-600 rounded-md">⏳ {t('work:dag.depCount', { count: task.blockedBy.length })}</span>}
+                                    {task.blockedBy && task.blockedBy.length > 0 && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-600 rounded-md"><Icon name="hourglass" size={10} className="inline-block align-[-0.125em]" /> {t('work:dag.depCount', { count: task.blockedBy.length })}</span>}
                                   </div>
                                 )}
                                 <div className="flex items-center justify-between mt-auto pt-1.5 border-t border-border-default/20">
@@ -7140,7 +7141,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   </div>
                                   <div className="flex items-center gap-1.5">
                                     {subCount > 0 && <span className="text-[10px] text-fg-tertiary">⋮ {subCount}</span>}
-                                    {task.notes && task.notes.length > 0 && <span className="text-[10px] text-fg-tertiary">📝 {task.notes.length}</span>}
+                                    {task.notes && task.notes.length > 0 && <span className="text-[10px] text-fg-tertiary"><Icon name="pencil-line" size={10} className="inline-block align-[-0.125em]" /> {task.notes.length}</span>}
                                     {task.assignedAgentId && (
                                       <span className="text-[10px] text-brand-500 bg-brand-500/8 px-1.5 py-0.5 rounded-md flex items-center gap-1">
                                         <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[agents.find(a => a.id === task.assignedAgentId)?.status ?? ''] ?? 'bg-gray-500'}`} />
@@ -7451,7 +7452,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                       return (
                         <span key={id} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 bg-amber-500/10 text-amber-600 rounded-full">
                           {dep ? dep.title.slice(0, 30) : id.slice(-8)}
-                          <button onClick={() => setTaskBlockedBy(taskBlockedBy.filter(x => x !== id))} className="ml-0.5 text-amber-600/60 hover:text-amber-600">×</button>
+                          <button onClick={() => setTaskBlockedBy(taskBlockedBy.filter(x => x !== id))} className="ml-0.5 text-amber-600/60 hover:text-amber-600"><Icon name="x" size={10} className="inline-block align-[-0.125em]" /></button>
                         </span>
                       );
                     })}
@@ -7778,7 +7779,7 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
                       </span>
                     )}
                     <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
-                    <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
+                    <span className="ml-auto text-[10px] text-fg-tertiary"><Icon name="arrow-right" size={10} className="inline-block align-[-0.125em]" /></span>
                   </div>
                   {activities.length > 0 && (
                     <div className="ml-8 mt-1">

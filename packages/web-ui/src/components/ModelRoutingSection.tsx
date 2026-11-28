@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Icon } from './Icon.tsx';
 import { useTranslation } from 'react-i18next';
 import type { CapabilityRoutingConfigDTO, ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO } from '../api';
 import { ModelSelect, type ModelOption } from './ModelSelect';
@@ -465,7 +466,7 @@ function CapabilityGroup({
                 {isMismatch ? (
                   <div className="space-y-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-red-400">⚠ {assignment!.model}</span>
+                      <span className="text-xs text-red-400 inline-flex items-center gap-1"><Icon name="alert-triangle" size={11} />{assignment!.model}</span>
                       <span className="text-[10px] text-red-400/70">{t('modelRouting.mismatchHint')}</span>
                     </div>
                     <ModelSelect
@@ -505,10 +506,10 @@ function CapabilityGroup({
               </div>
               <div className="w-14 shrink-0 flex justify-end">
                 {isMismatch && (
-                  <span className="text-[10px] text-red-400 font-medium" title={t('modelRouting.mismatchHint')}>⚠</span>
+                  <span className="text-[10px] text-red-400 font-medium" title={t('modelRouting.mismatchHint')}><Icon name="alert-triangle" size={10} /></span>
                 )}
                 {!isMismatch && isStale && (
-                  <span className="text-[10px] text-yellow-400 font-medium" title={t('modelRouting.staleProvider')}>⚠</span>
+                  <span className="text-[10px] text-yellow-400 font-medium" title={t('modelRouting.staleProvider')}><Icon name="alert-triangle" size={10} /></span>
                 )}
                 {!isMismatch && !isStale && tier && <TierBadge tier={tier} />}
                 {!isMismatch && !isStale && !tier && assignment && <TierBadge tier="unknown" />}

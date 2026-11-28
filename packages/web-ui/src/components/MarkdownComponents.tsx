@@ -8,6 +8,7 @@
  * tab (web), never navigating the Electron window.
  */
 
+import { Icon } from './Icon.tsx';
 import { useState, useRef, useEffect, useCallback, useMemo, memo, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -618,7 +619,7 @@ export function useMarkdownComponents(options: MarkdownComponentsOptions = {}): 
                 onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); navBus.navigate(PAGE.WORK, { boardType: 'workflows' }); }}
                 title={`workflow: ${chipId}`}
               >
-                <span className="text-[10px]">⚙️</span>
+                <span className="text-[10px]"><Icon name="gear" size={10} /></span>
                 <span>{children}</span>
               </span>
             );

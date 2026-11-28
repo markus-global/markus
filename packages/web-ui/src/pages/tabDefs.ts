@@ -7,6 +7,7 @@
  * Team.tsx is the only importer (plus any future tab-aware UI).
  */
 import type { TFunction } from 'i18next';
+import type { IconName } from '../components/Icon.tsx';
 import { TAB_DEF as AGENT_TAB_DEF } from './AgentProfile.tsx';
 import { TABS as TEAM_TABS } from './TeamProfile.tsx';
 
@@ -34,13 +35,12 @@ export function tabLabel(tab: MainTab, t: TFunction): string {
   return tab;
 }
 
-export function tabIcon(tab: MainTab): string {
-  if (tab === 'chat') return '💬';
+/** 返回 tab 的**图标名字**（不是字符）：渲染细节交给 `<Icon>`，数据层只存名字。 */
+export function tabIcon(tab: MainTab): IconName {
+  if (tab === 'chat') return 'message';
   const agentDef = AGENT_TAB_DEF.find(d => d.key === tab);
-  if (agentDef) return agentDef.icon;
   const teamDef = TEAM_TABS.find(d => d.key === tab);
-  if (teamDef) return teamDef.icon;
-  return '';
+  return (agentDef?.icon ?? teamDef?.icon ?? 'dot') as IconName;
 }
 
 export function isProfileTab(tab: MainTab): boolean {

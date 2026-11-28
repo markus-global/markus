@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Icon } from '../components/Icon.tsx';
 import { useTranslation } from 'react-i18next';
 import { api, type CodingToolDetection, type CodingToolName, type CodingToolModelDTO, type CodingToolsSettingsResponse } from '../api.ts';
 
@@ -892,7 +893,7 @@ export function CodingToolsSettings() {
                               : 'bg-red-500/10 border border-red-500/20 text-red-500'
                           }`}>
                             <div className="flex items-start gap-2">
-                              <span className="shrink-0 mt-0.5">{testResult[name]!.success ? '✓' : '✗'}</span>
+                              <span className="shrink-0 mt-0.5">{testResult[name]!.success ? <Icon name="check" size={12} /> : <Icon name="x" size={12} />}</span>
                               <div className="min-w-0">
                                 <div>{testResult[name]!.detail}</div>
                                 {!testResult[name]!.success && (

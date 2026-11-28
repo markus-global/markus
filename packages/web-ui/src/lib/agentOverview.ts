@@ -17,6 +17,7 @@
  */
 
 import i18n from '../i18n/index.ts';
+import type { IconName } from '../components/Icon.tsx';
 
 /** The subset of {@link AgentUsageInfo} this panel needs. */
 export interface OverviewUsageCounters {
@@ -355,15 +356,15 @@ export interface WorkUnitEntity {
  * 紫=deferred、绿=completed、红=bounced、灰=continue），再让蓝色表示「任务」就成了
  * 一个形状回答两个问题。所以**图标编码类别，颜色只编码紧迫度**。
  */
-export function workUnitEntityIcon(key: string): string {
+export function workUnitEntityIcon(key: string): IconName | '' {
   // 选图标的唯一判据：**小尺寸下剪影能分开**。
   // 📋（夹板）与 📝（带横线的纸）剪影几乎一样，所以需求改用 🎯。
   // 「未归属」不出图标：它本身就是「没有实体」，用一个点/问号反而多了一形语义。
   if (!key) return '';
-  if (key.startsWith('channel:loop_')) return '♻️';  // 决策循环（表里无对应项）
-  if (key.startsWith('task:')) return '☑️';   // 勾选框：任务 = 待办
-  if (key.startsWith('requirement:')) return '🎯'; // 与 📋 剪影相异（需求 = 目标）
-  if (key.startsWith('channel:')) return '💬'; // 同 human_chat / task_comment
+  if (key.startsWith('channel:loop_')) return 'refresh';      // 决策循环（表里无对应项）
+  if (key.startsWith('task:')) return 'check-square';         // 勾选框：任务 = 待办
+  if (key.startsWith('requirement:')) return 'target';        // 与 📋 剪影相异（需求 = 目标）
+  if (key.startsWith('channel:')) return 'message';           // 同 human_chat / task_comment
   return '';
 }
 

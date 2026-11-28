@@ -19,6 +19,7 @@ import {
   buildReplacementsFromUploads,
   type LocalMediaRef,
 } from '../lib/mediaRefs.ts';
+import { Icon } from './Icon.tsx';
 
 export interface DeliverableShareModalProps {
   item: DeliverableInfo;
@@ -370,7 +371,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
           {loggedIn === false ? (
             <div className="space-y-4 py-2">
               <div className="flex items-start gap-3 rounded-xl bg-amber-500/10 border border-amber-500/25 p-3">
-                <span className="text-lg">🔑</span>
+                <span className="text-lg"><Icon name="keyboard" size={18} /></span>
                 <p className="text-sm text-fg-secondary">
                   {t('deliverables:share.needHubLogin', { defaultValue: '需登录 Markus Hub 账号后才能分享产出物。' })}
                 </p>

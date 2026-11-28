@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Icon } from './Icon.tsx';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api.ts';
 
@@ -201,7 +202,7 @@ function FallbackView({ format, size, onOpenSystem, onDownload }: {
   const { t } = useTranslation('deliverables');
   return (
     <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
-      <div className="w-12 h-12 rounded-xl bg-surface-elevated flex items-center justify-center text-xl">📄</div>
+      <div className="w-12 h-12 rounded-xl bg-surface-elevated flex items-center justify-center"><Icon name="file" size={22} /></div>
       <div className="text-xs text-fg-secondary">{t('officeNoInlinePreview', { format })}</div>
       {size != null && <div className="text-[10px] text-fg-tertiary">{t('officeSize', { size: formatBytes(size) })}</div>}
       <div className="flex gap-2">

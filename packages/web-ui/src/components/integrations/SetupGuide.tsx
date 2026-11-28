@@ -12,6 +12,7 @@
  * the tutorial every time: it starts **open** for an unconfigured platform and
  * **closed** once credentials are stored.
  */
+import { Icon } from '../Icon.tsx';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { consoleUrlFor, guideHeading, guideSteps } from '../../lib/platformI18n.ts';
@@ -98,7 +99,7 @@ export function SetupGuide({
         data-testid="integration-guide-toggle"
         className="w-full flex items-center gap-2.5 px-4 py-3 text-left hover:bg-white/[0.02] transition-colors"
       >
-        <span className="text-base leading-none" aria-hidden="true">🧭</span>
+        <span className="leading-none" aria-hidden="true"><Icon name="compass" size={15} /></span>
         <span className="flex-1 text-sm font-medium text-fg-primary">{guideHeading(t)}</span>
         <svg
           className={`w-4 h-4 text-fg-tertiary transition-transform ${open ? 'rotate-90' : ''}`}

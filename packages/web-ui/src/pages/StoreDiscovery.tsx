@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Icon } from '../components/Icon.tsx';
 import { useTranslation } from 'react-i18next';
 import { hubApi, type HubItem } from '../api.ts';
 import { AssetCard } from '../components/AssetCard.tsx';
@@ -235,7 +236,7 @@ function EmptyHint() {
   const { t } = useTranslation(['store']);
   return (
     <div className="text-center py-12 rounded-2xl border border-dashed border-border-default">
-      <div className="text-3xl mb-2 opacity-40">✦</div>
+      <div className="text-3xl mb-2 opacity-40"><Icon name="spark" size={28} /></div>
       <div className="text-fg-secondary font-medium">{t('discover.empty', '生态正在成长中')}</div>
       <div className="text-fg-tertiary text-sm mt-1">{t('discover.emptyHint', '成为首批创作者，分享你的第一个资产')}</div>
     </div>

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react';
+import { Icon, type IconName } from '../components/Icon.tsx';
 import { useTranslation } from 'react-i18next';
 import { api, hubApi, kebab } from '../api.ts';
 import type { TeamInfo, TeamMemberInfo } from '../api.ts';
@@ -22,11 +23,11 @@ interface Props {
 
 export type TeamTab = 'overview' | 'announcements' | 'norms' | 'settings';
 
-export const TABS: Array<{ key: TeamTab; labelKey: string; icon: string }> = [
-  { key: 'overview', labelKey: 'teamProfile.overview', icon: '▦' },
-  { key: 'announcements', labelKey: 'teamProfile.announcements', icon: '◈' },
-  { key: 'norms', labelKey: 'teamProfile.norms', icon: '☰' },
-  { key: 'settings', labelKey: 'teamProfile.settings', icon: '⚙' },
+export const TABS: Array<{ key: TeamTab; labelKey: string; icon: IconName }> = [
+  { key: 'overview', labelKey: 'teamProfile.overview', icon: 'bar-chart' },
+  { key: 'announcements', labelKey: 'teamProfile.announcements', icon: 'megaphone' },
+  { key: 'norms', labelKey: 'teamProfile.norms', icon: 'scroll' },
+  { key: 'settings', labelKey: 'teamProfile.settings', icon: 'gear' },
 ];
 
 const STATUS_DOT: Record<string, string> = {
@@ -132,7 +133,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
   if (!team) {
     return teamLoading
       ? <PageLoading label={t('common:loading', { defaultValue: 'Loading…' })} />
-      : <EmptyState icon={<span className="text-2xl">🫥</span>} title={t('teamProfile.teamMissing', { defaultValue: 'Team not found' })} />;
+      : <EmptyState icon={<Icon name="eye-off" size={24} />} title={t('teamProfile.teamMissing', { defaultValue: 'Team not found' })} />;
   }
 
   const managerMember = team.members.find(m => m.agentRole === 'manager');

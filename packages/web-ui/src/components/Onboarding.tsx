@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Icon, type IconName } from './Icon.tsx';
 import { useTranslation, Trans } from 'react-i18next';
 import type { ThemeMode } from '../hooks/useTheme.ts';
 import { api, getHubToken } from '../api.ts';
@@ -117,12 +118,12 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onPr
     }
   };
 
-  const themeOptions: Array<{ value: ThemeMode; label: string; icon: string; desc: string }> = [
-    { value: 'system', label: t('theme.system'), icon: '💻', desc: t('theme.systemDesc') },
-    { value: 'light', label: t('theme.light'), icon: '☀️', desc: t('theme.lightDesc') },
-    { value: 'dark', label: t('theme.dark'), icon: '🌊', desc: t('theme.darkDesc') },
-    { value: 'cyberpunk', label: t('theme.cyberpunk'), icon: '🔮', desc: t('theme.cyberpunkDesc') },
-    { value: 'mono', label: t('theme.mono'), icon: '⬛', desc: t('theme.monoDesc') },
+  const themeOptions: Array<{ value: ThemeMode; label: string; icon: IconName; desc: string }> = [
+    { value: 'system', label: t('theme.system'), icon: 'keyboard', desc: t('theme.systemDesc') },
+    { value: 'light', label: t('theme.light'), icon: 'sun', desc: t('theme.lightDesc') },
+    { value: 'dark', label: t('theme.dark'), icon: 'moon', desc: t('theme.darkDesc') },
+    { value: 'cyberpunk', label: t('theme.cyberpunk'), icon: 'spark', desc: t('theme.cyberpunkDesc') },
+    { value: 'mono', label: t('theme.mono'), icon: 'dot', desc: t('theme.monoDesc') },
   ];
 
   const allSteps = [
@@ -157,7 +158,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onPr
                   : 'border-border-default hover:border-fg-tertiary bg-surface-elevated/30'
               }`}
             >
-              <span className="text-2xl">👤</span>
+              <span className="flex justify-center"><Icon name="users" size={22} /></span>
               <div>
                 <div className="font-medium text-fg-primary text-sm text-center">{t('usageType.personal', { defaultValue: 'Personal' })}</div>
                 <div className="text-[11px] text-fg-tertiary mt-1 text-center">{t('usageType.personalDesc', { defaultValue: 'Individual use with your own AI agents.' })}</div>
@@ -171,7 +172,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onPr
                   : 'border-border-default hover:border-fg-tertiary bg-surface-elevated/30'
               }`}
             >
-              <span className="text-2xl">🏢</span>
+              <span className="flex justify-center"><Icon name="folder-tree" size={22} /></span>
               <div>
                 <div className="font-medium text-fg-primary text-sm text-center">{t('usageType.organization', { defaultValue: 'Team & Enterprise' })}</div>
                 <div className="text-[11px] text-fg-tertiary mt-1 text-center">{t('usageType.organizationDesc', { defaultValue: 'For teams sharing licenses and collaborating.' })}</div>
@@ -364,7 +365,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onPr
                     : 'border-border-default hover:border-fg-tertiary bg-surface-elevated/30'
                 }`}
               >
-                <span className="text-2xl">{opt.icon}</span>
+                <span className="flex justify-center"><Icon name={opt.icon} size={22} /></span>
                 <span className="text-sm font-medium text-fg-primary">{opt.label}</span>
                 <span className="text-[11px] text-fg-tertiary leading-tight text-center">{opt.desc}</span>
               </button>

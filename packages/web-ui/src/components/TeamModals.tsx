@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Icon } from './Icon.tsx';
 import { createPortal } from 'react-dom';
 import { useTranslation, Trans } from 'react-i18next';
 import { api, type TeamInfo, type TeamMemberInfo } from '../api.ts';
@@ -294,7 +295,7 @@ export function OpenClawImportModal({ onClose, onConnected }: { onClose: () => v
         return (
           <>
             <div className="text-center py-6">
-              <div className="text-3xl mb-3 text-green-600">✓</div>
+              <div className="text-3xl mb-3 text-green-600"><Icon name="check" size={28} /></div>
               <div className="text-base text-green-600 font-medium mb-1">{t('team:modals.openClaw.agentRegistered')}</div>
               <div className="text-sm text-fg-secondary mt-1"><strong>{agentName}</strong></div>
             </div>

@@ -24,36 +24,37 @@
  * or edit both sides and let the drift test confirm they match.
  */
 
+import type { IconName } from '../components/Icon.tsx';
 export type MailboxTypeCategory = 'interaction' | 'task' | 'notification' | 'system';
 
 export interface MailboxTypeStructure {
-  icon: string;
+  icon: IconName;
   category: MailboxTypeCategory;
 }
 
 export const MAILBOX_TYPE_STRUCTURE: Readonly<Record<string, MailboxTypeStructure>> = {
-  system_event:         { icon: '⚙', category: 'system' },
-  human_chat:           { icon: '💬', category: 'interaction' },
-  task_comment:         { icon: '💬', category: 'task' },
-  mention:              { icon: '@', category: 'interaction' },
-  session_reply:        { icon: '↩', category: 'task' },
-  task_status_update:   { icon: '📋', category: 'task' },
-  a2a_message:          { icon: '🔗', category: 'interaction' },
-  review_request:       { icon: '👀', category: 'task' },
-  requirement_comment:  { icon: '💬', category: 'task' },
-  requirement_update:   { icon: '📝', category: 'notification' },
-  daily_report:         { icon: '📊', category: 'system' },
-  heartbeat:            { icon: '♡', category: 'system' },
-  memory_consolidation: { icon: '🧠', category: 'system' },
-  workflow_update:      { icon: '🔄', category: 'task' },
-  callback_result:      { icon: '↩', category: 'system' },
-  external_signal:      { icon: '📡', category: 'notification' },
+  system_event:         { icon: 'gear', category: 'system' },
+  human_chat:           { icon: 'message', category: 'interaction' },
+  task_comment:         { icon: 'message', category: 'task' },
+  mention:              { icon: 'mention', category: 'interaction' },
+  session_reply:        { icon: 'reply', category: 'task' },
+  task_status_update:   { icon: 'clipboard', category: 'task' },
+  a2a_message:          { icon: 'link', category: 'interaction' },
+  review_request:       { icon: 'eye', category: 'task' },
+  requirement_comment:  { icon: 'message', category: 'task' },
+  requirement_update:   { icon: 'pencil-line', category: 'notification' },
+  daily_report:         { icon: 'bar-chart', category: 'system' },
+  heartbeat:            { icon: 'heart', category: 'system' },
+  memory_consolidation: { icon: 'brain', category: 'system' },
+  workflow_update:      { icon: 'refresh', category: 'task' },
+  callback_result:      { icon: 'reply', category: 'system' },
+  external_signal:      { icon: 'signal', category: 'notification' },
 };
 
 /** Icon for a mailbox type; unknown types get a neutral dot instead of nothing. */
-export function mailboxTypeIcon(sourceType: string | undefined): string {
-  if (!sourceType) return '●';
-  return MAILBOX_TYPE_STRUCTURE[sourceType]?.icon ?? '●';
+export function mailboxTypeIcon(sourceType: string | undefined): IconName {
+  if (!sourceType) return 'dot';
+  return MAILBOX_TYPE_STRUCTURE[sourceType]?.icon ?? 'dot';
 }
 
 /** Category buckets derived from the mirror — the filter bar reads this. */
