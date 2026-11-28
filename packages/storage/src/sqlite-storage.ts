@@ -1097,8 +1097,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
       if (!cols.some(c => c.name === m.column)) {
         _db.exec(m.sql);
         addedColumns.push(`${m.table}.${m.column}`);
-        log.info(`Migration: added column ${m.column} to ${m.table}`);
-      }
+        log.info(`Migration: added column ${m.column} to ${m.table}`);      }
     }
 
     // 补列后的回填：`status_changed_at` 没有历史来源，updated_at 是最接近的诚实代理
@@ -1241,7 +1240,13 @@ export function openSqlite(dbPath: string): DatabaseSync {
     throw err;
   }
 
+  // Diagnostics only (no behaviour change): upgrading from a much older install
+  // is where the 20.7s startup outlier was observed (2026-11-28). This backfill
+  // rewrites history rows and is the prime suspect, so time it explicitly and
+  // log it next to the `[timing]` marks in cli/commands/start.ts.
+  const executionLogBackfillT0 = Date.now();
   migrateToExecutionStreamLogs(_db);
+  log.info(`[timing] execution_stream_logs backfill: ${Date.now() - executionLogBackfillT0}ms`);
 
   // Status unification migration: rename legacy status values
   const statusMigrations = [

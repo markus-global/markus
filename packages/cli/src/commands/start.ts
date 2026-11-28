@@ -995,10 +995,27 @@ async function startServerCore(
   startupSection('Markus 启动');
   startupLog('INFO', `日志文件: ${logPath}`);
 
+  // ── Startup phase timing (DIAGNOSTICS ONLY — no behaviour change) ───────────
+  // Observed 2026-11-28: one launch took 20.7s to reach "API listening" while
+  // the other two took 1.7s and 2.7s. That outlier happens when upgrading from a
+  // much older install, i.e. somewhere between "正在启动服务" and the listen
+  // line — but the log only carried the total, so the slow phase was unknowable
+  // and any "fix" would have been a guess. These marks are written to the same
+  // startup log the desktop splash launch produces, so a single slow boot is
+  // enough to attribute the time.
+  const timingStartedAt = Date.now();
+  let timingLastMark = timingStartedAt;
+  const markPhase = (name: string): void => {
+    const now = Date.now();
+    startupLog('INFO', `[timing] ${name} +${now - timingLastMark}ms (since boot ${now - timingStartedAt}ms)`);
+    timingLastMark = now;
+  };
+
   // ── Step 1: Config ─────────────────────────────────────────────────────────
   progress?.setActive(1);
   progress?.complete(1, `config loaded from ~/.markus/markus.json`);
   onProgress?.('config', 'config loaded');
+  markPhase('config loaded');
 
   // LLM preflight check: warn if no VALID LLM API key is configured
   // "***" or other placeholder patterns are NOT valid keys
@@ -1136,6 +1153,7 @@ async function startServerCore(
     auditService,
     bootstrapOwnerId,
   } = await createServices(config);
+  markPhase('services created (storage open + migrations + db self-heal)');
   progress?.complete(3, 'SQLite storage initialised');
   progress?.complete(4, `services ready: agent manager, task service, api server on :${apiPort}`);
   onProgress?.('services', `services ready on :${apiPort}`);
