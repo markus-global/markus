@@ -14,7 +14,7 @@
     <img src="https://img.shields.io/github/actions/workflow/status/markus-global/markus/ci.yml?branch=main&label=CI" alt="CI status" />
   </a>
   <a href="https://github.com/markus-global/markus/releases">
-    <img src="https://img.shields.io/github/v/release/markus-global/markus?include_prereleases&label=version" alt="Latest version" />
+    <img src="https://img.shields.io/github/v/release/markus-global/markus?label=stable" alt="最新稳定版" />
   </a>
   <a href="https://github.com/markus-global/markus/stargazers">
     <img src="https://img.shields.io/github/stars/markus-global/markus?style=flat" alt="GitHub stars" />
@@ -73,9 +73,10 @@ copilot 很擅长单个任务：它记不住明天，还给自己打分。但真
 | **可见性**       | N 个标签页、N 个窗口     | 一块看板、一条审计轨迹                        |
 | **跑在哪**       | 别人的云上               | 你的机器、你的密钥、你的数据                  |
 
-**模型与技能：** 任何供应商——Anthropic、OpenAI、Google、DeepSeek、MiniMax、Fireworks、
-OpenRouter，或用 Ollama 跑本地模型；技能双向互通：从 skills.sh、SkillHub、OpenClaw、
-AgentScope 或任意 MCP server 导入，也能把自己的导出回去。
+**模型与技能：** 任何供应商——Anthropic、OpenAI、Google、xAI、DeepSeek、通义千问、Kimi、
+MiniMax、Groq、Mistral、智谱 GLM、Fireworks、OpenRouter 等等，或用 Ollama 跑本地模型；
+技能双向互通：从 skills.sh、SkillHub、OpenClaw（含 SOUL）、AgentScope 或任意 MCP server
+导入，也能把自己的导出回去。
 
 ---
 
@@ -150,7 +151,7 @@ GUI 与浏览器自动化，以及智能体之间的通信协议。
 | --- | --- |
 | [系统架构](docs/architecture/architecture.md) | 各部件怎么拼起来，以及为什么这么设计 |
 | [智能体运行时](docs/architecture/agent-runtime.md) · [记忆系统](docs/architecture/memory-system.md) · [工具系统](docs/architecture/tool-system.md) | 大家问得最多的三个子系统 |
-| [API 参考](docs/api/api.md) · [使用指南](docs/guides/guide.md) | 想基于它开发，或者只是用起来 |
+| [API 参考](docs/api/reference.md) · [使用指南](docs/guides/guide.md) | 想基于它开发，或者只是用起来 |
 | [工程记录](docs/records/) | 带日期的审计与复盘，不加修饰地公开 |
 
 ---
@@ -183,7 +184,8 @@ pnpm lint         # ESLint
 
 完整流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-Markus 目前是 **pre-1.0（0.11.x）**，迭代很快，小版本里可能有破坏性变更。正因为这样，现在
+Markus 目前是 **pre-1.0**，迭代很快，小版本里可能有破坏性变更——当前稳定版见
+[GitHub Releases](https://github.com/markus-global/markus/releases/latest)。正因为这样，现在
 的反馈、issue 和 PR 才最值钱。
 
 ---

@@ -14,7 +14,7 @@
     <img src="https://img.shields.io/github/actions/workflow/status/markus-global/markus/ci.yml?branch=main&label=CI" alt="CI status" />
   </a>
   <a href="https://github.com/markus-global/markus/releases">
-    <img src="https://img.shields.io/github/v/release/markus-global/markus?include_prereleases&label=version" alt="Latest version" />
+    <img src="https://img.shields.io/github/v/release/markus-global/markus?label=stable" alt="Latest stable version" />
   </a>
   <a href="https://github.com/markus-global/markus/stargazers">
     <img src="https://img.shields.io/github/stars/markus-global/markus?style=flat" alt="GitHub stars" />
@@ -74,9 +74,10 @@ not one task.
 | **Visibility**       | N tabs, N windows           | One board, one audit trail                       |
 | **Where it runs**    | Someone else's cloud        | Your machine, your keys, your data               |
 
-**Models and skills:** any provider — Anthropic, OpenAI, Google, DeepSeek, MiniMax, Fireworks,
-OpenRouter, or a local one via Ollama — and skills in both directions: import from skills.sh,
-SkillHub, OpenClaw, AgentScope or any MCP server, export your own back.
+**Models and skills:** bring your own provider — Anthropic, OpenAI, Google, xAI, DeepSeek, Qwen,
+Kimi, MiniMax, Groq, Mistral, Z.AI, Fireworks, OpenRouter and more, or a local model via Ollama —
+and skills in both directions: import from skills.sh, SkillHub, OpenClaw (including SOUL),
+AgentScope or any MCP server, export your own back.
 
 ---
 
@@ -188,8 +189,10 @@ pnpm lint         # ESLint
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
-Markus is **pre-1.0 (0.11.x)** and moving quickly, so minor releases can contain breaking changes.
-That is precisely why feedback, issues and pull requests are most valuable right now.
+Markus is **pre-1.0** and moving quickly, so minor releases can contain breaking changes — the
+current stable version is always on
+[GitHub Releases](https://github.com/markus-global/markus/releases/latest). That is precisely why
+feedback, issues and pull requests are most valuable right now.
 
 ---
 
