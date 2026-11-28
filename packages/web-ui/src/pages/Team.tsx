@@ -98,6 +98,12 @@ import {
   selectAgentReviewNotifications, resolveReviewLanding, notifySessionId,
 } from '../lib/notifyReview.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
+import {
+  CHAT_MIN_W,
+  PANEL_MIN_W,
+  rightPanelMaxWidth,
+  railsActionOnPanelTransition,
+} from '../lib/rightPanelLayout.ts';
 import { AgentProfile, LEGACY_TAB_SECTION, type ProfileTab, type OverviewSectionId } from './AgentProfile.tsx';
 import { resolveMobileChatBackHash, teamChannelKey } from '../lib/mobileTeamNav.ts';
 import { agentStatusPresentation, resolveAgentStatus } from '../lib/agentOverview.ts';
@@ -137,9 +143,6 @@ import {
   AgentMessageBody, segmentsToStreamEntries, friendlyAgentError, isMarkusCreditError, dispatchCreditNotification,
 } from './ChatComponents.tsx';
 export type { MsgSegment };
-
-/** L1/L2 team-chat sidebar collapse preference. Only written on manual toggle. */
-const TEAM_SIDEBARS_COLLAPSED_KEY = 'markus_team_sidebars_c';
 
 /**
  * 会话在 tab 栏 / 历史列表里的**默认**标签。
@@ -269,17 +272,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     storageKey: 'markus_chat_sidebar',
   });
 
-  // Sidebars collapsed: user can collapse both L1 and L2 together.
-  // Persist only explicit user toggles (collapse/expand buttons). Default open.
-  // Transient collapses (Cmd+B, right-panel open) must not write this key.
-  const [sidebarsCollapsed, setSidebarsCollapsed] = useState(() => {
-    try { return localStorage.getItem(TEAM_SIDEBARS_COLLAPSED_KEY) === '1'; }
-    catch { return false; }
-  });
-  const setSidebarsCollapsedPersisted = useCallback((collapsed: boolean) => {
-    setSidebarsCollapsed(collapsed);
-    try { localStorage.setItem(TEAM_SIDEBARS_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* ignore */ }
-  }, []);
+  // Collapsed L1 + L2 together. Always starts EXPANDED (Owner 2026-11-27):
+  // entering the page must never land on a hidden list, so this is a transient
+  // per-visit choice — deliberately not persisted.
+  const [sidebarsCollapsed, setSidebarsCollapsed] = useState(false);
 
   // Unified layout coordination (Cmd+B collapse, Cmd+L right panel, host registration)
   const layout = useLayout();
@@ -301,9 +297,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // the team container (see effectiveRightPanelWidth further below), so the panel
   // never gets pushed off-screen / truncated — even when the user manually
   // re-expands the L1/L2 sidebars while the panel is open. `panelWidthPref` is
-  // 'auto' for the even 50/50 split, or a user-chosen pixel width after dragging.
-  const CHAT_MIN_W = 400;
-  const PANEL_MIN_W = 320;
+  // 'auto' for the 40/60 split (chat/panel), or a user-chosen pixel width after
+  // dragging.
   const RESIZE_HANDLE_W = 6;
   // Live width of the team container (already excludes the global L0 rail).
   const [containerWidth, setContainerWidth] = useState<number>(
@@ -358,14 +353,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (bare !== 'h' && bare !== 'ArrowLeft') return;
       e.preventDefault();
       if (sidebarsCollapsed) {
-        setSidebarsCollapsedPersisted(false);
+        setSidebarsCollapsed(false);
         layout?.setLeftCollapsed(false);
       }
       layout?.setKeyboardPane(l2AvailableRef.current ? 'l2' : 'l1');
     };
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
-  }, [previewMode, isMobile, isActive, layout, sidebarsCollapsed, setSidebarsCollapsedPersisted]);
+  }, [previewMode, isMobile, isActive, layout, sidebarsCollapsed]);
 
   // Register this page as a right-panel host while it is the active desktop page.
   useEffect(() => {
@@ -542,33 +537,58 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // left rails). A small buffer keeps us on the safe side of rounding so the
   // flex row never overflows.
   const spaceForChatPanel = Math.max(0, containerWidth - leftRailWidth - RESIZE_HANDLE_W - 8);
-  // Reserve for the chat column scales down when space is tight, so BOTH the chat
-  // and the panel stay fully visible (never truncated) no matter how many
-  // sidebars the user opens or which agent is active. The panel is then capped to
-  // whatever remains — this is the invariant that prevents any overflow.
-  const chatReserve = Math.min(CHAT_MIN_W, Math.floor(spaceForChatPanel * 0.4));
-  const maxRightPanelWidth = Math.max(0, spaceForChatPanel - chatReserve);
-  // Even 50/50 split of the shared space (chat column vs. panel).
-  const evenSplitWidth = Math.min(Math.round(spaceForChatPanel / 2), maxRightPanelWidth);
-  // Reactive: 'auto' keeps the even split as the layout settles/changes; a user
-  // drag pins a pixel width. Either way it is clamped so the panel always fits.
-  const desiredRightPanelWidth = panelWidthPref === 'auto' ? evenSplitWidth : panelWidthPref;
-  const effectiveRightPanelWidth = Math.max(0, Math.min(desiredRightPanelWidth, maxRightPanelWidth));
+  // Split rule (Owner spec): of the space the L1/L2 rails leave, the chat gets
+  // 40% and the right panel 60%. `maxPanelWidth` is the hard cap that keeps the
+  // chat's floor intact — the invariant that prevents any overflow — and it is
+  // also what the drag handle clamps to. See lib/rightPanelLayout.ts.
+  const maxRightPanelWidth = rightPanelMaxWidth(spaceForChatPanel);
+  // Auto mode: the flex row itself owns the 40/60 ratio (chat `flex-[4_1_0%]`
+  // vs. panel `grow-[6]`), so the rendered width cannot disagree with the
+  // intent. It used to be arithmetic on measured widths (containerWidth from a
+  // ResizeObserver, rail widths from state) — those inputs were provably wrong
+  // in the real app (Owner 2026-11-27: 558px rendered while the formula believed
+  // 670), and a wrong input silently becomes a wrong split. A pixel width pinned
+  // by dragging is still clamped by the cap above.
+  const autoSplit = panelWidthPref === 'auto';
+  const effectiveRightPanelWidth = autoSplit
+    ? maxRightPanelWidth
+    : Math.max(0, Math.min(panelWidthPref, maxRightPanelWidth));
 
-  // On each fresh open of the right panel: collapse the L1/L2 sidebars to make
-  // room, and re-center to an even 50/50 split. This fires directly on the
-  // open transition (rather than relying on the shared leftCollapsed flag
-  // changing), so it works even when that flag was already set. The user can
-  // still manually re-expand the sidebars afterwards — the width stays clamped.
+  // Right-panel open/close transitions drive the L1/L2 rails:
+  //   open  → collapse them (the panel needs the space) and re-center to auto.
+  //   close → restore them, otherwise the freed space is left as an over-wide
+  //           chat column (Owner 2026-11-27). L2 comes back with them because
+  //           only `sidebarsCollapsed` was toggled, never `showTeamDetailPanel`.
+  // Only *transitions* act, and a rail set the user had already collapsed before
+  // opening the panel is left collapsed — a manual Cmd+B is never undone behind
+  // the user's back (see railsActionOnPanelTransition).
   const rightPanelWasOpen = useRef(false);
+  const sidebarsCollapsedRef = useRef(sidebarsCollapsed);
+  sidebarsCollapsedRef.current = sidebarsCollapsed;
+  /** Rail collapse state captured when the panel took the space, or null. */
+  const railsCollapsedBeforePanel = useRef<boolean | null>(null);
+  const setLayoutLeftCollapsed = layout?.setLeftCollapsed;
   useEffect(() => {
     const open = (layout?.rightPanel ?? null) !== null;
-    if (open && !rightPanelWasOpen.current) {
+    const wasOpen = rightPanelWasOpen.current;
+    rightPanelWasOpen.current = open;
+    const action = railsActionOnPanelTransition(wasOpen, open, railsCollapsedBeforePanel.current);
+    if (action === 'collapse') {
+      railsCollapsedBeforePanel.current = sidebarsCollapsedRef.current;
       setSidebarsCollapsed(true);
       setPanelWidthPref('auto');
+      return;
     }
-    rightPanelWasOpen.current = open;
-  }, [layout?.rightPanel]);
+    if (action === 'restore') {
+      railsCollapsedBeforePanel.current = null;
+      setSidebarsCollapsed(false);
+      setLayoutLeftCollapsed?.(false);
+      return;
+    }
+    // Panel closed while the rails were already collapsed (or no transition):
+    // drop the capture so a later open captures a fresh state.
+    if (wasOpen && !open) railsCollapsedBeforePanel.current = null;
+  }, [layout?.rightPanel, setLayoutLeftCollapsed]);
 
   // Custom resize handle for the right panel: seeds the drag from the currently
   // rendered width (so there's no jump), then pins a user-chosen pixel width.
@@ -579,7 +599,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const onRightPanelResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
-    const startW = effectiveRightPanelWidthRef.current;
+    // Seed from the width actually on screen: in auto mode the panel width is
+    // owned by CSS, so the stored pref is not a pixel width at all.
+    const onScreen = (e.currentTarget as HTMLElement).nextElementSibling?.getBoundingClientRect().width ?? 0;
+    const startW = onScreen > 0 ? onScreen : effectiveRightPanelWidthRef.current;
     const onMove = (ev: MouseEvent) => {
       const next = startW + (startX - ev.clientX); // drag left → wider panel
       const max = maxRightPanelWidthRef.current;
@@ -4801,7 +4824,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         width={isMobile ? undefined : chatSidebar.width}
         onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
         hidden={(isMobile && mobileLayer !== 'roster') || (!isMobile && sidebarsCollapsed)}
-        onCollapse={() => setSidebarsCollapsedPersisted(true)}
+        onCollapse={() => setSidebarsCollapsed(true)}
         initialLoading={initialLoading}
         focused={!isMobile && !sidebarsCollapsed && keyboardPane === 'l1'}
         l2Available={l2Navigable}
@@ -5014,7 +5037,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       {/* ── Main area (hidden in preview fullscreen) ── */}
       {!rightPanelFullscreen && (!isMobile || showChatOnMobile) && (
-      <div className={`flex-1 overflow-hidden flex flex-col ${isMobile || rightPanelPayload ? 'min-w-0' : 'min-w-[400px]'}`}>
+      <div className={`overflow-hidden flex flex-col ${rightPanelPayload && autoSplit ? 'flex-[4_1_0%] min-w-0' : `flex-1 ${isMobile || rightPanelPayload ? 'min-w-0' : 'min-w-[400px]'}`}`}>
         {/* Header */}
         <div className="shrink-0 relative pb-2">
           {isMobile ? (
@@ -5151,7 +5174,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 {/* Expand sidebars button — shown when sidebars are collapsed */}
                 {sidebarsCollapsed && !isMobile && (
                   <button
-                    onClick={() => setSidebarsCollapsedPersisted(false)}
+                    onClick={() => setSidebarsCollapsed(false)}
                     className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
                     title={t('page.toggleSidebar')}
                   >
@@ -6417,9 +6440,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
           </div>
           </div>
-          {/* Shift+Enter hint — only while the user is typing (any composer mode) */}
+          {/* Shift+Enter hint — only while the user is typing (any composer mode).
+              Shares the composer box's `max-w-3xl mx-auto` wrapper so it lines up
+              with the input's right edge, not the chat column's (which is far
+              wider whenever the right panel is closed). */}
           {(input.trim() || pendingImages.length > 0) && (
-            <div className="mt-0.5 flex justify-end px-1 pointer-events-none select-none">
+            <div className={`mt-0.5 flex justify-end px-1 pointer-events-none select-none ${isMobile ? '' : 'max-w-3xl mx-auto'}`}>
               <span className="text-[10px] text-fg-tertiary/80">{t('common:shiftEnterHint')}</span>
             </div>
           )}
@@ -6434,6 +6460,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           payload={rightPanelPayload}
           onClose={collapseRightPanel}
           width={rightPanelFullscreen ? containerWidth : effectiveRightPanelWidth}
+          autoFlex={autoSplit && !rightPanelFullscreen}
           onResizeStart={onRightPanelResizeStart}
           onAddToChat={chip => {
             // Right panel hands over { kind, label, content }; the composer owns
