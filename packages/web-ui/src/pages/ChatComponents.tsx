@@ -198,6 +198,24 @@ export function unmuteCreditNotifications(): void {
 // ─── friendlyAgentError ───────────────────────────────────────────────────────
 
 /**
+ * Is this stored text a **provider error**, or a human-readable system note?
+ *
+ * The two share the `⚠` prefix and the `isError` flag, but only the first is
+ * worth prettifying. Re-deriving a note like "该 agent 已停止，消息未投递" through
+ * friendlyAgentError would bury it inside `aiGeneric` ("⚠ AI 服务错误：…。请稍后重试") —
+ * a regression in the opposite direction from the one this file fixes.
+ *
+ * The marker set is exactly what friendlyAgentError knows how to classify; the
+ * server writes provider errors as `⚠ Error: [provider:model] …`.
+ */
+export function isProviderErrorText(raw: string): boolean {
+  if (!raw) return false;
+  if (/^\s*⚠?\s*Error:/i.test(raw)) return true;
+  return /\b(?:API error|HTTP|CU_EXCEEDED|CU_MONTHLY_EXCEEDED|CU_WINDOW_EXCEEDED|MARKUS_[A-Z_]+|CONTEXT OVERFLOW)\b/.test(raw)
+    || /"error"\s*:/.test(raw);
+}
+
+/**
  * Pull the human-readable message out of a provider error.
  *
  * Provider errors reach us as *nested escaped JSON* — the provider body is
@@ -1172,7 +1190,11 @@ export const AgentMessageBody = memo(function AgentMessageBody({
   // 刷新后回退成 `CU_EXCEEDED: Credits exhausted…`，链接也没了。
   const noticeText = useMemo(() => {
     if (!isErrorNotice) return '';
-    const fromRaw = msg.errorRaw ? friendlyAgentError(msg.errorRaw, t) : '';
+    // 只有**provider 报错**才重生成；系统提示（如“agent 已停止，消息未投递”）
+    // 本身就是人话，包进 aiGeneric 反而变差。
+    const fromRaw = msg.errorRaw && isProviderErrorText(msg.errorRaw)
+      ? friendlyAgentError(msg.errorRaw, t)
+      : '';
     return (fromRaw || msg.text || '').replace(/^⚠\s*/, '');
   }, [isErrorNotice, msg.errorRaw, msg.text, t]);
   // 过程（思考/工具）默认折成一行，流式中和结束后**同一套结构** ——
