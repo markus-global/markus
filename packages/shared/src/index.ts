@@ -12,6 +12,7 @@ export * from './types/llm.js';
 export * from './types/governance.js';
 export * from './types/package.js';
 export * from './types/project.js';
+export * from './types/milestone.js';
 export * from './types/requirement.js';
 export * from './types/connector.js';
 export * from './types/integration.js';

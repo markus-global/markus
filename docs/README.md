@@ -50,6 +50,7 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [desktop-auto-update.md](./architecture/desktop-auto-update.md) | Desktop auto-update — single writer per surface (native updater vs store vs npm banner), update FSM, per-platform feed requirements (macOS zip/sign/notarize, Intel+Apple Silicon in one feed), release gate |
 | [notification-delivery.md](./architecture/notification-delivery.md) | Notification delivery to humans — user/IM notification contract, agent→user messages, dedup and context truth |
 | [state-machines.md](./architecture/state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
+| [work-hierarchy.md](./architecture/work-hierarchy.md) | Containment hierarchy project → milestone → requirement → task; milestone invariants, derived progress, single writer for `milestone_id` |
 | [concurrent-processing.md](./architecture/concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
 | [tool-system.md](./architecture/tool-system.md) | Tool selection, tool result envelope, execution loop, subagent budgets |
 | [streaming-and-reattach.md](./architecture/streaming-and-reattach.md) | SSE streaming, soft-disconnect, reattach, client resilience |

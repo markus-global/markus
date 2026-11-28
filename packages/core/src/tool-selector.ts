@@ -112,6 +112,29 @@ const TOOL_GROUPS: ToolGroup[] = [
     toolNames: ['list_teams', 'team_stop', 'team_start'],
   },
   {
+    // 工作治理一族（项目 → 里程碑 → 需求 → 任务）。
+    //
+    // 为什么是一组而不是拆开：它们是一条链上的相邻动作 —— 你说“这个阶段还差什么”，下一步
+    // 就是挂/改需求；你说“把这个需求排到第二阶段”，就要写 milestone；你说“这项目”就要先
+    // get_project 才知道 milestone 属于谁。拆成两组的结果是“只给一半工具”（2026-11-28 实证）。
+    //
+    // 项目工具此前在选面层**完全无归宿**（既不在任何组，也不在 BASE）→ 只能靠 discover_tools。
+    // task_* 的几个同时也在 BASE_TOOL_NAMES —— 重复无害（Set 并集）。
+    name: 'work',
+    keywords: ['project', 'projects', 'requirement', 'requirements', 'task', 'tasks', 'subtask', 'backlog', 'sprint', 'kanban',
+      'milestone', 'milestones', 'phase', 'phases', 'checkpoint', 'roadmap',
+      '项目', '需求', '任务', '子任务', '看板', '待办', '排期', '里程碑', '阶段', '检查点', '节点', '路线图'],
+    toolNames: [
+      'list_projects', 'get_project', 'create_project', 'update_project', 'delete_project', 'project_stats',
+      'requirement_propose', 'requirement_list', 'requirement_get', 'requirement_update',
+      'requirement_update_status', 'requirement_resubmit', 'requirement_comment',
+      'milestone_list', 'milestone_create', 'milestone_update', 'milestone_delete', 'milestone_assign',
+      'task_create', 'task_list', 'task_get', 'task_update', 'task_note', 'task_assign',
+      'task_comment', 'task_submit_review',
+      'subtask_create', 'subtask_complete', 'subtask_cancel', 'subtask_list',
+    ],
+  },
+  {
     name: 'deliverables',
     keywords: ['deliverable', 'deliverables', 'output', 'artifact', 'convention', 'architecture decision',
       'gotcha', 'troubleshooting', 'best practice', 'lesson', 'pattern', 'report', 'document',
@@ -287,6 +310,8 @@ export class ToolSelector {
         'subtask_create', 'subtask_complete', 'subtask_cancel', 'subtask_list',
         'task_submit_review',
         'requirement_get', 'requirement_update', 'requirement_resubmit',
+        // 里程碑在工作执行回合也要可见：任务属于某个阶段时需要读写它（同一治理族）。
+        'milestone_list', 'milestone_assign',
         // Prompt-mandated names that no keyword group can surface (see
         // TASK_EXECUTION_EXTRA_TOOLS): background_exec / process / deliverable_create.
         ...TASK_EXECUTION_EXTRA_TOOLS,

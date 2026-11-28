@@ -27,6 +27,10 @@ export type AuditEventType =
   | 'announcement_broadcast'
   | 'trust_level_changed'
   | 'project_created'
+  // Milestones (里程碑): a project-owned checkpoint grouping requirements.
+  | 'milestone_created'
+  | 'milestone_updated'
+  | 'milestone_deleted'
   | 'knowledge_contributed'
   | 'report_generated'
   | 'plan_approved'

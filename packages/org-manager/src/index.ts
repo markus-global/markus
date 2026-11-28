@@ -32,6 +32,8 @@ export { AuditService } from './audit-service.js';
 export type { AuditEntry, AuditEventType, TokenUsage } from './audit-service.js';
 export type { APIKey, UsageSummary, OrgPlan } from './billing-service.js';
 export { ProjectService } from './project-service.js';
+export { MilestoneService, computeMilestoneProgress } from './milestone-service.js';
+export type { CreateMilestoneRequest, UpdateMilestoneRequest, MilestoneRequirementBridge, MilestoneProjectLookup } from './milestone-service.js';
 export { RequirementService } from './requirement-service.js';
 export { KnowledgeService } from './knowledge-service.js';
 export { FileKnowledgeStore } from './file-knowledge-store.js';

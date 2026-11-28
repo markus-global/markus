@@ -302,8 +302,35 @@ export interface NotificationInfo {
   metadata?: Record<string, unknown>;
 }
 
-export interface ProjectInfo {
+export interface MilestoneProgressInfo {
+  total: number;
+  done: number;
+  active: number;
+  blocked: number;
+  percent: number;
+}
+
+/**
+ * A project-owned checkpoint grouping requirements.
+ *
+ * There is no stored status/counter: `progress` is DERIVED by the server (single definition)
+ * and is absent only on write responses (create/update), where nothing is attached yet.
+ */
+export interface MilestoneInfo {
   id: string;
+  orgId: string;
+  projectId: string;
+  name: string;
+  description: string;
+  /** ISO date (YYYY-MM-DD) or null = no deadline. */
+  dueDate: string | null;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+  progress?: MilestoneProgressInfo;
+}
+
+export interface ProjectInfo {  id: string;
   orgId: string;
   name: string;
   description?: string;
@@ -1151,6 +1178,8 @@ export interface GoalConfig {
 
 export interface RequirementInfo {
   id: string;
+  /** Milestone (里程碑) this requirement belongs to, or undefined = unassigned. */
+  milestoneId?: string | null;
   title: string;
   description: string;
   status: string;
@@ -2055,10 +2084,11 @@ export const api = {
     },
     get: (id: string) => request<{ requirement: RequirementInfo }>(`/requirements/${id}`)
       .then(r => ({ ...r, requirement: normalizeRequirement(r.requirement) })),
-    create: (data: { title: string; description: string; priority?: string; projectId?: string; tags?: string[] }) =>
+    create: (data: { title: string; description: string; priority?: string; projectId?: string; milestoneId?: string; tags?: string[] }) =>
       request<{ requirement: RequirementInfo }>('/requirements', { method: 'POST', body: JSON.stringify(data) })
         .then(r => ({ ...r, requirement: normalizeRequirement(r.requirement) })),
-    update: (id: string, data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null }) =>
+    /** `milestoneId: null` detaches the requirement from its milestone. */
+    update: (id: string, data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null; milestoneId?: string | null }) =>
       request<{ requirement: RequirementInfo }>(`/requirements/${id}`, { method: 'PUT', body: JSON.stringify(data) })
         .then(r => ({ ...r, requirement: normalizeRequirement(r.requirement) })),
     updateStatus: (id: string, status: string) =>
@@ -2840,9 +2870,27 @@ export const api = {
   },
 
   // ─── Projects ──────────────────────────────────────────────────────
+  milestones: {
+    /** `progress` is derived server-side (single definition) — never recomputed in the UI. */
+    list: (opts?: { projectId?: string; orgId?: string }) => {
+      const params = new URLSearchParams();
+      if (opts?.projectId) params.set('projectId', opts.projectId);
+      if (opts?.orgId) params.set('orgId', opts.orgId);
+      const qs = params.toString();
+      return request<{ milestones: MilestoneInfo[] }>(`/milestones${qs ? `?${qs}` : ''}`);
+    },
+    get: (id: string) => request<{ milestone: MilestoneInfo }>(`/milestones/${id}`),
+    create: (data: { projectId: string; name: string; description?: string; dueDate?: string | null }) =>
+      request<{ milestone: MilestoneInfo }>('/milestones', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: { name?: string; description?: string; dueDate?: string | null }) =>
+      request<{ milestone: MilestoneInfo }>(`/milestones/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    /** Requirements are unlinked (not deleted); `detachedRequirements` says how many. */
+    remove: (id: string) =>
+      request<{ deleted: boolean; detachedRequirements: number }>(`/milestones/${id}`, { method: 'DELETE' }),
+  },
+
   projects: {
-    list: (orgId?: string) => {
-      const qs = orgId ? `?orgId=${orgId}` : '';
+    list: (orgId?: string) => {      const qs = orgId ? `?orgId=${orgId}` : '';
       return request<{ projects: ProjectInfo[] }>(`/projects${qs}`);
     },
     get: (id: string) => request<{ project: ProjectInfo }>(`/projects/${id}`),

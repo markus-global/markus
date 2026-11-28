@@ -45,8 +45,41 @@ export interface DeliverableServiceBridge {
   }): Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; agentId?: string; projectId?: string; taskId?: string; updatedAt?: string }>;
 }
 
-export interface ProjectServiceBridge {
-  listProjects(orgId?: string): Array<{
+/**
+ * Normalise a `due_date` tool argument.
+ *
+ * Tool args arrive JSON-encoded, and a cleared deadline has shown up as the STRING `"null"`
+ * (live test 2026-11-28: `milestone_update {due_date: null}` answered
+ * `Invalid milestone due date "null"`, i.e. the tool could never clear a deadline). The service
+ * is right to reject a non-date; the tool is the layer that must decode the intent.
+ */
+function dueDateArg(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'string') return null;
+  const trimmed = v.trim();
+  if (!trimmed || /^null$/i.test(trimmed)) return null;
+  return trimmed;
+}
+
+export interface MilestoneServiceBridge {
+  list(opts: { orgId?: string; projectId?: string }): Array<{
+    id: string; projectId: string; name: string; description: string; dueDate: string | null;
+    progress: { total: number; done: number; active: number; blocked: number; percent: number };
+  }>;
+  get(id: string): { id: string; projectId: string; name: string; description: string; dueDate: string | null } | undefined;
+  create(opts: { orgId: string; projectId: string; name: string; description?: string; dueDate?: string | null; createdBy?: string }): { id: string; name: string };
+  update(id: string, data: { name?: string; description?: string; dueDate?: string | null }): { id: string; name: string };
+  delete(id: string): { deleted: boolean; detachedRequirements: number };
+  /**
+   * Bind/unbind requirements. Implemented by the requirement write path (single writer for
+   * `milestone_id`) and reported per id so a partial failure is visible, never a silent half-win.
+   */
+  assignRequirements(reqIds: string[], milestoneId: string | null): {
+    updated: string[]; failed: Array<{ id: string; error: string }>;
+  };
+}
+
+export interface ProjectServiceBridge {  listProjects(orgId?: string): Array<{
     id: string;
     name: string;
     description: string;
@@ -78,6 +111,8 @@ export interface ProjectToolsContext {
   orgId: string;
   webUiBaseUrl?: string;
   projectService?: ProjectServiceBridge;
+  /** Milestones (里程碑) — project-owned checkpoints grouping requirements. */
+  milestoneService?: MilestoneServiceBridge;
   requestApproval?: (request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => Promise<{ approved: boolean; comment?: string }>;
   getProjectInfo?: (projectId?: string) => Promise<{
     id: string;
@@ -405,6 +440,132 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 const stats = await ctx.getProjectStats!(args['project_id'] as string);
                 if (!stats) return JSON.stringify({ status: 'error', error: 'Project not found' });
                 return JSON.stringify({ status: 'success', ...stats });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.milestoneService
+      ? [
+          {
+            name: 'milestone_list',
+            description:
+              'List milestones (里程碑) of a project, each with DERIVED progress (total/done/active/blocked/percent). A milestone is a project-owned checkpoint grouping requirements — use it to answer "how far along is this phase". Progress excludes cancelled/rejected requirements from the denominator and counts completed+archived as done; do not recompute it yourself.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                project_id: { type: 'string', description: 'Project id. Omit to list every milestone in the org.' },
+              },
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const milestones = ctx.milestoneService!.list({
+                  orgId: ctx.orgId,
+                  projectId: args['project_id'] as string | undefined,
+                });
+                return JSON.stringify({ status: 'success', milestones });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+          {
+            name: 'milestone_create',
+            description:
+              'Create a milestone inside a project. Requirements are attached later (milestone_assign, or requirement_propose/requirement_update with milestone_id). `due_date` is an ISO date (YYYY-MM-DD) and optional. A milestone cannot leave its project — plan the grouping before creating it.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                project_id: { type: 'string', description: 'Owning project (required).' },
+                name: { type: 'string', description: 'Milestone name in the user\'s language.' },
+                description: { type: 'string', description: 'What this checkpoint delivers.' },
+                due_date: { type: 'string', description: 'Optional deadline, ISO date YYYY-MM-DD.' },
+              },
+              required: ['project_id', 'name'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const m = ctx.milestoneService!.create({
+                  orgId: ctx.orgId,
+                  projectId: args['project_id'] as string,
+                  name: args['name'] as string,
+                  description: args['description'] as string | undefined,
+                  dueDate: dueDateArg(args['due_date']),
+                  createdBy: ctx.agentId,
+                });
+                return JSON.stringify({ status: 'success', milestone: m });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+          {
+            name: 'milestone_update',
+            description:
+              'Update a milestone\'s name, description or deadline. Pass `due_date: null` to clear the deadline. The owning project cannot be changed (that would silently re-home every attached requirement).',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                milestone_id: { type: 'string' },
+                name: { type: 'string' },
+                description: { type: 'string' },
+                due_date: { type: ['string', 'null'], description: 'ISO date YYYY-MM-DD, or null to clear it.' },
+              },
+              required: ['milestone_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const m = ctx.milestoneService!.update(args['milestone_id'] as string, {
+                  name: args['name'] as string | undefined,
+                  description: args['description'] as string | undefined,
+                  dueDate: args['due_date'] === undefined ? undefined : dueDateArg(args['due_date']),
+                });
+                return JSON.stringify({ status: 'success', milestone: m });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+          {
+            name: 'milestone_delete',
+            description:
+              'Delete a milestone. Its requirements are UNLINKED, never deleted — the response reports `detachedRequirements`. Use this only when the checkpoint itself was wrong; to re-plan, prefer milestone_update or milestone_assign.',
+            inputSchema: {
+              type: 'object',
+              properties: { milestone_id: { type: 'string' } },
+              required: ['milestone_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const result = ctx.milestoneService!.delete(args['milestone_id'] as string);
+                return JSON.stringify({ status: 'success', ...result });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+          {
+            name: 'milestone_assign',
+            description:
+              'Attach requirements to a milestone (or detach them with `detach: true`). Requirements must belong to the milestone\'s own project — the server rejects a cross-project bind and the per-id results below show exactly which succeeded and why the others failed.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                milestone_id: { type: 'string' },
+                requirement_ids: { type: 'array', items: { type: 'string' }, description: 'Requirement ids to attach or detach.' },
+                detach: { type: 'boolean', description: 'true = remove these requirements from the milestone.' },
+              },
+              required: ['milestone_id', 'requirement_ids'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const ids = (args['requirement_ids'] as string[]) ?? [];
+                const detach = args['detach'] === true;
+                const result = ctx.milestoneService!.assignRequirements(ids, detach ? null : (args['milestone_id'] as string));
+                return JSON.stringify({ status: result.failed.length === 0 ? 'success' : 'partial', ...result });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

@@ -27,6 +27,7 @@ Organization (Org)
  │    ├── Manager (human or agent) — approves work, sets direction
  │    └── Members — agents and humans who execute tasks
  ├── Projects — scoped bodies of work with repos and governance
+ │    ├── Milestones — optional checkpoints that group requirements into phases
  │    ├── Requirements — user-authorized work items (the "why")
  │    │    └── Tasks → Subtasks — how to fulfill a requirement
  │    ├── Deliverables — shared insights, decisions, conventions
@@ -37,7 +38,7 @@ Organization (Org)
 ### Your Workflow Lifecycle
 1. **You are hired** into a Team within an Organization
 2. **A Project is assigned** to your team (or you are onboarded to one)
-3. **Requirements are created** — users create requirements, or agents propose drafts that users approve
+3. **Requirements are created** — users create requirements, or agents propose drafts that users approve. Optionally, requirements are grouped into **milestones** (a project's phases)
 4. **Tasks are created from requirements** — a manager agent breaks approved requirements into tasks (with assignee and reviewer set at creation)
 5. **You receive a task** — check project deliverables first, then work in your isolated workspace
 6. **You deliver** — when implementation is done, the system moves the task to **review** automatically (there is no separate “submit for review” step)
@@ -49,6 +50,7 @@ Organization (Org)
 - **Team**: Your immediate working group. You communicate with teammates via A2A messages.
 - **Project**: The product or codebase you're working on. One team can work on multiple projects; one project can involve multiple teams.
 - **Requirement**: A user-authorized work item that describes *what* should be done and *why*. All tasks must trace back to an approved requirement. Users create requirements; agents can only propose drafts.
+- **Milestone**: An optional checkpoint inside ONE project that groups requirements into a phase, with an optional deadline. It has **no status of its own** and **no stored counters** — completion is derived from its requirements' statuses (cancelled/rejected excluded, completed/archived counted as done). Managed with `milestone_list` / `milestone_create` / `milestone_update` / `milestone_delete` / `milestone_assign`.
 - **Task**: A discrete unit of work assigned to you that fulfills a requirement. Always has a status, priority, and references its parent requirement. Tasks belong to projects.
 - **Deliverables**: Shared outputs across the project. Search them before starting work; contribute when you learn something useful.
 - **Governance**: Rules that control what you can do — task approval tiers, concurrent task limits, git command governance.
@@ -66,6 +68,7 @@ Markus maintains detailed documentation about its architecture and subsystems, a
 | `docs/architecture/memory-system.md` | Memory layers (identity / knowledge / working / session), consolidation lifecycle, budgets |
 | `docs/architecture/prompt-engineering.md` | How your system prompt is assembled, context compression, tool loop |
 | `docs/architecture/state-machines.md` | Task / requirement / mailbox state transitions and triggers |
+| `docs/architecture/work-hierarchy.md` | Containment hierarchy project → milestone → requirement → task; milestone invariants and the single progress definition |
 | `docs/architecture/tool-system.md` | Tool selection, result envelope, subagent budgets |
 | `docs/architecture/mailbox-system.md` | Priority queue, attention model, interrupts, stop / cancel |
 | `docs/api/reference.md` | REST API endpoints — **generated** from `buildRouteTable()`, never edited by hand |
@@ -306,6 +309,7 @@ You operate within a project-based system. Key concepts:
 - **Project**: A scoped body of work with its own repositories, teams, and governance rules
 - Your tasks belong to a specific project. Do NOT work outside your assigned project scope.
 - Check your current project context before starting any work.
+- **Milestones** are how a project reads as phases instead of one flat list. A milestone belongs to exactly one project and cannot be moved; a requirement may sit in at most one milestone, and only one of **its own** project — attaching a foreign milestone is rejected rather than silently repaired (pass `milestone_id: null` to detach). Deleting a milestone unlinks its requirements; it never deletes them.
 
 ---
 

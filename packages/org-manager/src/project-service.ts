@@ -128,7 +128,24 @@ export class ProjectService {
     return project;
   }
 
+  /**
+   * Cleanup hook for entities that cannot outlive their project (milestones today).
+   *
+   * Every caller of {@link deleteProject} (HTTP route, agent tool, CLI) gets the cleanup for
+   * free — putting it in the route would mean the second caller silently skips it.
+   */
+  private onBeforeDelete?: (projectId: string) => void;
+
+  setOnBeforeDelete(fn: (projectId: string) => void): void {
+    this.onBeforeDelete = fn;
+  }
+
   deleteProject(id: string): void {
+    try {
+      this.onBeforeDelete?.(id);
+    } catch (err) {
+      log.warn('Project delete cleanup failed', { id, error: String(err) });
+    }
     this.projects.delete(id);
     this.projectRepo?.delete(id)
       .catch(err => log.warn('Failed to delete project from DB', { error: String(err) }));

@@ -92,6 +92,7 @@ import type { LicenseService } from './license-service.js';
 import type { TelemetryService } from './telemetry-service.js';
 import type { StorageBridge } from './storage-bridge.js';
 import type { ProjectService } from './project-service.js';
+import type { MilestoneService } from './milestone-service.js';
 import type { ReportService } from './report-service.js';
 import type { KnowledgeService } from './knowledge-service.js';
 import type { KnowledgeSyncService } from './knowledge-sync-service.js';
@@ -14772,7 +14773,7 @@ EXPLANATION_END`;
       const status = url.searchParams.get('status') ?? undefined;
       const source = url.searchParams.get('source') ?? undefined;
       const projectId = url.searchParams.get('projectId') ?? undefined;
-      // `lean=1` drops the (large) description so list consumers that only need
+      const milestoneId = url.searchParams.get('milestoneId') ?? undefined;
       // titles/counts don't ship the whole corpus. `limit`/`offset` bound the page.
       const lean = url.searchParams.get('lean') === '1';
       const limitParam = url.searchParams.get('limit');
@@ -14788,6 +14789,7 @@ EXPLANATION_END`;
         status: status as any,
         source: source as any,
         projectId,
+        milestoneId,
       });
       const total = requirements.length;
       if (offset > 0) requirements = requirements.slice(offset);
@@ -14837,6 +14839,7 @@ EXPLANATION_END`;
           description,
           priority: body['priority'] as TaskPriority | undefined,
           projectId,
+          milestoneId: body['milestoneId'] as string | undefined,
           source: 'user',
           createdBy: authUser.userId,
           tags: tagsCheck.tags,
@@ -14857,6 +14860,13 @@ EXPLANATION_END`;
       const body = await this.readBody(req);
       const tagsCheck = checkTagsInput(body['tags']);
       if (!tagsCheck.ok) { this.json(res, 400, { error: tagsCheck.error }); return; }
+      // A missing requirement is 404; a REJECTED write (e.g. a milestone of another project) is a
+      // client error and must read as 400. Reporting both as 404 is what made an invariant
+      // rejection look like "that requirement does not exist" during live testing (2026-11-28).
+      if (!this.requirementService.getRequirement(reqId)) {
+        this.json(res, 404, { error: `Requirement ${reqId} not found` });
+        return;
+      }
       try {
         const requirement = this.requirementService.updateRequirement(reqId, {
           title: body['title'] as string | undefined,
@@ -14864,10 +14874,13 @@ EXPLANATION_END`;
           priority: body['priority'] as TaskPriority | undefined,
           tags: tagsCheck.tags,
           projectId: body['projectId'] as string | null | undefined,
+          milestoneId: body['milestoneId'] as string | null | undefined,
         });
         this.json(res, 200, { requirement });
       } catch (e) {
-        this.json(res, 404, { error: String(e) });
+        // `String(new Error('x'))` is 'Error: x' — the prefix is a JS artifact, not part of the
+        // message the caller should display.
+        this.json(res, 400, { error: String(e).replace(/^Error: /, '') });
       }
       return;
     }
@@ -15163,6 +15176,104 @@ EXPLANATION_END`;
       const projectId = path.split('/')[3]!;
       this.projectService.deleteProject(projectId);
       this.json(res, 200, { deleted: true });
+      return;
+    }
+
+    // ── Milestones (里程碑) ──────────────────────────────────────────────
+    // A milestone is a project-owned checkpoint grouping requirements. There is no status /
+    // counter column anywhere: `progress` in every response is DERIVED by
+    // MilestoneService.progressOf (the single definition) — see docs/architecture/work-hierarchy.md.
+
+    if (path === '/api/milestones' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? undefined;
+      const projectId = url.searchParams.get('projectId') ?? undefined;
+      const milestoneId = url.searchParams.get('milestoneId') ?? undefined;
+      if (!this.milestoneService) {
+        this.json(res, 200, { milestones: [] });
+        return;
+      }
+      const milestones = this.milestoneService.listWithProgress({ orgId, projectId, milestoneId });
+      this.json(res, 200, { milestones });
+      return;
+    }
+
+    if (path === '/api/milestones' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.milestoneService) {
+        this.json(res, 503, { error: 'Milestone service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const projectId = body['projectId'] as string | undefined;
+      const name = (body['name'] as string | undefined)?.trim();
+      if (!projectId) { this.json(res, 400, { error: 'Project is required' }); return; }
+      if (!name) { this.json(res, 400, { error: 'Milestone name is required' }); return; }
+      try {
+        const milestone = this.milestoneService.createMilestone({
+          orgId: (body['orgId'] as string) ?? 'default',
+          projectId,
+          name,
+          description: body['description'] as string | undefined,
+          dueDate: body['dueDate'] as string | null | undefined,
+          createdBy: authUser.userId,
+        });
+        this.json(res, 201, { milestone });
+      } catch (e) {
+        this.json(res, 400, { error: String(e).replace('Error: ', '') });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/milestones\/[^/]+$/) && req.method === 'GET') {
+      const milestoneId = path.split('/')[3]!;
+      const milestone = this.milestoneService?.getMilestone(milestoneId);
+      if (!milestone) {
+        this.json(res, 404, { error: 'Milestone not found' });
+        return;
+      }
+      this.json(res, 200, { milestone: { ...milestone, progress: this.milestoneService!.progressOf(milestoneId) } });
+      return;
+    }
+
+    if (path.match(/^\/api\/milestones\/[^/]+$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.milestoneService) {
+        this.json(res, 503, { error: 'Milestone service not available' });
+        return;
+      }
+      const milestoneId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      try {
+        const milestone = this.milestoneService.updateMilestone(milestoneId, {
+          name: body['name'] as string | undefined,
+          description: body['description'] as string | undefined,
+          // `dueDate: null` clears the deadline (explicit null is meaningful here).
+          dueDate: body['dueDate'] as string | null | undefined,
+        }, authUser.userId);
+        this.json(res, 200, { milestone });
+      } catch (e) {
+        this.json(res, 400, { error: String(e).replace('Error: ', '') });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/milestones\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.milestoneService) {
+        this.json(res, 503, { error: 'Milestone service not available' });
+        return;
+      }
+      const milestoneId = path.split('/')[3]!;
+      try {
+        // Requirements are UNLINKED, never deleted — `detachedRequirements` reports how many.
+        const result = this.milestoneService.deleteMilestone(milestoneId, authUser.userId);
+        this.json(res, 200, result);
+      } catch (e) {
+        this.json(res, 404, { error: String(e).replace('Error: ', '') });
+      }
       return;
     }
 
@@ -15812,6 +15923,12 @@ EXPLANATION_END`;
       regex(/^\/api\/projects\/[^/]+$/, 'GET', 'PUT', 'DELETE'),/** List notifications for current user (supports `?unread=true&limit=N&offset=N&type=T`) */
 
 
+      // ── Milestones (里程碑) ──────────────────────────────────────────────
+      /** List a project's milestones, each carrying progress derived from its requirements */
+      exact('/api/milestones', 'GET', 'POST'),
+      /** Get / update / delete one milestone; delete unlinks its requirements (never deletes them) */
+      regex(/^\/api\/milestones\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
+
       // ── Notifications ────────────────────────────────────────────────────
       exact('/api/notifications', 'GET', 'POST'),/** Mark all notifications as read */
 
@@ -16135,6 +16252,7 @@ EXPLANATION_END`;
   }
 
   projectService?: ProjectService;
+  milestoneService?: MilestoneService;
   private reportService?: ReportService;
   private knowledgeService?: KnowledgeService;
   deliverableService?: DeliverableService;
@@ -16143,6 +16261,9 @@ EXPLANATION_END`;
 
   setProjectService(svc: ProjectService): void {
     this.projectService = svc;
+  }
+  setMilestoneService(svc: MilestoneService): void {
+    this.milestoneService = svc;
   }
   setKnowledgeSyncService(svc: KnowledgeSyncService): void {
     this.knowledgeSyncService = svc;

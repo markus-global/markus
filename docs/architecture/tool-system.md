@@ -104,6 +104,7 @@ is now a reachability assertion, not an eviction exemption.
 | **Pack core** | Pack-specific always-on tools | Replaces unbounded global BASE for converse/reflex |
 | **Role tools** | `isManager` / `isTaskExecution` / `isReview` within pack rules | e.g. execute unions `code` + `shell` + `coding` |
 | **Keyword groups** (`TOOL_GROUPS`) | Accelerator when message matches | MUST respect toolDef budget |
+| **Group membership is a delivery requirement** | A new tool that matches no group and is not in `BASE_TOOL_NAMES` is unreachable in practice — it exists, but no turn ever selects it, so it is only obtainable by a model that thinks to call `discover_tools` | Adding a tool without registering it here (or as base) is an incomplete delivery, not a tuning detail — see `tool-selector-activation.test.ts` |
 | **Recent tools** (`recentToolNames`) | Session reactivation | Sticky but budget-capped |
 | **`discover_tools`** | Always appended | Progressive disclosure entry point |
 | **`notify_user` / `request_user_input`** | Always appended (non-dream) | Human communication + HITL |

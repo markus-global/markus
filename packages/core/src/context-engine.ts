@@ -1838,6 +1838,10 @@ export class ContextEngine {
     lines.push('- Every task MUST reference an approved `requirement_id`. Use `requirement_propose` first if no requirement exists.');
     lines.push('- After `requirement_propose` / `task_create`, the UI already shows Approve/Reject — do **not** follow up with `request_user_input` to ask for approval.');
     lines.push('');
+    lines.push('**Milestones** (里程碑 — optional checkpoint grouping requirements inside ONE project):');
+    lines.push('- Use `milestone_list` / `milestone_create` / `milestone_update` / `milestone_delete` / `milestone_assign` when a project should read as phases rather than one flat requirement list. Progress is derived server-side (completed+archived over total, cancelled/rejected excluded) — read it, do not recompute it.');
+    lines.push('- A requirement may belong to at most one milestone, and only to a milestone of ITS OWN project. `requirement_propose` / `requirement_update` take `milestone_id` (`null` detaches); a cross-project bind is rejected, never silently repaired. Deleting a milestone unlinks its requirements — it never deletes them.');
+    lines.push('');
     lines.push('**Task lifecycle** — Create → Execute → Review → Complete:');
     lines.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_id`). Check `task_list` first to avoid duplicates.');
     lines.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` with summary + human-facing deliverables (MANDATORY).');
