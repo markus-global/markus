@@ -21,7 +21,15 @@ interface MarkusDesktopAPI {
   /** Native directory picker — selected absolute path, or null when cancelled. */
   selectDirectory?(title?: string): Promise<string | null>;
   showNotification(title: string, body: string): Promise<void>;
-  checkForUpdates(): Promise<{ available: boolean; version?: string; error?: string }>;
+  /**
+   * Update lifecycle state owned by the main process (`updater.ts`).
+   * Browser / MAS builds have no such owner — see `hasDesktopUpdater()`.
+   */
+  getUpdateState?(): Promise<DesktopUpdateState>;
+  checkForUpdates(): Promise<DesktopUpdateState>;
+  /** Restart into the already-downloaded update. */
+  installUpdate?(): Promise<{ ok: boolean; error?: string }>;
+  onUpdateState?(callback: (state: DesktopUpdateState) => void): () => void;
   getLoginItemSettings(): Promise<{ openAtLogin: boolean }>;
   setLoginItemSettings(openAtLogin: boolean): Promise<{ openAtLogin: boolean; error?: string }>;
   onUpdateAvailable(callback: (info: { version: string }) => void): void;

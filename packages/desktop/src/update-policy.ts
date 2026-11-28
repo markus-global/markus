@@ -1,0 +1,200 @@
+/**
+ * Pure update-policy layer — deliberately free of Electron imports so it can be
+ * unit-tested in the `node` vitest project (the desktop package has no DOM and
+ * importing `electron` outside a running app throws).
+ *
+ * `updater.ts` owns IO (timers, IPC broadcast, electron-updater wiring) and
+ * delegates every state transition to {@link reduceUpdateState}. That split
+ * exists for one reason: the update lifecycle is a state machine, and the only
+ * thing worth asserting about it is the transitions — not that some event
+ * listener was registered.
+ */
+
+export type UpdatePhase = 'idle' | 'checking' | 'downloading' | 'ready' | 'error';
+
+export interface UpdateState {
+  phase: UpdatePhase;
+  /** Version being downloaded / ready to install. Null until an update is found. */
+  version: string | null;
+  /** Download progress 0–100, or null when not downloading. */
+  percent: number | null;
+  /**
+   * macOS only: the bundle is not in /Applications, so Squirrel.Mac cannot swap
+   * it (the app runs translocated from the DMG or from a read-only location).
+   * The download is still valid — the user just has to move the app first.
+   */
+  requiresMoveToApplications: boolean;
+  error: string | null;
+}
+
+export type UpdateEvent =
+  | { type: 'checking' }
+  | { type: 'available'; version: string }
+  | { type: 'not-available' }
+  | { type: 'progress'; percent: number }
+  | { type: 'downloaded'; version: string }
+  | { type: 'location-blocked' }
+  | { type: 'error'; message: string };
+
+/** First check after launch — long enough not to compete with startup work. */
+export const INITIAL_CHECK_DELAY_MS = 10_000;
+/** Healthy cadence between checks (4h). */
+export const BASE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+/** A failing updater must not retry forever at full rate — cap at 24h. */
+export const MAX_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+export function initialUpdateState(): UpdateState {
+  return {
+    phase: 'idle',
+    version: null,
+    percent: null,
+    requiresMoveToApplications: false,
+    error: null,
+  };
+}
+
+/** Clamp a raw electron-updater percentage into a renderable integer 0–100. */
+export function normalizePercent(percent: number): number {
+  // NaN must not read as "complete" (NaN would clamp to 0 either way, but the
+  // explicit guard documents the intent); Infinity legitimately means finished.
+  if (Number.isNaN(percent)) return 0;
+  return Math.min(100, Math.max(0, Math.round(percent)));
+}
+
+/**
+ * The single writer of update state.
+ *
+ * Invariants worth keeping (each one is asserted in the tests):
+ *  1. A downloaded update is terminal: a later failed check must NOT downgrade
+ *     `ready` back to `error`, otherwise a transient network blip hides an
+ *     update the user could install right now.
+ *  2. `progress` after `downloaded` is ignored — electron-updater can emit a
+ *     trailing progress frame before the downloaded event settles.
+ *  3. `checking` never clears an already-downloaded version.
+ */
+export function reduceUpdateState(state: UpdateState, event: UpdateEvent): UpdateState {
+  switch (event.type) {
+    case 'checking':
+      if (state.phase === 'ready') return state;
+      return { ...state, phase: 'checking', error: null };
+
+    case 'available':
+      if (state.phase === 'ready') return state;
+      return { ...state, phase: 'downloading', version: event.version, percent: 0, error: null };
+
+    case 'progress': {
+      if (state.phase === 'ready') return state;
+      return { ...state, phase: 'downloading', percent: normalizePercent(event.percent) };
+    }
+
+    case 'downloaded':
+      return { ...state, phase: 'ready', version: event.version, percent: 100, error: null };
+
+    case 'location-blocked':
+      return { ...state, requiresMoveToApplications: true };
+
+    case 'not-available':
+      if (state.phase === 'ready') return state;
+      return { ...state, phase: 'idle', version: null, percent: null, error: null };
+
+    case 'error':
+      if (state.phase === 'ready') return state;
+      return { ...state, phase: 'error', percent: null, error: event.message };
+  }
+}
+
+/**
+ * Exponential backoff for the check loop: 4h → 8h → 16h → 24h (capped).
+ * Without this a permanently broken feed retries every 4h forever, which turns
+ * a silent failure into a permanent log and battery drain.
+ */
+export function nextCheckIntervalMs(consecutiveFailures: number): number {
+  if (consecutiveFailures <= 0) return BASE_CHECK_INTERVAL_MS;
+  const backoff = BASE_CHECK_INTERVAL_MS * 2 ** Math.min(consecutiveFailures, 8);
+  return Math.min(backoff, MAX_CHECK_INTERVAL_MS);
+}
+
+/**
+ * Whether the electron-updater path can run at all, and why not when it cannot.
+ *
+ * Every "no" here is a case where electron-updater would otherwise throw on
+ * every check and write a fake error into the log:
+ *  - MAS: Apple owns updates (Guideline 2.4.5), and Squirrel.Mac cannot run in
+ *    the sandbox.
+ *  - Unpackaged: there is no `app-update.yml` feed, so `checkForUpdates` throws
+ *    ENOENT in dev.
+ *  - Linux without `APPIMAGE`: electron-updater only supports Linux via
+ *    AppImageUpdater, which needs the `APPIMAGE` env var to know which file to
+ *    replace. A deb/rpm install has no writable AppImage → nothing to update.
+ */
+export type UpdaterSupport =
+  | { supported: true }
+  | { supported: false; reason: 'mas' | 'unpackaged' | 'no-appimage-env' | 'unsupported-platform' };
+
+export function resolveUpdaterSupport(options: {
+  platform: string;
+  isMas: boolean;
+  isPackaged: boolean;
+  appImagePath?: string | undefined;
+}): UpdaterSupport {
+  if (options.isMas) return { supported: false, reason: 'mas' };
+  if (!options.isPackaged) return { supported: false, reason: 'unpackaged' };
+  if (options.platform === 'darwin' || options.platform === 'win32') return { supported: true };
+  if (options.platform === 'linux') {
+    return options.appImagePath ? { supported: true } : { supported: false, reason: 'no-appimage-env' };
+  }
+  return { supported: false, reason: 'unsupported-platform' };
+}
+
+/**
+ * Channel policy for the running build — the whole "who gets what update" rule in
+ * one place.
+ *
+ * Channel follows the installed build (Chrome Beta / VS Code Insiders / Firefox
+ * Beta all work this way): a stable install never sees a prerelease, and a
+ * prerelease install keeps tracking prereleases. Two consequences were not
+ * obvious until they bit us:
+ *
+ *  1. **prerelease can never see the stable release** (GitHubProvider only
+ *     matches tags whose prerelease identifier equals the current one), so a
+ *     candidate would be stuck on the candidate channel forever. Hence
+ *     `probeStableFirst`: a candidate probes the stable feed first and graduates
+ *     as soon as the final `X.Y.Z` exists.
+ *  2. **A candidate must not be installed silently.** A stable build downloads in
+ *     the background and installs on quit; a candidate downloads in the
+ *     background and waits for an explicit "restart to update", because a broken
+ *     candidate should not replace a working build while the user is away.
+ */
+export interface ChannelPolicy {
+  /** Running build is a prerelease (its version carries a `-suffix`). */
+  isPrerelease: boolean;
+  /** Probe the stable feed before the prerelease feed (graduation). */
+  probeStableFirst: boolean;
+  /** Install without asking, when the app quits. */
+  installOnQuit: boolean;
+}
+
+export function channelPolicy(currentVersion: string): ChannelPolicy {
+  const isPrerelease = currentVersion.includes('-');
+  return {
+    isPrerelease,
+    probeStableFirst: isPrerelease,
+    installOnQuit: !isPrerelease,
+  };
+}
+
+/**
+ * Feed-file channel name. electron-updater resolves `<channel><platform>.yml`,
+ * so candidates read `rc-mac.yml` / `rc.yml` / `rc-linux.yml` while stable builds
+ * read `latest-mac.yml` / `latest.yml` / `latest-linux.yml`. Keeping them as
+ * separate files in one directory is what lets both channels be published from
+ * the same release run without either overwriting the other.
+ */
+export function channelNameFor(policy: ChannelPolicy): 'rc' | 'latest' {
+  return policy.isPrerelease ? 'rc' : 'latest';
+}
+
+/** True when the UI should offer "restart to update" instead of a download link. */
+export function isActionablePhase(phase: UpdatePhase): boolean {
+  return phase === 'downloading' || phase === 'ready';
+}

@@ -36,13 +36,21 @@ contextBridge.exposeInMainWorld('markusDesktop', {
   setLoginItemSettings: (openAtLogin: boolean) =>
     ipcRenderer.invoke('app:set-login-item-settings', openAtLogin),
 
-  onUpdateAvailable: (callback: (info: { version: string }) => void) => {
-    ipcRenderer.on('update:available', (_event, info) => callback(info));
+  /** Current update lifecycle state (single source of truth lives in main). */
+  getUpdateState: () => ipcRenderer.invoke('app:update-state'),
+
+  /**
+   * Subscribe to update lifecycle changes. Returns an unsubscribe function —
+   * without it every remount leaks an ipcRenderer listener.
+   */
+  onUpdateState: (callback: (state: unknown) => void) => {
+    const handler = (_event: unknown, state: unknown) => callback(state);
+    ipcRenderer.on('update:state', handler);
+    return () => { ipcRenderer.removeListener('update:state', handler); };
   },
 
-  onUpdateDownloaded: (callback: (info: { version: string }) => void) => {
-    ipcRenderer.on('update:downloaded', (_event, info) => callback(info));
-  },
+  /** Restart into the already-downloaded update. */
+  installUpdate: () => ipcRenderer.invoke('app:install-update') as Promise<{ ok: boolean; error?: string }>,
 
   /** Menu accelerators (Cmd/Ctrl+W / T) → right-panel tab actions. */
   onAppShortcut: (callback: (event: { type: 'close-tab' | 'new-tab' }) => void) => {

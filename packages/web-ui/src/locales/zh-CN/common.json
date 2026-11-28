@@ -599,7 +599,12 @@
   "day": "天",
   "update": {
     "available": "新版本可用：v{{latest}}（当前：v{{current}}）",
-    "download": "下载更新"
+    "download": "下载更新",
+    "downloading": "正在后台下载 v{{version}}（{{percent}}%）",
+    "ready": "v{{version}} 已下载完成，重启后生效",
+    "restart": "重启更新",
+    "restartFailed": "更新安装失败，请稍后重试，或到官网重新下载。",
+    "moveToApplications": "更新已下载。请先把 Markus 拖入「应用程序」文件夹，再重启更新。"
   },
   "llmBanner": {
     "message": "未配置 LLM 提供商 — 智能体无法处理请求。",

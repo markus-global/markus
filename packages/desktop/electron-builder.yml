@@ -37,8 +37,16 @@ mac:
   category: public.app-category.developer-tools
   # Arch is selected by CLI (`--arm64` / `--x64`). Do not list both here —
   # that made each CI matrix job build arm64+x64 and upload duplicate DMGs.
+  #
+  # `zip` is NOT optional. Squirrel.Mac — the only installer electron-updater can
+  # drive on macOS — cannot apply a DMG; it needs the .zip artifact plus a
+  # `latest-mac.yml` that points at it. Without `zip`, every mac check dies with
+  # ERR_UPDATER_ZIP_FILE_NOT_FOUND (that was the real state until this changed).
+  # `scripts/verify-update-feed.mjs` guards it in CI; do not drop `zip` to
+  # "save a release asset".
   target:
     - dmg
+    - zip
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
@@ -106,6 +114,14 @@ linux:
   category: Development
   icon: build/icon.png
 
+# Keep `github` here on purpose. This block controls two different things:
+#   (a) whether electron-builder GENERATES the update-info files (latest*.yml);
+#   (b) where it UPLOADS them.
+# `--publish never` already disables (b), and with `provider: generic` it also
+# silently skips (a) — which is exactly how rc.4 lost every feed file and failed
+# its own verification step. So the built feed is produced by the github config
+# (proven since rc.1) and the CLIENT decides where to read from: updater.ts calls
+# setFeedURL() with https://markus.global/releases/ at startup.
 publish:
   provider: github
   owner: markus-global

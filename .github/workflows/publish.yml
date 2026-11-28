@@ -134,14 +134,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ONE mac job builds BOTH arches on purpose: electron-builder writes a
+          # single `latest-mac.yml` per run, so two jobs wrote the same filename
+          # and the last uploader won — which is how the published feed ended up
+          # listing only the arm64 entry and Intel Macs could never auto-update.
+          # electron-updater's MacUpdater filters that one feed by arch
+          # (filterFilesForArch), so a feed containing both zips is correct for
+          # both platforms.
           - os: macos-latest
             platform: darwin
-            arch: arm64
-            electron_args: "--mac --arm64"
-          - os: macos-latest
-            platform: darwin
-            arch: x64
-            electron_args: "--mac --x64"
+            arch: both
+            electron_args: "--mac --arm64 --x64"
           - os: ubuntu-latest
             platform: linux
             arch: x64
@@ -199,6 +202,9 @@ jobs:
           rm /tmp/cert.p12
           echo "DESKTOP_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
+      # No `--publish never` here: electron-builder only writes latest*.yml (the
+      # feed) when publishing is enabled. rc.4 proved this the expensive way —
+      # with `--publish never` + generic provider every feed file was missing.
       - name: Package Electron app
         working-directory: packages/desktop
         run: pnpm dist ${{ matrix.electron_args }}
@@ -209,58 +215,25 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Verify macOS DMG integrity
+      # One script, runnable locally before cutting a release, and the SAME code
+      # here: asserts 2 DMGs + 2 update ZIPs, per-arch correctness, code
+      # signatures, and that latest-mac.yml is installable by Squirrel.Mac.
+      # See docs/desktop-auto-update.md.
+      - name: Verify macOS artifacts (DMG, ZIP, update feed)
         if: matrix.platform == 'darwin'
+        env:
+          APPLE_CERT_PRESENT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
         run: |
-          set -euo pipefail
-          shopt -s nullglob
-          dmgs=(packages/desktop/dist-electron/*.dmg)
-          if [ "${#dmgs[@]}" -eq 0 ]; then
-            echo "::error::No DMG produced under packages/desktop/dist-electron/"
-            exit 1
+          if [ "${APPLE_CERT_PRESENT}" = "true" ]; then
+            bash scripts/verify-mac-artifacts.sh --require-developer-id
+          else
+            echo "::warning::Apple signing secrets absent — verifying structure only, NOT Developer ID/notarization"
+            bash scripts/verify-mac-artifacts.sh
           fi
-          if [ "${#dmgs[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one DMG for matrix arch ${{ matrix.arch }}, got:"
-            printf '  %s\n' "${dmgs[@]}"
-            exit 1
-          fi
-          dmg="${dmgs[0]}"
-          echo "→ hdiutil verify $dmg"
-          hdiutil verify "$dmg"
 
-          # Volume names contain spaces (e.g. "Markus 0.9.6-rc.3-arm64"); do not
-          # parse hdiutil tabular output with awk $NF. Use a private mountroot.
-          mountroot="$(mktemp -d /tmp/markus-dmg-XXXXXX)"
-          cleanup() {
-            # Detach the volume dir (not the mountroot), then remove the empty root.
-            # Under set -e, a failed rm on a still-mounted RO volume must not fail the job.
-            if [ -d "$mountroot" ]; then
-              while IFS= read -r vol; do
-                hdiutil detach "$vol" -force >/dev/null 2>&1 || true
-              done < <(find "$mountroot" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)
-              hdiutil detach "$mountroot" -force >/dev/null 2>&1 || true
-              rm -rf "$mountroot" 2>/dev/null || true
-            fi
-            return 0
-          }
-          trap cleanup EXIT
-          echo "→ hdiutil attach (smoke) $dmg → $mountroot"
-          hdiutil attach "$dmg" -nobrowse -readonly -mountroot "$mountroot"
-          app="$(find "$mountroot" -maxdepth 2 -name 'Markus.app' -type d | head -n 1)"
-          if [ -z "$app" ]; then
-            echo "::error::Markus.app not found under $mountroot"
-            find "$mountroot" -maxdepth 3 -print
-            exit 1
-          fi
-          arch_out="$(lipo -archs "$app/Contents/MacOS/Markus")"
-          echo "   app: $app"
-          echo "   arch: $arch_out"
-          case "${{ matrix.arch }}" in
-            arm64) echo "$arch_out" | grep -q arm64 ;;
-            x64)   echo "$arch_out" | grep -q x86_64 ;;
-          esac
-          cleanup
-          trap - EXIT
+      - name: Verify Linux update feed
+        if: matrix.platform == 'linux'
+        run: node scripts/verify-update-feed.mjs --platform linux
 
       - name: Cleanup Apple keychain
         if: always() && matrix.platform == 'darwin' && env.DESKTOP_KEYCHAIN != ''
@@ -272,8 +245,12 @@ jobs:
           name: markus-desktop-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             packages/desktop/dist-electron/*.dmg
+            packages/desktop/dist-electron/*.zip
             packages/desktop/dist-electron/*.exe
             packages/desktop/dist-electron/*.AppImage
+            packages/desktop/dist-electron/latest-mac.yml
+            packages/desktop/dist-electron/latest.yml
+            packages/desktop/dist-electron/latest-linux.yml
           retention-days: 5
 
   # Windows is built in its own job so the Certum SimplySign signing secrets can
@@ -352,11 +329,17 @@ jobs:
           CERTUM_EMAIL: ${{ secrets.CERTUM_EMAIL }}
           CERTUM_OTP: ${{ secrets.CERTUM_OTP }}
 
+      - name: Verify Windows update feed
+        shell: bash
+        run: node scripts/verify-update-feed.mjs --platform win
+
       - name: Upload Electron artifacts
         uses: actions/upload-artifact@v4
         with:
           name: markus-desktop-win-x64
-          path: packages/desktop/dist-electron/*.exe
+          path: |
+            packages/desktop/dist-electron/*.exe
+            packages/desktop/dist-electron/latest.yml
           retention-days: 5
 
   github-release:
@@ -426,7 +409,10 @@ jobs:
   upload-to-hub:
     runs-on: ubuntu-latest
     needs: [publish-npm, build-server-binary, build-desktop, build-desktop-windows, github-release]
-    if: needs.publish-npm.outputs.is_prerelease == 'false'
+    # Runs for BOTH channels. Stable writes `latest*.yml`; a prerelease writes
+    # `rc*.yml`. A prerelease must never touch `latest*.yml` or `meta.json`, or
+    # every stable user would be handed an rc (and install.sh would call it the
+    # latest stable).
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -441,11 +427,14 @@ jobs:
           R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
           R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
           VERSION: ${{ needs.publish-npm.outputs.version }}
+          IS_PRERELEASE: ${{ needs.publish-npm.outputs.is_prerelease }}
         run: |
-          set -e
+          set -euo pipefail
           uploaded=0
-          for file in artifacts/markus-setup-* artifacts/markus-v${VERSION}-* artifacts/Markus-*.dmg artifacts/Markus-*.AppImage artifacts/Markus*.exe; do
-            [ -f "$file" ] || continue
+          for file in artifacts/markus-setup-* artifacts/markus-v${VERSION}-* \
+                      artifacts/Markus-*.dmg artifacts/Markus-*.AppImage \
+                      artifacts/Markus-*.zip artifacts/Markus*.exe; do
+            if [ ! -f "$file" ]; then continue; fi
             filename=$(basename "$file")
             echo "Uploading $filename to R2..."
             aws s3 cp "$file" "s3://${R2_BUCKET}/releases/${filename}" \
@@ -459,8 +448,115 @@ jobs:
             exit 1
           fi
 
-          echo "{\"version\":\"$VERSION\",\"updatedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > /tmp/meta.json
-          aws s3 cp /tmp/meta.json "s3://${R2_BUCKET}/releases/meta.json" \
-            --endpoint-url "$R2_ENDPOINT" \
-            --content-type "application/json"
-          echo "Uploaded $uploaded files + meta.json to R2"
+          upload_feed() {
+            aws s3 cp "$1" "s3://${R2_BUCKET}/releases/$2" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "text/yaml"
+          }
+
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            if [ -f artifacts/latest-mac.yml ]; then upload_feed artifacts/latest-mac.yml rc-mac.yml; fi
+            if [ -f artifacts/latest.yml ]; then upload_feed artifacts/latest.yml rc.yml; fi
+            if [ -f artifacts/latest-linux.yml ]; then upload_feed artifacts/latest-linux.yml rc-linux.yml; fi
+            echo "Uploaded $uploaded files + rc feeds (no meta.json: prerelease)"
+          else
+            if [ -f artifacts/latest-mac.yml ]; then upload_feed artifacts/latest-mac.yml latest-mac.yml; fi
+            if [ -f artifacts/latest.yml ]; then upload_feed artifacts/latest.yml latest.yml; fi
+            if [ -f artifacts/latest-linux.yml ]; then upload_feed artifacts/latest-linux.yml latest-linux.yml; fi
+            echo "{\"version\":\"$VERSION\",\"updatedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > /tmp/meta.json
+            aws s3 cp /tmp/meta.json "s3://${R2_BUCKET}/releases/meta.json" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "application/json"
+            echo "Uploaded $uploaded files + latest feeds + meta.json"
+          fi
+
+      # Two different invariants, deliberately checked against two different
+      # origins. "Everything the client needs exists" is decided by the bucket
+      # and is immediate. "The client can reach it at all" is decided by the
+      # domain, whose copy of a freshly written object lags.
+      - name: Verify the feed and every file it advertises landed in R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+          VERSION: ${{ needs.publish-npm.outputs.version }}
+          IS_PRERELEASE: ${{ needs.publish-npm.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            feeds="rc-mac.yml rc.yml rc-linux.yml"
+          else
+            feeds="latest-mac.yml latest.yml latest-linux.yml"
+          fi
+          broken=0
+          for feed in $feeds; do
+            if ! aws s3 cp "s3://${R2_BUCKET}/releases/${feed}" /tmp/feed.yml \
+                 --endpoint-url "$R2_ENDPOINT" --only-show-errors; then
+              echo "::error::releases/${feed} is missing in R2"
+              broken=1
+              continue
+            fi
+            if ! grep -q "version: ${VERSION}" /tmp/feed.yml; then
+              echo "::error::releases/${feed} in R2 does not advertise ${VERSION}"
+              broken=1
+            fi
+            # A feed advertising a file the bucket does not hold is a broken
+            # update, not a slow one: the client's download 404s, with no retry
+            # of its own. Checked here so it can never reach a user.
+            while read -r asset; do
+              if [ -z "$asset" ]; then continue; fi
+              if ! aws s3api head-object --bucket "${R2_BUCKET}" \
+                     --key "releases/${asset}" --endpoint-url "$R2_ENDPOINT" \
+                     >/dev/null 2>&1; then
+                echo "::error::releases/${asset} advertised by ${feed} is missing in R2"
+                broken=1
+              fi
+            done < <(awk '/^ *- url:/ { print $3 }' /tmp/feed.yml)
+          done
+          [ "$broken" -eq 0 ] || exit 1
+          echo "R2 holds every feed and every file those feeds advertise"
+
+      # The domain is a 307 into R2 with its own cache, so it lags the bucket by
+      # minutes: rc.5 and rc.6 both turned this step red while the release was in
+      # fact healthy, which is how a gate stops being read. So: fatal only when
+      # the domain answers nothing (route/redirect genuinely broken — actionable),
+      # warning while it still serves the previous object (converges on its own,
+      # nothing to fix). Existence is already guaranteed by the R2 check above.
+      - name: Verify the feed is reachable through markus.global
+        env:
+          VERSION: ${{ needs.publish-npm.outputs.version }}
+          IS_PRERELEASE: ${{ needs.publish-npm.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            feeds="rc-mac.yml rc.yml rc-linux.yml"
+          else
+            feeds="latest-mac.yml latest.yml latest-linux.yml"
+          fi
+          unreachable=0
+          for feed in $feeds; do
+            url="https://markus.global/releases/${feed}"
+            state="unreachable"
+            for attempt in $(seq 1 18); do
+              body=$(curl -fsSL --max-time 30 "$url" 2>/dev/null || true)
+              if printf '%s' "$body" | grep -q "version: ${VERSION}"; then
+                state="serving v${VERSION}"
+                break
+              fi
+              if [ -n "$body" ]; then
+                state="stale"
+              fi
+              echo "attempt ${attempt}: ${feed} not serving ${VERSION} yet — retrying in 10s"
+              sleep 10
+            done
+            case "$state" in
+              "serving "*) echo "OK ${url} (${state})" ;;
+              stale)
+                echo "::warning::${url} still serves the previous version after 3 min — edge propagation, the release itself is in R2" ;;
+              *)
+                echo "::error::${url} is not reachable through the domain"
+                unreachable=1 ;;
+            esac
+          done
+          [ "$unreachable" -eq 0 ] || exit 1

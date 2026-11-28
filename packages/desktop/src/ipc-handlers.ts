@@ -28,6 +28,7 @@ import {
   selectEmbeddedTerminal,
   writeEmbeddedTerminal,
 } from './embedded-terminal.js';
+import { checkForUpdatesNow, getUpdateState, installUpdateNow } from './updater.js';
 
 export function setupIpcHandlers(): void {
   ipcMain.handle('app:get-version', () => {
@@ -127,18 +128,18 @@ export function setupIpcHandlers(): void {
     }
   });
 
+  // Update lifecycle has exactly ONE writer: updater.ts. These handlers only
+  // read its state or ask it to act — never call electron-updater from here.
+  ipcMain.handle('app:update-state', () => getUpdateState());
+
   ipcMain.handle('app:check-for-updates', async () => {
     if (process.env['MARKUS_MAS'] === 'true') {
-      return { available: false, message: 'Updates managed by App Store' };
+      return { phase: 'idle', version: null, percent: null, requiresMoveToApplications: false, error: 'updates-managed-by-app-store' };
     }
-    try {
-      const { autoUpdater } = await import('electron-updater');
-      const result = await autoUpdater.checkForUpdates();
-      return { available: !!result?.updateInfo, version: result?.updateInfo?.version };
-    } catch (err) {
-      return { available: false, error: String(err) };
-    }
+    return checkForUpdatesNow();
   });
+
+  ipcMain.handle('app:install-update', () => installUpdateNow());
 
   // ── Embedded browser (right-panel WebContentsView) ────────────────────────
   ipcMain.handle('browser:create', (_e, id: string, url?: string) => createEmbeddedBrowser(id, url));
