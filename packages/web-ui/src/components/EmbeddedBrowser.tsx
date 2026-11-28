@@ -544,10 +544,13 @@ export function EmbeddedBrowser({
           {loadError}
         </div>
       )}
-      {/* Native WebContentsView paints over this host (hidden while showing folder prompt). */}
+      {/* Native WebContentsView paints over this host (hidden while showing folder prompt).
+          不画框、不上底色：空白 tab 也是右栏主体的一部分，与终端同一口径
+          （右栏只有左侧那一条竖直分隔线 — Owner 2026-11-28）。 */}
       <div
         ref={hostRef}
-        className="flex-1 min-h-0 min-w-0 w-full rounded-lg border border-border-default bg-surface-elevated/30 overflow-hidden"
+        data-browser-host
+        className="flex-1 min-h-0 min-w-0 w-full overflow-hidden"
       >
         {directoryPath && (
           <div className="h-full w-full flex flex-col items-center justify-center gap-4 px-6 text-center">

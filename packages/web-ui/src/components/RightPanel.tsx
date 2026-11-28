@@ -851,15 +851,14 @@ export function RightPanel({
   return (
     <>
       {/* Resize handle (drag left edge) — hidden in fullscreen.
-          这也是聊天区与右栏之间**唯一**的分割线（Owner 2026-11-28）：常显，不再靠 hover。
-          线体细、只用 2/3 高：分隔感够了，不必把两栏“切开”。 */}
+          这也是聊天区与右栏之间**唯一**的分割线（Owner 2026-11-28）：常显，且从顶部纵贯到底。 */}
       {!fullscreen && (
         <div
           data-panel-divider
-          className="w-1.5 cursor-col-resize shrink-0 group relative z-10 flex items-center justify-center"
+          className="w-1.5 cursor-col-resize shrink-0 group relative z-10 flex items-stretch justify-center"
           onMouseDown={onResizeStart}
         >
-          <div className="w-px h-2/3 bg-border-default group-hover:bg-fg-tertiary group-active:bg-brand-500 transition-colors" />
+          <div className="w-px h-full bg-border-default group-hover:bg-fg-tertiary group-active:bg-brand-500 transition-colors" />
         </div>
       )}
 

@@ -45,6 +45,7 @@ vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class { activate() {} 
 
 import { RightPanel } from '../src/components/RightPanel.tsx';
 import { EmbeddedTerminal } from '../src/components/EmbeddedTerminal.tsx';
+import { EmbeddedBrowser } from '../src/components/EmbeddedBrowser.tsx';
 
 const PANEL = {
   payload: { kind: 'file' as const, path: '/tmp/a.txt', title: 'a.txt' },
@@ -61,7 +62,7 @@ describe('右栏分割线 — 只留左栏那条竖直的', () => {
     expect(header.className).not.toContain('border-b');
   });
 
-  it('右栏与聊天区之间那条线常显（不靠 hover 才出现）', () => {
+  it('右栏与聊天区之间那条线常显，且从顶部纵贯到底', () => {
     const { container } = render(<RightPanel {...PANEL} />);
     const handle = container.querySelector('[data-panel-divider]') as HTMLElement;
     expect(handle).not.toBeNull();
@@ -71,6 +72,9 @@ describe('右栏分割线 — 只留左栏那条竖直的', () => {
     expect(line.className).toContain('bg-border-default');
     expect(line.className).not.toContain('border-transparent');
     expect(line.className).not.toContain('border-dashed');
+    // 纵贯到底：整高，不再是 2/3。
+    expect(line.className).toContain('h-full');
+    expect(line.className).not.toContain('h-2/3');
   });
 });
 
@@ -81,5 +85,38 @@ describe('终端宿主 — 不套外框', () => {
     expect(host).not.toBeNull();
     expect(host.className).not.toContain('border ');
     expect(host.className).not.toContain('rounded-lg');
+  });
+});
+
+describe('浏览器宿主 — 空白 tab 也不套外框', () => {
+  it('浏览器容器没有 border / 圆角 / 底色方块', async () => {
+    // EmbeddedBrowser 在无桌面 API 时走「网页版不可用」早退分支，宿主不会渲染；
+    // 这里只桩出它需要的那几个成员，让真实的宿主节点出现。
+    const noop = async () => ({ ok: true });
+    (window as unknown as { markusDesktop: unknown }).markusDesktop = {
+      platform: 'darwin',
+      browser: {
+        create: async () => ({ ok: true, pageId: 1 }),
+        destroy: noop,
+        setBounds: noop,
+        navigate: noop,
+        action: noop,
+        getState: async () => ({ ok: true, url: 'about:blank', title: '', isLoading: false, canGoBack: false, canGoForward: false }),
+        onPageEvent: () => () => {},
+        openDevTools: noop,
+      },
+    };
+
+    try {
+      const { container } = render(<EmbeddedBrowser url="about:blank" />);
+      const host = container.querySelector('[data-browser-host]') as HTMLElement;
+      expect(host).not.toBeNull();
+      expect(host.className).not.toContain('border');
+      expect(host.className).not.toContain('rounded-lg');
+      // 无色块：上底色 + 硬边同样会被看成一张卡片。
+      expect(host.className).not.toContain('bg-surface-elevated');
+    } finally {
+      delete (window as unknown as { markusDesktop?: unknown }).markusDesktop;
+    }
   });
 });
