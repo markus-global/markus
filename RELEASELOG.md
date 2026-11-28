@@ -9,6 +9,41 @@
 > - **贡献授权区间（事实记录）**：同日之前的 `CONTRIBUTING.md` 要求贡献按当时生效的 AGPL-3.0 提交。核查 `0bcfad44`（2026-03-15）→ `965e8d94`（2026-08-16）之间的 **983 个提交，全部由版权人本人提交，不含任何第三方贡献**。此处仅记录事实，不构成对任何贡献授权条款的变更、追认或追加主张。
 > - 版本时间分界点见下方 [v0.9.7-rc.0](#v097-rc0) 条目。
 
+## v0.12.5-rc.7
+
+**预发布（rc）** — 桌面启动体验与国际化收口。三条线：**启动不再等 IM 适配器握手**（实测每次省 ~11s）、**启动页重做**（动效 + 真实阶段文案，去掉端口号与耗时这类对用户无意义的内部信息）、**语言解析收敛为单一事实源**（默认跟 OS，设置页可自行选择，en / zh-CN / es 三语全通）。本条目同时是 rc.0–rc.6 那条自动更新线的收尾（见下一条）。
+
+### 启动
+- **每次启动白等 ~11 秒** — 根因：`start.ts` 的 Step 5 把 `connectConfiguredPlatforms()`（飞书 / Telegram 的远端握手）放在启动返回路径上，而桌面启动页正好卡在 `startBackend()` 与 `loadURL()` 之间。实测（`startup-2026-11-28.log`，三次启动）到 API 监听 1.7s / 20.7s / 2.7s，而握手恒为 10.6–11.1s。修复：适配器连接改为**后台进行**，但 `applyPersistedPlatformBindings()` 与 `setBindingLookup()` 仍在握手开始**之前同步执行**——这是入站消息真正依赖的部分，竞态窗口因此变小而非变大；适配器结果（日志行 + `progress.complete(5, …)` 汇总）在握手完成时汇报，内容一字未减。
+- 因该改动推翻了「启动返回时适配器已连接」的旧契约，`commands-start-platforms.test.ts` 改为断言新契约（汇总仍会出现），并新增 `(a2)` 用例：**启动必须在握手未完成时返回**。证伪：`git stash` 掉修复后 (a2) 变红（60s 超时）。
+
+### 启动页
+- 去掉「已用秒数」与墙钟——那是诊断信息，已移入启动日志的 `[timing]` 行；界面只保留用户能用的信息。
+- `services ready on :8056` 这类后端英文诊断曾直接渲染到界面（端口号、UI URL 对用户无意义且暴露内部细节），现在**跨进程只传 stage id**，文案由桌面端统一出。
+- 视觉：双层极光背景漂移、logo 呼吸 + 光环脉冲、不定式进度条（不伪造百分比）、轮播快捷键提示。**splash.html 现在不含任何文案**（只有结构、动效与 `#status` 落点），文案由主进程从 `SPLASH_COPY` 注入——「半翻译的启动页」因此在结构上不可再发生。
+
+### 国际化
+- 同一块界面此前有**三个语言写者**：web-ui 读自己的 i18n 偏好、主进程读 `app.getLocale()`、splash.html 读 `navigator.language`。在中文系统上把界面切成 English，就会出现「英文应用 + 中文启动页」。
+- 规则收敛为一条（`shared/locale.ts#resolveUiLocale`）：**用户在设置里的选择 > 操作系统语言 > 英文**。桌面四个面（应用本体 / 启动页 / 菜单 / 系统通知）全部读同一解析器，`app.getLocale()` 的语言分支一处不剩。
+- 语言集合对齐为 en / zh-CN / es：**补全西语菜单 36 个标签**（通知文案早已由 `shared/notification-labels` 覆盖 es）；新增键对账守卫 `menu-i18n.test.ts`（三语键集必须相同、无空标签）——缺键不会抛错，只会渲染成空白菜单项，守卫是唯一能让缺口可见的东西。
+- 选择持久化到 `~/.markus/desktop-ui.json`（主进程必须在任何渲染进程存在之前就知道答案），渲染进程切语言时通过 `app:set-ui-locale` 写回。
+
+### 诊断（为定位升级慢而加，不改行为）
+- 启动阶段分段计时：`[timing] config loaded` / `services created` / `api listening`；存储层单独计 `execution_stream_logs` 回填。
+- 首次用于一次真实升级启动（20.9s）：**17.1s 在 `createServices` 内**，且已被夹逼到 `sqlite-storage.ts` 部署唯一索引的那段事务（`uq_channel_bindings_address_active` / `uq_organizations_org_slug` / `uq_agents_org_alias`）——回填计 0ms，迁移语句合计 <100ms。属**一次性成本**（索引建好后正常启动 2.5s）。
+
+## v0.12.5-rc.0 → rc.6（桌面自动更新）
+
+**预发布线（rc）** — 把桌面更新从「点一下跳官网」做成真正的后台下载 + 重启安装，并把分发从 GitHub 切到自有域名。补记：这段时间的中间版本此前未进本日志。
+
+- **macOS 从来没能自动更新过**（线上 v0.12.4 实证）：`latest-mac.yml` 指向 `.dmg`，而 `MacUpdater` 只要 zip（`findFile(files, "zip", ["pkg","dmg"])`，否则 `ERR_UPDATER_ZIP_FILE_NOT_FOUND`）；且 feed 只有 arm64 一条——两个 CI job 各写同名 `latest-mac.yml`，后上传覆盖前者，Intel 机器因此无解。修复：mac 目标加 `zip`、单 job 构建双架构、`MacUpdater` 的按架构过滤即可正确选包。
+- **更新状态单写者**：新增纯状态机 `update-policy.ts` + IO 壳 `updater.ts`；`ipc-handlers` / `menu` / `preload` 全部改为调用它（此前菜单自带第三个写者，绕过所有守卫）。下载进度、失败退避（4h→8h→16h→24h 封顶）、mas/未打包/非 AppImage 环境跳过，均有单测。
+- **界面**：`UpdateNotice` 三态——下载中（带百分比）→ 已就绪「重启更新」→ 不在 `/Applications` 时提示先拖入；官网链接横幅只在没有原生更新器时（浏览器 / MAS）出现。
+- **「重启更新」只把窗口隐藏、进程不退**（rc.1 实测）：根因是窗口 `close` 默认隐藏到托盘，而 `before-quit` 把强制退出看门狗注册在清理步骤**之后**，任一步抛错就会留下「无窗口 + 托盘仍在 + `quitting` 已置位」的僵尸态。修复：点按钮前先标记 `setAppQuitting(true)`；看门狗提前武装、每步清理独立 try/catch；新增「quitAndInstall 5 秒后仍存活」日志。
+- **候选版策略**：候选版**不静默安装**（下载在后台，装不装由用户点）；候选版可**毕业**到正式版（先探 `latest-mac.yml`，正式版更新则放弃候选通道）——否则装在机器上的 rc 永远看不到同基线的正式版。
+- **分发切到自有域名**：`app-update.yml` 仍由 GitHub 配置生成（`--publish never` + `generic` 会让 electron-builder 连 feed 都不产出，rc.4 因此红过），客户端启动时 `setFeedURL()` 指向 `https://markus.global/releases/`；官网通配转发到 R2。**通道靠文件名分离**：正式版写 `latest*.yml`，候选版写 `rc*.yml`，候选版绝不触碰 `latest*.yml` 与 `meta.json`；域名不可达时回退 GitHub Release feed 重试一次。
+- **发布闸门**：`scripts/verify-update-feed.mjs`（三平台：mac 双架构 zip 可选、win exe + blockmap、linux AppImage、sha512 与尺寸对账）+ `scripts/verify-mac-artifacts.sh`（dmg/zip、`lipo`、`codesign`、公证、`stapler`）；`upload-to-hub` 改成**读 R2 源站**判定上传是否成功（此前读 CDN，rc.5/rc.6 都被边缘缓存误判成红）。
+
 ## v0.12.1
 
 **正式版（patch）** — 由 `v0.12.1-rc.0` 转正。相对上一正式版 `v0.12.0`，本版三个主题：**工作流从「文本推断」变成「结构化契约」**、**审批与通知「只记录结果，不记录载荷」**、**前缀缓存稳定性与语义色 token 的静默 no-op 修复**。含 6 个功能 PR（#407–#411、#413），120 files changed, +15145 −1129。
