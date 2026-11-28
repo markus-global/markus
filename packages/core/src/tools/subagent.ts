@@ -155,6 +155,14 @@ export interface SubagentLoopResult {
    * and stays true even when the model's own prose does not.
    */
   finalReport: 'model' | 'digest' | null;
+  /**
+   * D3 (found by live testing, 2026-11-28) — the child **answered on its last allowed tool
+   * iteration**. Status is `'completed'` because it produced its own answer, but it did so with
+   * no room left: a live child in this state wrote "INCOMPLETE (budget exhausted) … 5 of 7 hops"
+   * while the platform reported a clean `completed`. A parent that only reads `status` would
+   * trust a self-truncated result. `false` means the child had iterations to spare.
+   */
+  answeredAtBudgetCeiling: boolean;
 }
 
 export interface SubagentLoopOptions {
@@ -649,8 +657,10 @@ export async function runSubagentLoop(
       if (iterations >= warnAt && iterations < iterationBudget) {
         budgetNoticeSent = true;
         const left = iterationBudget - iterations;
-        const notice = `\n\n[BUDGET NOTICE: ${left} iteration(s) left of ${iterationBudget}. ` +
+        const notice = `[BUDGET NOTICE: ${left} iteration(s) left of ${iterationBudget}. ` +
           `Stop expanding scope — finish the step in hand, then write what is done and what remains.]`;
+        // Persisted: "did the child get warned?" must be answerable from the log, not inferred.
+        logEntries.push({ ts: new Date().toISOString(), role: 'user', content: notice });
         const last = messages[messages.length - 1];
         if (last && last.role === 'tool' && typeof last.content === 'string') {
           last.content = `${last.content}${notice}`;
@@ -697,6 +707,14 @@ export async function runSubagentLoop(
    * and the deterministic note below says everything.
    */
   let finalReport: SubagentLoopResult['finalReport'] = null;
+  /**
+   * D3 (live finding 2026-11-28) — a child can answer on its very last allowed tool iteration.
+   * The loop reports `'completed'` (it produced its own answer), but a live child in exactly
+   * this state declared "INCOMPLETE (budget exhausted) … 5 of 7 hops" in prose while the
+   * platform said `completed`. Silence there is the same defect as an empty result: the parent
+   * trusts a self-truncated answer. Flag it instead of re-labelling the status.
+   */
+  const answeredAtBudgetCeiling = status === 'completed' && iterations >= iterationBudget;
   if (status !== 'completed') {
     // Default to 'digest': as soon as a child stops early, `null` (the "completed normally"
     // value) would be a lie even if it never gets to speak.
@@ -744,6 +762,16 @@ export async function runSubagentLoop(
     cleanResult = '[Subagent completed without producing textual output.]';
   }
 
+  // D3 (live finding 2026-11-28): a child that answered on its last allowed tool iteration is
+  // `completed`, but it had no room left — a live child in this state wrote "INCOMPLETE (budget
+  // exhausted) … 5 of 7 hops" while the platform reported a clean completion. Say so, so a parent
+  // scanning only `status` cannot mistake a self-truncated answer for a finished job.
+  if (answeredAtBudgetCeiling) {
+    cleanResult = `${cleanResult.trimEnd()}\n\n[AT BUDGET CEILING: the child answered on its last ` +
+      `allowed tool iteration (${iterations}/${iterationBudget}) — it may have cut its own work ` +
+      `short to fit; verify before building on this result.]`;
+  }
+
   logEntries.push({
     ts: new Date().toISOString(),
     role: 'assistant',
@@ -786,6 +814,7 @@ export async function runSubagentLoop(
     filesTouched: [...filesTouched],
     toolCalls: { total: toolCallCount, writes: writeCallCount },
     finalReport,
+    answeredAtBudgetCeiling,
   };
 }
 
@@ -946,6 +975,7 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
           filesTouched: loop.filesTouched,
           toolCalls: loop.toolCalls,
           finalReport: loop.finalReport,
+          answeredAtBudgetCeiling: loop.answeredAtBudgetCeiling,
           ...(child ? { workUnitRef: child.ref } : {}),
         });
       } catch (err) {
@@ -1101,6 +1131,7 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
               filesTouched: [],
               toolCalls: { total: 0, writes: 0 },
               finalReport: null,
+              answeredAtBudgetCeiling: false,
             });
             throw err;
           }
@@ -1119,6 +1150,7 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
         filesTouched?: string[];
         toolCalls?: { total: number; writes: number };
         finalReport?: 'model' | 'digest' | null;
+        answeredAtBudgetCeiling?: boolean;
         error?: string;
       }> = results.map((r, i) => {
         if (r.status === 'fulfilled') {
@@ -1140,6 +1172,7 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
             filesTouched: loop.filesTouched,
             toolCalls: loop.toolCalls,
             finalReport: loop.finalReport,
+            answeredAtBudgetCeiling: loop.answeredAtBudgetCeiling,
           };
         }
         const reason = String(r.reason);

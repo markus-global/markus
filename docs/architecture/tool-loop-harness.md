@@ -69,6 +69,11 @@ that doc.
 - `finalReport` states where that prose came from: `'model'` (the child's closing report),
   `'digest'` (the wrap-up failed, timed out or said nothing — only the counters are true) or `null`
   (the child completed normally, no wrap-up was spent).
+- `answeredAtBudgetCeiling` covers the *other* silent truncation, found by live testing: a child can
+  answer on its last allowed tool iteration and still report `status: 'completed'`. A live child in
+  that state wrote "INCOMPLETE (budget exhausted) … 5 of 7" in prose while the platform said
+  `completed`. The flag (and an `[AT BUDGET CEILING …]` note in `output`) marks the answer as
+  possibly self-truncated, without inventing a new lifecycle state.
 - A wrap-up that fails **degrades to the digest and never throws**: a reporting improvement must not
   become a new failure point.
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -276,6 +276,88 @@ describe('D3 — the child is told its rope, and warned once before the wall', (
     // written at the end of iteration ceil(budget × 0.8) first appears in calls[that index].
     const firstNoticedAt = calls.findIndex((c) => c.messages.some((m) => m.content.includes('[BUDGET NOTICE')));
     expect(firstNoticedAt).toBe(Math.ceil(budget * SUBAGENT_BUDGET_NOTICE_AT));
+  });
+});
+
+describe('D3 — answered at the ceiling is flagged, not silently "completed"', () => {
+  it('flags a child that answers on its last allowed tool iteration', async () => {
+    let n = 0;
+    const { router } = recordingRouter(() => {
+      n += 1;
+      if (n <= 2) {
+        return {
+          content: '',
+          finishReason: 'tool_use',
+          toolCalls: [{ id: `t${n}`, name: 'echo', arguments: {} }],
+        };
+      }
+      return { content: 'Partial: 5 of 7 hops read.', finishReason: 'end_turn' };
+    });
+
+    const result = await runSubagentLoop(makeCtx(router, new Map([['echo', okTool('echo')]])), 'chain', {
+      iterationBudget: 2,
+      maxIterations: 1000,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.iterations).toBe(2);
+    expect(result.answeredAtBudgetCeiling).toBe(true);
+    expect(result.output).toContain('[AT BUDGET CEILING');
+    expect(result.output).toContain('verify before building on this result');
+  });
+
+  it('does NOT flag a child that answered with iterations to spare', async () => {
+    let n = 0;
+    const { router } = recordingRouter(() => {
+      n += 1;
+      if (n === 1) {
+        return {
+          content: '',
+          finishReason: 'tool_use',
+          toolCalls: [{ id: 't1', name: 'echo', arguments: {} }],
+        };
+      }
+      return { content: 'All done.', finishReason: 'end_turn' };
+    });
+
+    const result = await runSubagentLoop(makeCtx(router, new Map([['echo', okTool('echo')]])), 'chain', {
+      iterationBudget: 5,
+      maxIterations: 1000,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.answeredAtBudgetCeiling).toBe(false);
+    expect(result.output).not.toContain('[AT BUDGET CEILING');
+  });
+});
+
+describe('D3 — the warning is observable after the fact', () => {
+  it('persists the BUDGET NOTICE in the subagent log', async () => {
+    let n = 0;
+    const { router } = recordingRouter((req) => {
+      if (!req.tools) return { content: REPORT, finishReason: 'end_turn' };
+      n += 1;
+      return {
+        content: '',
+        finishReason: 'tool_use',
+        toolCalls: [{ id: `t${n}`, name: 'echo', arguments: {} }],
+      };
+    });
+
+    const budget = 5;
+    await runSubagentLoop(makeCtx(router, new Map([['echo', okTool('echo')]])), 'x', {
+      iterationBudget: budget,
+      maxIterations: 1000,
+    });
+
+    // "Did the child get warned?" must be answerable from the persisted log, not inferred
+    // from behaviour (live run 2026-11-28: it was unobservable, so this is now pinned).
+    const logsDir = join(dataDir, 'subagent-logs');
+    const files = readdirSync(logsDir).filter((f) => f.endsWith('.jsonl'));
+    expect(files.length).toBe(1);
+    const log = readFileSync(join(logsDir, files[0]!), 'utf8');
+    expect(log).toContain('[BUDGET NOTICE');
+    expect(log).toContain(`${budget - Math.ceil(budget * SUBAGENT_BUDGET_NOTICE_AT)} iteration(s) left of ${budget}`);
   });
 });
 
