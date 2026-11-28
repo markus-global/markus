@@ -10,11 +10,15 @@
  */
 import { describe, it, expect } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useResizablePanel } from './useResizablePanel.ts';
 
-function drag(get: () => { onResizeStart: (e: unknown) => void }, fromX: number, toX: number) {
+/** The only surface these tests need; typed to match the hook so the fake event is honest. */
+type ResizeHandle = { onResizeStart: (e: ReactMouseEvent) => void };
+
+function drag(getHandle: () => ResizeHandle, fromX: number, toX: number) {
   act(() => {
-    get().onResizeStart({ preventDefault() { /* noop */ }, clientX: fromX });
+    getHandle().onResizeStart({ preventDefault() { /* noop */ }, clientX: fromX } as ReactMouseEvent);
     document.dispatchEvent(new MouseEvent('mousemove', { clientX: toX }));
     document.dispatchEvent(new MouseEvent('mouseup', { clientX: toX }));
   });
@@ -25,7 +29,7 @@ describe('useResizablePanel — drag direction follows the anchored side', () =>
     const { result } = renderHook(() => useResizablePanel({
       side: 'left', defaultWidth: 400, minWidth: 320, maxWidth: 900, storageKey: 'test_left_grow',
     }));
-    const get = () => result.current;
+    const get = (): ResizeHandle => result.current;
     drag(get, 500, 560);
     expect(result.current.width).toBe(460);
   });
@@ -34,7 +38,7 @@ describe('useResizablePanel — drag direction follows the anchored side', () =>
     const { result } = renderHook(() => useResizablePanel({
       side: 'left', defaultWidth: 400, minWidth: 320, maxWidth: 900, storageKey: 'test_left_shrink',
     }));
-    const get = () => result.current;
+    const get = (): ResizeHandle => result.current;
     drag(get, 500, 440);
     expect(result.current.width).toBe(340);
   });
@@ -43,7 +47,7 @@ describe('useResizablePanel — drag direction follows the anchored side', () =>
     const { result } = renderHook(() => useResizablePanel({
       side: 'right', defaultWidth: 400, minWidth: 320, maxWidth: 900, storageKey: 'test_right',
     }));
-    const get = () => result.current;
+    const get = (): ResizeHandle => result.current;
     drag(get, 500, 440);
     expect(result.current.width).toBe(460);
   });
