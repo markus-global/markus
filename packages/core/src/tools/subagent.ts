@@ -11,6 +11,9 @@ import {
   SUBAGENT_DEFAULT_ITERATION_BUDGET,
   SUBAGENT_MAX_LLM_RETRIES,
   SUBAGENT_RETRY_BASE_MS,
+  SUBAGENT_FINAL_REPORT_MAX_TOKENS,
+  SUBAGENT_FINAL_REPORT_MIN_CHARS,
+  SUBAGENT_BUDGET_NOTICE_AT,
   WORK_UNIT_REF,
 } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
@@ -138,6 +141,28 @@ export interface SubagentLoopResult {
    * changed).
    */
   toolCalls: { total: number; writes: number };
+  /**
+   * D3 — where the text in `output` came from when the child stopped early:
+   *   'model'  → the child wrote a wrap-up report in a dedicated NO-TOOL turn
+   *              (what it finished, what is left, what the parent must verify);
+   *   'digest' → only the platform's deterministic digest (the wrap-up turn failed,
+   *              timed out or said nothing) — the parent should re-derive scope;
+   *   null     → the child completed normally; `output` is its own answer.
+   *
+   * It answers "is this half-result worth building on", which `status` alone cannot:
+   * both 'model' and 'digest' are `budget_exhausted`, but only the first tells the
+   * parent *what* is done. Either way the digest inside `output` is machine-counted
+   * and stays true even when the model's own prose does not.
+   */
+  finalReport: 'model' | 'digest' | null;
+  /**
+   * D3 (found by live testing, 2026-11-28) — the child **answered on its last allowed tool
+   * iteration**. Status is `'completed'` because it produced its own answer, but it did so with
+   * no room left: a live child in this state wrote "INCOMPLETE (budget exhausted) … 5 of 7 hops"
+   * while the platform reported a clean `completed`. A parent that only reads `status` would
+   * trust a self-truncated result. `false` means the child had iterations to spare.
+   */
+  answeredAtBudgetCeiling: boolean;
 }
 
 export interface SubagentLoopOptions {
@@ -236,18 +261,18 @@ function isRetryableError(err: unknown): boolean {
   return false;
 }
 
-async function llmCallWithRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+async function llmCallWithRetry<T>(fn: () => Promise<T>, label: string, maxRetries = SUBAGENT_MAX_LLM_RETRIES): Promise<T> {
   let lastErr: unknown;
-  for (let attempt = 0; attempt <= SUBAGENT_MAX_LLM_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (!isRetryableError(err) || attempt >= SUBAGENT_MAX_LLM_RETRIES) {
+      if (!isRetryableError(err) || attempt >= maxRetries) {
         throw err;
       }
       const delay = SUBAGENT_RETRY_BASE_MS * Math.pow(2, attempt);
-      log.warn(`${label}: retryable error, attempt ${attempt + 1}/${SUBAGENT_MAX_LLM_RETRIES + 1}`, {
+      log.warn(`${label}: retryable error, attempt ${attempt + 1}/${maxRetries + 1}`, {
         error: String(err).slice(0, SUBAGENT_ERROR_PREVIEW_CHARS),
         delay,
       });
@@ -255,6 +280,101 @@ async function llmCallWithRetry<T>(fn: () => Promise<T>, label: string): Promise
     }
   }
   throw lastErr;
+}
+
+/**
+ * D3 — the wrap-up turn's instruction. Fixed text (the variable part — the digest — is
+ * appended after it) so the request shape never depends on what the child happened to do.
+ */
+const FINAL_REPORT_INSTRUCTION = [
+  '[ITERATION BUDGET EXHAUSTED] No further tool calls are possible in this session.',
+  'Write your final report NOW, from the work already done above:',
+  '1. What you completed — concrete files, commands, findings. Do not claim work you did not do.',
+  '2. What is still undone.',
+  '3. What the parent must verify (half-applied edits, tests not run, assumptions not confirmed).',
+  'Be brief (~10 lines). Write in the same language as the task.',
+].join('\n');
+
+/**
+ * D3 — the deterministic half of an early-stop report.
+ *
+ * Counted from what the loop itself observed, never from the model's memory, so it stays
+ * true even when the child's own prose is wrong, vague, or missing. This is what makes a
+ * truncated child *usable*: the parent learns how the budget was spent, not just that it ran out.
+ */
+function buildExecutionDigest(p: {
+  iterations: number;
+  budget: number;
+  toolCalls: number;
+  failedCalls: number;
+  writes: number;
+  filesTouched: string[];
+  toolUse: Map<string, number>;
+}): string {
+  const topTools = [...p.toolUse.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([name, n]) => `${name}×${n}`)
+    .join(', ');
+  const parts = [
+    `iterations ${p.iterations}/${p.budget}`,
+    `${p.toolCalls} tool call(s)${p.failedCalls > 0 ? ` (${p.failedCalls} failed)` : ''}`,
+    `${p.writes} write(s)`,
+  ];
+  if (p.filesTouched.length > 0) parts.push(`files ${p.filesTouched.join(', ')}`);
+  if (topTools) parts.push(`tools ${topTools}`);
+  return parts.join('; ');
+}
+
+/**
+ * D3 — the child's last word.
+ *
+ * A budget is a spend ceiling, not a gag: when it runs out the child gets ONE more turn with
+ * **no tools at all**, so the parent receives "what I finished / what is left" instead of a
+ * bare stop notice. Not counted as an iteration, does not consume the aggregate breaker, and
+ * never throws — a failed wrap-up degrades to the deterministic digest, because a reporting
+ * improvement must not become a new failure point.
+ *
+ * Returns null when the turn failed or said nothing substantive.
+ */
+async function runFinalReportTurn(params: {
+  ctx: SubagentContext;
+  provider: string | undefined;
+  messages: LLMMessage[];
+  contextWindow: number;
+  digest: string;
+  subagentId: string;
+}): Promise<string | null> {
+  const { ctx, provider, contextWindow, digest, subagentId } = params;
+  const messages = ctx.contextEngine.shrinkMessages(
+    [
+      ...params.messages,
+      { role: 'user', content: `${FINAL_REPORT_INSTRUCTION}\n\n[Machine-counted work so far: ${digest}]` },
+    ],
+    contextWindow,
+  );
+  try {
+    const response = await llmCallWithRetry(
+      () => ctx.llmRouter.chat({
+        // Deliberately no `tools`: the model cannot spend another tool turn, it can only talk.
+        messages,
+        maxTokens: SUBAGENT_FINAL_REPORT_MAX_TOKENS,
+        metadata: { agentId: ctx.agentId, sessionId: subagentId, purpose: 'subagent_final_report' },
+      }, provider),
+      `subagent-${subagentId}-final-report`,
+      // One retry only: the report is worth a transient-error retry, not a retry storm.
+      1,
+    );
+    const text = stripThinkTags(response.content ?? '').trim();
+    return text.length >= SUBAGENT_FINAL_REPORT_MIN_CHARS ? text : null;
+  } catch (err) {
+    log.warn('Subagent final-report turn failed (falling back to the digest)', {
+      parentAgent: ctx.agentId,
+      subagentId,
+      error: String(err).slice(0, SUBAGENT_ERROR_PREVIEW_CHARS),
+    });
+    return null;
+  }
 }
 
 interface SubagentLogEntry {
@@ -325,6 +445,11 @@ export async function runSubagentLoop(
   const filesTouched = new Set<string>();
   let toolCallCount = 0;
   let writeCallCount = 0;
+  /** D3: tool-failure count and per-tool usage, for the deterministic early-stop digest. */
+  let failedCallCount = 0;
+  const toolUse = new Map<string, number>();
+  /** D3: the "you are near the wall" notice is injected exactly once. */
+  let budgetNoticeSent = false;
 
   const subagentId = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const logEntries: SubagentLogEntry[] = [];
@@ -350,7 +475,10 @@ export async function runSubagentLoop(
 
   let messages: LLMMessage[] = [
     { role: 'system', content: systemContent },
-    { role: 'user', content: task },
+    // D3 — the child is TOLD its rope. Appended to the user turn (never to the system
+    // prompt): the system prompt stays byte-identical across spawns, so a provider's
+    // prefix cache is not invalidated by a per-spawn value in the head.
+    { role: 'user', content: `${task}\n\n[BUDGET: you have at most ${iterationBudget} tool iterations in this session. Plan for it: explore first, and keep your last turns for closing out — when you are told you are near the limit, stop calling tools and report what is done and what remains.]` },
   ];
 
   logEntries.push({ ts: new Date().toISOString(), role: 'system', content: systemContent });
@@ -485,6 +613,8 @@ export async function runSubagentLoop(
         // F2/F3: count every tool call; record the paths a *successful* file-writing call
         // actually changed. An error result touches nothing, so it is not counted.
         toolCallCount++;
+        toolUse.set(tc.name, (toolUse.get(tc.name) ?? 0) + 1);
+        if (isErrorResult(result)) failedCallCount++;
         const writePaths = FILE_WRITE_TOOLS[tc.name];
         if (writePaths && !isErrorResult(result)) {
           const paths = writePaths((tc.arguments ?? {}) as Record<string, unknown>);
@@ -517,6 +647,30 @@ export async function runSubagentLoop(
       }
     }
 
+    // D3 — soft landing: tell the child ONCE when it is close to the wall, so its last turns
+    // go into closing out instead of opening new fronts. Appended to the last tool result
+    // rather than pushed as its own user turn: a second consecutive user message is rejected
+    // by alternating-role providers (see `anthropic.ts#mergeConsecutiveToolResults`, which
+    // only merges tool_result blocks).
+    if (!budgetNoticeSent && iterationBudget > 1) {
+      const warnAt = Math.ceil(iterationBudget * SUBAGENT_BUDGET_NOTICE_AT);
+      if (iterations >= warnAt && iterations < iterationBudget) {
+        budgetNoticeSent = true;
+        const left = iterationBudget - iterations;
+        const notice = `[BUDGET NOTICE: ${left} iteration(s) left of ${iterationBudget}. ` +
+          `Stop expanding scope — finish the step in hand, then write what is done and what remains.]`;
+        // Persisted: "did the child get warned?" must be answerable from the log, not inferred.
+        logEntries.push({ ts: new Date().toISOString(), role: 'user', content: notice });
+        const last = messages[messages.length - 1];
+        if (last && last.role === 'tool' && typeof last.content === 'string') {
+          last.content = `${last.content}${notice}`;
+        } else if (last && last.role === 'user' && typeof last.content === 'string') {
+          // The `max_tokens` continuation branch already pushed a user turn — merge into it.
+          last.content = `${last.content}${notice}`;
+        }
+      }
+    }
+
     messages = ctx.contextEngine.shrinkMessages(messages, contextWindow);
 
     response = await llmCallWithRetry(
@@ -531,6 +685,51 @@ export async function runSubagentLoop(
 
   const rawResult = response.content;
   let cleanResult = stripThinkTags(rawResult ?? '');
+
+  /**
+   * D3 — the digest is built BEFORE any model prose, from counters the loop itself owns,
+   * so the parent always has a true account of how the budget was spent.
+   */
+  const digest = buildExecutionDigest({
+    iterations,
+    budget: iterationBudget,
+    toolCalls: toolCallCount,
+    failedCalls: failedCallCount,
+    writes: writeCallCount,
+    filesTouched: [...filesTouched],
+    toolUse,
+  });
+
+  /**
+   * D3 — a spend ceiling is not a gag. When the budget runs out the child gets one last turn
+   * with no tools, so it hands back "what I finished / what is left" instead of dying
+   * mid-sentence. Skipped when nothing happened (0 iterations): there is nothing to report
+   * and the deterministic note below says everything.
+   */
+  let finalReport: SubagentLoopResult['finalReport'] = null;
+  /**
+   * D3 (live finding 2026-11-28) — a child can answer on its very last allowed tool iteration.
+   * The loop reports `'completed'` (it produced its own answer), but a live child in exactly
+   * this state declared "INCOMPLETE (budget exhausted) … 5 of 7 hops" in prose while the
+   * platform said `completed`. Silence there is the same defect as an empty result: the parent
+   * trusts a self-truncated answer. Flag it instead of re-labelling the status.
+   */
+  const answeredAtBudgetCeiling = status === 'completed' && iterations >= iterationBudget;
+  if (status !== 'completed') {
+    // Default to 'digest': as soon as a child stops early, `null` (the "completed normally"
+    // value) would be a lie even if it never gets to speak.
+    finalReport = 'digest';
+    if (iterations > 0) {
+      const report = await runFinalReportTurn({
+        ctx, provider, messages, contextWindow, digest, subagentId,
+      });
+      if (report) {
+        finalReport = 'model';
+        cleanResult = report;
+        logEntries.push({ ts: new Date().toISOString(), role: 'assistant', content: report });
+      }
+    }
+  }
 
   // H6: make any early stop visible, and GUARANTEE a non-empty result. A parent must
   // never receive an empty string that looks like a successful child.
@@ -549,6 +748,10 @@ export async function runSubagentLoop(
     const note =
       `[INCOMPLETE: subagent stopped early — ${reason} after ${iterations} iteration(s); ` +
       `${toolCallCount} tool call(s), ${writeCallCount} write(s).${wroteHint} ` +
+      `Observed: ${digest}. ` +
+      `${finalReport === 'model'
+        ? 'The report above is the child\'s own account of what it finished and what is left. '
+        : 'The child produced no closing report, so the only facts are the observed counters above. '}` +
       `Its result is incomplete — verify the workspace before trusting it (a subagent can also ` +
       `change files by means this notice does not track, e.g. shell).]`;
     cleanResult = cleanResult.trim().length > 0
@@ -557,6 +760,16 @@ export async function runSubagentLoop(
   } else if (cleanResult.trim().length === 0) {
     // A genuine `end_turn` with no text still must not serialise to an empty string.
     cleanResult = '[Subagent completed without producing textual output.]';
+  }
+
+  // D3 (live finding 2026-11-28): a child that answered on its last allowed tool iteration is
+  // `completed`, but it had no room left — a live child in this state wrote "INCOMPLETE (budget
+  // exhausted) … 5 of 7 hops" while the platform reported a clean completion. Say so, so a parent
+  // scanning only `status` cannot mistake a self-truncated answer for a finished job.
+  if (answeredAtBudgetCeiling) {
+    cleanResult = `${cleanResult.trimEnd()}\n\n[AT BUDGET CEILING: the child answered on its last ` +
+      `allowed tool iteration (${iterations}/${iterationBudget}) — it may have cut its own work ` +
+      `short to fit; verify before building on this result.]`;
   }
 
   logEntries.push({
@@ -600,6 +813,8 @@ export async function runSubagentLoop(
     budgetHit,
     filesTouched: [...filesTouched],
     toolCalls: { total: toolCallCount, writes: writeCallCount },
+    finalReport,
+    answeredAtBudgetCeiling,
   };
 }
 
@@ -693,9 +908,12 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
       'The subagent inherits your tools but gets its own message history — it will not pollute your conversation. ' +
       'Use this to break down complex tasks: deep code analysis, research, file refactoring, test generation, etc. ' +
       'The subagent runs to completion and returns a STRUCTURED result: `status` ' +
-      "('completed' | 'budget_exhausted' | 'max_iterations'), `budgetHit`, `filesTouched`, `toolCalls`. " +
+      "('completed' | 'budget_exhausted' | 'max_iterations'), `budgetHit`, `filesTouched`, `toolCalls`, `finalReport`. " +
       'A child that stops early is reported as incomplete — never as an empty success — and tells you ' +
       'to verify the workspace; `filesTouched` is a best-effort hint, not an exhaustive audit. ' +
+      'A stopped child still hands back a closing report: `finalReport` says whether that text is its own ' +
+      "account ('model') or only the platform's counters ('digest'). Read it before re-dispatching — " +
+      're-spawn ONLY the work it says is still undone, with a larger `iteration_budget`, instead of redoing the task. ' +
       'For running multiple subagents in parallel, use spawn_subagents instead.',
     inputSchema: {
       type: 'object',
@@ -756,6 +974,8 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
           budgetHit: loop.budgetHit,
           filesTouched: loop.filesTouched,
           toolCalls: loop.toolCalls,
+          finalReport: loop.finalReport,
+          answeredAtBudgetCeiling: loop.answeredAtBudgetCeiling,
           ...(child ? { workUnitRef: child.ref } : {}),
         });
       } catch (err) {
@@ -790,6 +1010,9 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
       'a budget is private to the child, so one child can never drain a sibling, and an exhausted child ' +
       'stops only itself. The stop is always explicit: ' +
       "`budgetHit` ('own' | 'aggregate' | 'max_iterations') plus `filesTouched`. " +
+      'A stopped child is not a lost child: it gets one final no-tool turn and returns `finalReport` — ' +
+      "its own account of what it finished and what is left ('model'), or the platform's counters ('digest'). " +
+      'Re-spawn only the work a report says is still undone. ' +
       'IMPORTANT: Only use for truly independent tasks — subagents cannot communicate with each other.',
     inputSchema: {
       type: 'object',
@@ -907,6 +1130,8 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
               budgetHit: null,
               filesTouched: [],
               toolCalls: { total: 0, writes: 0 },
+              finalReport: null,
+              answeredAtBudgetCeiling: false,
             });
             throw err;
           }
@@ -924,6 +1149,8 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
         budgetHit?: 'own' | 'aggregate' | 'max_iterations' | null;
         filesTouched?: string[];
         toolCalls?: { total: number; writes: number };
+        finalReport?: 'model' | 'digest' | null;
+        answeredAtBudgetCeiling?: boolean;
         error?: string;
       }> = results.map((r, i) => {
         if (r.status === 'fulfilled') {
@@ -944,6 +1171,8 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
             budgetHit: loop.budgetHit,
             filesTouched: loop.filesTouched,
             toolCalls: loop.toolCalls,
+            finalReport: loop.finalReport,
+            answeredAtBudgetCeiling: loop.answeredAtBudgetCeiling,
           };
         }
         const reason = String(r.reason);

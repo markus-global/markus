@@ -284,7 +284,11 @@ aggregate budget** across a fan-out.
   `runSubagentLoop` with a shared budget stops after exactly `remaining` iterations and marks
   its result; `spawn_subagents` with looping children returns `budgetExceeded: true` and the
   aggregate ceiling.
-- **Status**: implemented (`SUBAGENT_MAX_AGGREGATE_ITERATIONS`; a `sharedBudget` threaded
-  through `runSubagentLoop`, created per fan-out in `spawn_subagents`, surfaced as
-  `budgetExceeded` in the aggregate result and an inline note in each truncated child).
-  Per-child `maxIterations` and `SUBAGENT_MAX_PARALLEL` still apply.
+- **Status**: the breaker mechanism exists (`runSubagentLoop` accepts `aggregateBudget` /
+  the legacy `sharedBudget` and reports `budgetHit: 'aggregate'`), but **C7-B removed its only
+  producer**: `spawn_subagents` no longer pre-allocates a shared pool, because doing so made the
+  breaker behave as the fan-out's schedule and let siblings starve each other. Scheduling now lives
+  in `work_units.budget` / `used`; the per-child budget is independent and finite
+  (`SUBAGENT_DEFAULT_ITERATION_BUDGET`). `SUBAGENT_MAX_AGGREGATE_ITERATIONS` is therefore derived
+  *from* the per-child default (a cost ceiling, not an input to it) and applies only to a caller
+  that supplies a breaker explicitly. Per-child `maxIterations` and `SUBAGENT_MAX_PARALLEL` still apply.
