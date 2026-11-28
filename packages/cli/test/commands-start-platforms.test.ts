@@ -329,16 +329,25 @@ describe('markus start — manifest-driven gateway (integration)', () => {
     registerStartCommand(program);
     await program.parseAsync(['node', 'markus', 'start']);
 
-    return {
+    // Adapter handshake runs OFF the boot path (start.ts Step 5), so these tests
+    // must read the log AFTER it settles instead of assuming it already happened
+    // when `markus start` returned. `text()` re-reads the spies on every call;
+    // `log`/`out` stay as the snapshot taken at return time for the assertions
+    // that are about what startup reported synchronously.
+    const text = () => ({
       log: logSpy.mock.calls.map((c) => String(c[0])).join('\n'),
       out: writeSpy.mock.calls.map((c) => String(c[0])).join('\n'),
-    };
+    });
+    return { ...text(), text };
   }
 
   it('(b) connects nothing when no external platform is configured', async () => {
-    const { log, out } = await runStart();
-    expect(log).not.toMatch(/Feishu/);
-    expect(out).toMatch(/webhook adapters: none\b/);
+    const r = await runStart();
+    // The gateway summary is emitted by the deferred reporter, not by startup.
+    await vi.waitFor(() => {
+      expect(r.text().out).toMatch(/webhook adapters: none\b/);
+    }, { timeout: 20000 });
+    expect(r.text().log).not.toMatch(/Feishu/);
     expect(hoisted.fakeConnects).toEqual([]);
   }, 60000);
 
@@ -353,12 +362,31 @@ describe('markus start — manifest-driven gateway (integration)', () => {
 
     // A dev server on this machine may already own the default Feishu webhook
     // port (9000), so pin a free one to keep the assertion deterministic.
-    const { log, out } = await runStart({
+    const r = await runStart({
       feishu: { appId: 'cli_test', appSecret: 'secret', webhookPort: await getFreePort() },
     });
 
-    expect(log).toMatch(/Feishu \/ Lark .*已连接/);
-    expect(out).toMatch(/webhook adapters: Feishu \/ Lark/);
+    // Startup must NOT wait for the handshake, but the handshake must still
+    // complete and report itself — that is the whole contract of the change.
+    await vi.waitFor(() => {
+      const { log, out } = r.text();
+      expect(log).toMatch(/Feishu \/ Lark .*已连接/);
+      expect(out).toMatch(/webhook adapters: Feishu \/ Lark/);
+    }, { timeout: 20000 });
+  }, 60000);
+
+  it('(a2) startup returns before the adapter handshake finishes', async () => {
+    // The regression this test guards: re-introducing an `await` on the adapter
+    // connect would make the handshake's log line present the moment `start`
+    // returned, which is exactly what made every launch wait ~11s.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() => new Promise(() => { /* never settles */ })),
+    );
+    const r = await runStart({
+      feishu: { appId: 'cli_test', appSecret: 'secret', webhookPort: await getFreePort() },
+    });
+    expect(r.text().log).not.toMatch(/Feishu \/ Lark .*已连接/);
   }, 60000);
 
   it('(c) revives a manifest the source code has never heard of — no start.ts edit', async () => {
