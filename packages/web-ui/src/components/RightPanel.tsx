@@ -34,6 +34,18 @@ import { useLayout, type RightPanelMode, type RightPanelPayload, type RightPanel
 
 type TabOwner = { agentId: string; agentName: string };
 
+/**
+ * 选中态的统一视觉语言（品牌色 15% 底）。
+ *
+ * 右侧栏里有两个“被选中”概念 —— 模式按钮（浏览器/命令行）与标签页 —— 它们必须同色，
+ * 否则同一行 chrome 里会出现两套“我选中了”的暗示（Owner 2026-11-28：标签选中是中性灰、
+ * 模式按钮是品牌色，看着不一致）。
+ *
+ * 抽成常量而不是两处各写一遍字面量：以后只有“一处可改”，不会再只改一边。
+ * 测试 `rightPanelSelection.test.tsx` 守的就是“两边用同一个 token”。
+ */
+const SELECTED_SURFACE = 'bg-brand-500/15';
+
 function toFileUrl(filePath: string): string {
   if (/^(https?|file):\/\//i.test(filePath)) return filePath;
   // Windows: C:\foo → file:///C:/foo ; POSIX: /foo → file:///foo
@@ -850,13 +862,15 @@ export function RightPanel({
 
   return (
     <>
-      {/* Resize handle (drag left edge) — hidden in fullscreen */}
+      {/* Resize handle (drag left edge) — hidden in fullscreen.
+          这也是聊天区与右栏之间**唯一**的分割线（Owner 2026-11-28）：常显，且从顶部纵贯到底。 */}
       {!fullscreen && (
         <div
-          className="w-1.5 cursor-col-resize shrink-0 group relative z-10 flex items-center justify-center"
+          data-panel-divider
+          className="w-1.5 cursor-col-resize shrink-0 group relative z-10 flex items-stretch justify-center"
           onMouseDown={onResizeStart}
         >
-          <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />
+          <div className="w-px h-full bg-border-default group-hover:bg-fg-tertiary group-active:bg-brand-500 transition-colors" />
         </div>
       )}
 
@@ -869,8 +883,10 @@ export function RightPanel({
       >
         {/* Single chrome row: tabs (or title) + panel actions — saves a header band.
             z-20 keeps chrome above panel content; native views still paint above HTML
-            but must be bounds-synced only to the host below this header. */}
-        <header data-electron-drag className="relative z-20 h-10 shrink-0 flex items-center gap-1 pl-1.5 pr-1.5 border-b border-border-default bg-surface-primary">
+            but must be bounds-synced only to the host below this header.
+            没有 border-b：顶部图标行与主体之间不留横线，整个右栏只有左侧一条竖直分隔线
+            （Owner 2026-11-28）。 */}
+        <header data-electron-drag className="relative z-20 h-10 shrink-0 flex items-center gap-1 pl-1.5 pr-1.5 bg-surface-primary">
           {/* Mode switcher: Browser (globe) / Terminal (command) */}
           {onPanelModeChange && (
             <div data-no-drag className="shrink-0 flex items-center gap-0.5 pr-1 border-r border-border-default/60">
@@ -882,7 +898,7 @@ export function RightPanel({
                 aria-pressed={panelMode === 'browser'}
                 className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
                   panelMode === 'browser'
-                    ? 'bg-brand-500/15 text-brand-500'
+                    ? `${SELECTED_SURFACE} text-brand-500`
                     : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                 }`}
               >
@@ -899,7 +915,7 @@ export function RightPanel({
                 aria-pressed={panelMode === 'terminal'}
                 className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
                   panelMode === 'terminal'
-                    ? 'bg-brand-500/15 text-brand-500'
+                    ? `${SELECTED_SURFACE} text-brand-500`
                     : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                 }`}
               >
@@ -945,9 +961,9 @@ export function RightPanel({
                       key={tab.id}
                       className={`group shrink-0 flex items-center max-w-[200px] rounded-md text-[11px] border transition-colors ${
                         active
-                          ? owner
-                            ? 'bg-brand-500/10 border-brand-500/35 text-fg-primary'
-                            : 'bg-surface-elevated border-border-default text-fg-primary'
+                          // 选中态 = 模式按钮同一口径的品牌色底（owner 与否不再改底色，
+                          // 「被 agent 控制」靠上方的名字胶囊区分，不靠背景色抢戏）。
+                          ? `${SELECTED_SURFACE} border-brand-500/35 text-fg-primary`
                           : owner
                             ? 'border-brand-500/25 text-fg-secondary hover:bg-brand-500/8'
                             : 'border-transparent text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
