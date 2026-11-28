@@ -5,6 +5,7 @@ import {
   INITIAL_CHECK_DELAY_MS,
   channelNameFor,
   channelPolicy,
+  type ChannelPolicy,
   initialUpdateState,
   nextCheckIntervalMs,
   reduceUpdateState,
@@ -28,8 +29,12 @@ interface AutoUpdaterHandle {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   autoRunAppAfterInstall: boolean;
-  /** Point the updater at a feed that is not the one baked into app-update.yml. */
-  setFeedURL(options: { provider: string; url: string }): void;
+  /**
+   * Point the updater at a feed that is not the one baked into app-update.yml.
+   * Accepts any publish configuration (generic needs `url`, github needs
+   * `owner`/`repo`), so the fallback feed can be swapped in without a second type.
+   */
+  setFeedURL(options: { provider: string; url?: string; owner?: string; repo?: string }): void;
   /** Feed channel: `latest` for stable builds, `rc` for candidates. */
   channel: string;
   /** Follow the prerelease channel (GitHub provider only; harmless with generic). */
@@ -48,6 +53,13 @@ interface AutoUpdaterHandle {
  * the client never needs to know which storage backend answers.
  */
 const UPDATE_FEED_URL = 'https://markus.global/releases/';
+
+/**
+ * Secondary feed. Every release still publishes its artifacts to the GitHub
+ * Release, so it is a ready-made fallback for a storage/domain outage — without
+ * it, one CDN problem would mean no install can ever learn about an update.
+ */
+const GITHUB_FEED = { provider: 'github', owner: 'markus-global', repo: 'markus' };
 
 let state: UpdateState = initialUpdateState();
 let updater: AutoUpdaterHandle | null = null;
@@ -109,41 +121,67 @@ function scheduleNextCheck(delayMs: number): void {
   checkTimer.unref?.();
 }
 
+/** Apply the channel/allowPrerelease pair implied by the policy. */
+function applyChannel(policy: ChannelPolicy): void {
+  if (!updater) return;
+  updater.channel = channelNameFor(policy);
+  updater.allowPrerelease = policy.isPrerelease;
+}
+
+/** One probe pass against whatever feed is currently configured. */
+async function probe(policy: ChannelPolicy): Promise<void> {
+  if (!updater) return;
+  if (!policy.probeStableFirst) {
+    await updater.checkForUpdates();
+    return;
+  }
+  // Graduation: a candidate must be able to leave the candidate channel once the
+  // final X.Y.Z ships, so probe the STABLE feed first and only fall back to the
+  // candidate feed when stable is not newer. Two files, one directory.
+  updater.channel = 'latest';
+  updater.allowPrerelease = false;
+  try {
+    const stable = await updater.checkForUpdates();
+    const stableVersion = stable?.updateInfo?.version;
+    if (stableVersion && compareVersions(stableVersion, app.getVersion()) > 0) {
+      log(`graduating from candidate to stable v${stableVersion}`);
+      return;
+    }
+  } catch (err) {
+    // Nothing stable is published on this feed yet — must not abort the
+    // candidate check.
+    log(`stable probe failed (${err instanceof Error ? err.message : String(err)}) — staying on the candidate channel`);
+  }
+  updater.channel = 'rc';
+  updater.allowPrerelease = true;
+  await updater.checkForUpdates();
+}
+
 async function runCheck(): Promise<void> {
   if (!updater) return;
   const policy = channelPolicy(app.getVersion());
   try {
     publish({ type: 'checking' });
-    let settled = false;
-    if (policy.probeStableFirst) {
-      // Graduation: a candidate must be able to leave the candidate channel once
-      // the final X.Y.Z ships, so probe the STABLE feed (`latest-mac.yml`) first
-      // and only fall back to the candidate feed (`rc-mac.yml`) when stable is
-      // not newer. Two different feed files, one directory, no tag juggling.
-      updater.channel = 'latest';
-      updater.allowPrerelease = false;
-      try {
-        const stable = await updater.checkForUpdates();
-        const stableVersion = stable?.updateInfo?.version;
-        settled = !!stableVersion && compareVersions(stableVersion, app.getVersion()) > 0;
-        if (settled) log(`graduating from candidate to stable v${stableVersion}`);
-      } catch (err) {
-        // Nothing stable is published on this feed yet (the first stable release
-        // since the switch). That must not abort the candidate check.
-        log(`stable probe failed (${err instanceof Error ? err.message : String(err)}) — staying on the candidate channel`);
-      }
-      if (!settled) {
-        updater.channel = 'rc';
-        updater.allowPrerelease = true;
-      }
-    }
-    if (!settled) await updater.checkForUpdates();
+    await probe(policy);
     consecutiveFailures = 0;
   } catch (err) {
-    consecutiveFailures += 1;
     const message = err instanceof Error ? err.message : String(err);
-    log(`check failed (${consecutiveFailures}): ${message}`);
-    publish({ type: 'error', message });
+    log(`primary feed failed (${message}) — retrying against the GitHub release feed`);
+    try {
+      updater.setFeedURL(GITHUB_FEED);
+      applyChannel(policy);
+      await probe(policy);
+      consecutiveFailures = 0;
+    } catch (fallbackErr) {
+      consecutiveFailures += 1;
+      const fallbackMessage = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      log(`fallback feed failed too (${fallbackMessage})`);
+      publish({ type: 'error', message: fallbackMessage });
+    } finally {
+      // Always restore the primary feed for the next cycle.
+      updater.setFeedURL({ provider: 'generic', url: UPDATE_FEED_URL });
+      applyChannel(policy);
+    }
   }
   scheduleNextCheck(nextCheckIntervalMs(consecutiveFailures));
 }
