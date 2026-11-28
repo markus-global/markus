@@ -470,8 +470,59 @@ jobs:
             echo "Uploaded $uploaded files + latest feeds + meta.json"
           fi
 
-      # The feed is only useful if the client can actually reach it through our
-      # domain. Verify that here instead of discovering it from a user report.
+      # Two different invariants, deliberately checked against two different
+      # origins. "Everything the client needs exists" is decided by the bucket
+      # and is immediate. "The client can reach it at all" is decided by the
+      # domain, whose copy of a freshly written object lags.
+      - name: Verify the feed and every file it advertises landed in R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+          VERSION: ${{ needs.publish-npm.outputs.version }}
+          IS_PRERELEASE: ${{ needs.publish-npm.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            feeds="rc-mac.yml rc.yml rc-linux.yml"
+          else
+            feeds="latest-mac.yml latest.yml latest-linux.yml"
+          fi
+          broken=0
+          for feed in $feeds; do
+            if ! aws s3 cp "s3://${R2_BUCKET}/releases/${feed}" /tmp/feed.yml \
+                 --endpoint-url "$R2_ENDPOINT" --only-show-errors; then
+              echo "::error::releases/${feed} is missing in R2"
+              broken=1
+              continue
+            fi
+            if ! grep -q "version: ${VERSION}" /tmp/feed.yml; then
+              echo "::error::releases/${feed} in R2 does not advertise ${VERSION}"
+              broken=1
+            fi
+            # A feed advertising a file the bucket does not hold is a broken
+            # update, not a slow one: the client's download 404s, with no retry
+            # of its own. Checked here so it can never reach a user.
+            while read -r asset; do
+              if [ -z "$asset" ]; then continue; fi
+              if ! aws s3api head-object --bucket "${R2_BUCKET}" \
+                     --key "releases/${asset}" --endpoint-url "$R2_ENDPOINT" \
+                     >/dev/null 2>&1; then
+                echo "::error::releases/${asset} advertised by ${feed} is missing in R2"
+                broken=1
+              fi
+            done < <(awk '/^ *- url:/ { print $3 }' /tmp/feed.yml)
+          done
+          [ "$broken" -eq 0 ] || exit 1
+          echo "R2 holds every feed and every file those feeds advertise"
+
+      # The domain is a 307 into R2 with its own cache, so it lags the bucket by
+      # minutes: rc.5 and rc.6 both turned this step red while the release was in
+      # fact healthy, which is how a gate stops being read. So: fatal only when
+      # the domain answers nothing (route/redirect genuinely broken — actionable),
+      # warning while it still serves the previous object (converges on its own,
+      # nothing to fix). Existence is already guaranteed by the R2 check above.
       - name: Verify the feed is reachable through markus.global
         env:
           VERSION: ${{ needs.publish-npm.outputs.version }}
@@ -483,31 +534,29 @@ jobs:
           else
             feeds="latest-mac.yml latest.yml latest-linux.yml"
           fi
-          reachable=0
+          unreachable=0
           for feed in $feeds; do
             url="https://markus.global/releases/${feed}"
-            matched=0
-            for attempt in 1 2 3 4 5 6 7 8; do
-              body=$(curl -fsS --max-time 30 "$url" 2>/dev/null || true)
+            state="unreachable"
+            for attempt in $(seq 1 18); do
+              body=$(curl -fsSL --max-time 30 "$url" 2>/dev/null || true)
               if printf '%s' "$body" | grep -q "version: ${VERSION}"; then
-                matched=1
+                state="serving v${VERSION}"
                 break
               fi
-              # The website -> R2 hop is eventually consistent: right after the
-              # upload it can still answer with the previous object or a cached
-              # error page. rc.5 failed its release on exactly this race, so retry
-              # instead of turning a propagation delay into a red release.
-              echo "attempt ${attempt}: ${feed} not serving ${VERSION} yet — retrying in 5s"
-              sleep 5
+              if [ -n "$body" ]; then
+                state="stale"
+              fi
+              echo "attempt ${attempt}: ${feed} not serving ${VERSION} yet — retrying in 10s"
+              sleep 10
             done
-            if [ "$matched" -eq 1 ]; then
-              reachable=$((reachable + 1))
-              echo "OK $url (v${VERSION})"
-            else
-              echo "::warning::$url does not advertise ${VERSION} after retries"
-            fi
+            case "$state" in
+              "serving "*) echo "OK ${url} (${state})" ;;
+              stale)
+                echo "::warning::${url} still serves the previous version after 3 min — edge propagation, the release itself is in R2" ;;
+              *)
+                echo "::error::${url} is not reachable through the domain"
+                unreachable=1 ;;
+            esac
           done
-          if [ "$reachable" -eq 0 ]; then
-            echo "::error::no feed is reachable through markus.global/releases after retries"
-            exit 1
-          fi
+          [ "$unreachable" -eq 0 ] || exit 1
