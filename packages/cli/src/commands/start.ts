@@ -2125,6 +2125,10 @@ async function startServerCore(
   await llmRouter.ensureMarkusCatalogLoaded?.({ timeoutMs: 8000 });
 
   await apiServer.start();
+  // Closing mark for the span the 20.7s outlier was measured over: from
+  // "正在启动服务" to "API listening". Without it a slow `apiServer.start()` would
+  // be attributed to nothing. Diagnostics only.
+  markPhase('api listening');
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
   deliverableService.setWSBroadcaster(apiServer.getWSBroadcaster());
