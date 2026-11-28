@@ -1,5 +1,6 @@
 import { app, Menu, shell, BrowserWindow } from 'electron';
 import { checkForUpdatesNow } from './updater.js';
+import { getUiLocale } from './ui-locale.js';
 
 const IS_MAS = process.env['MARKUS_MAS'] === 'true';
 const isMac = process.platform === 'darwin';
@@ -86,8 +87,10 @@ const i18n: Record<string, Record<string, string>> = {
 };
 
 function getLocale(): string {
-  const locale = app.getLocale();
-  return locale.startsWith('zh') ? 'zh' : 'en';
+  // Same resolver as the splash, notifications and the app (shared/locale.ts).
+  // This table ships en + zh labels only, so es users get English here rather
+  // than a half-translated menu.
+  return getUiLocale() === 'zh-CN' ? 'zh' : 'en';
 }
 
 function sendRendererShortcut(type: 'close-tab' | 'new-tab'): void {

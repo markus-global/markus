@@ -1,6 +1,7 @@
 import { Notification, BrowserWindow, app } from 'electron';
 import WebSocket from 'ws';
 import { taskUpdateOsText, notificationOsText } from './notification-text.js';
+import { getUiLocale } from './ui-locale.js';
 
 interface WSEvent {
   type: string;
@@ -78,7 +79,7 @@ function handleEvent(event: WSEvent): void {
       // dressed up as an OS notification. The words come from the notification
       // vocabulary in the reader's language (notification-text.ts) — the same
       // sentence the in-app inbox and Feishu show, not baked English literals.
-      const text = taskUpdateOsText(status, title, app.getLocale());
+      const text = taskUpdateOsText(status, title, getUiLocale());
       if (!text) break;
       showOSNotification(text.title, text.body, {
         openNotifications: true,
@@ -119,7 +120,7 @@ function handleEvent(event: WSEvent): void {
       // Localize from metadata.i18n (the same path the in-app bell uses) instead
       // of copying the producer's baked-in English title/body to the OS.
       const n = (payload?.notification ?? payload) as Record<string, unknown> | undefined;
-      const { title, body } = notificationOsText(n, app.getLocale());
+      const { title, body } = notificationOsText(n, getUiLocale());
       const meta = (n?.metadata ?? {}) as Record<string, string>;
       showOSNotification(title, body, {
         openNotifications: true,

@@ -39,6 +39,9 @@ contextBridge.exposeInMainWorld('markusDesktop', {
   /** Current update lifecycle state (single source of truth lives in main). */
   getUpdateState: () => ipcRenderer.invoke('app:update-state'),
 
+  /** Persist the user's language choice so the splash/menu/notifications follow it. */
+  setUiLocale: (locale: string) => ipcRenderer.invoke('app:set-ui-locale', locale) as Promise<string>,
+
   /**
    * Subscribe to update lifecycle changes. Returns an unsubscribe function —
    * without it every remount leaks an ipcRenderer listener.

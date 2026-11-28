@@ -1472,6 +1472,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   key={code}
                   onClick={() => {
                     void i18n.changeLanguage(code);
+                    // Mirror the choice to the desktop shell: the splash, menu and
+                    // OS notifications are rendered by the main process, which
+                    // cannot read the renderer's i18n state.
+                    void window.markusDesktop?.setUiLocale?.(code);
                     // Persist so the agent picks the matching default Markus search provider.
                     void api.settings.updateSearch({ language: code }).catch(() => {});
                   }}

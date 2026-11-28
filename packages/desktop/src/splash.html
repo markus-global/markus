@@ -5,9 +5,19 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; img-src 'self' file:">
 <title>Markus</title>
 <style>
-/* Splash contract with main.ts:
+/* ── Splash contract ─────────────────────────────────────────────────────────
+   This file holds MARKUP ONLY. Every string on this screen is injected by the
+   main process from SPLASH_COPY (packages/shared/src/locale.ts), because the
+   splash used to pick a language on its own (navigator.language) while the
+   backend pushed English status lines into it — the screen could disagree with
+   the app it was starting.
+
+   Contract with main.ts:
    - `#status` receives textContent updates (updateSplash) and innerHTML on error.
-   - Nothing here may block load: no external assets, no fonts, no network. */
+   - `#sub` receives the localized subtitle.
+   - `window.__markusSetTips(string[])` receives the localized rotating tips.
+   No external assets, no fonts, no network: the main process is busy right now.
+   ──────────────────────────────────────────────────────────────────────────── */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
 body {
@@ -17,8 +27,6 @@ body {
   -webkit-app-region: drag; user-select: none;
 }
 
-/* Aurora: two slow-moving radial washes behind everything. Pure CSS, no JS so a
-   slow main thread (the whole reason this screen exists) cannot make it janky. */
 .aurora { position: fixed; inset: -20%; pointer-events: none; }
 .aurora::before, .aurora::after {
   content: ""; position: absolute; width: 60vmax; height: 60vmax; border-radius: 50%;
@@ -56,7 +64,7 @@ body {
 @keyframes breathe { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
 
 h1 { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
-.sub { margin-top: 6px; font-size: 12px; color: #64748b; letter-spacing: .08em; text-transform: uppercase; }
+.sub { margin-top: 6px; font-size: 12px; color: #64748b; letter-spacing: .08em; min-height: 16px; }
 
 /* Indeterminate bar: communicates "working" without faking a percentage we
    cannot actually know (backend boot has no reliable progress denominator). */
@@ -71,7 +79,7 @@ h1 { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
 #status { font-size: 13px; line-height: 1.6; color: #94a3b8; min-height: 21px; }
 #status code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #cbd5e1; }
 
-#tip { margin-top: 30px; font-size: 12px; color: #64748b; min-height: 34px; line-height: 1.6; }
+#tip { margin-top: 30px; font-size: 12px; color: #64748b; min-height: 34px; line-height: 1.6; transition: opacity .5s ease; }
 #tip b { color: #818cf8; font-weight: 500; }
 </style>
 </head>
@@ -80,48 +88,41 @@ h1 { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
 <div class="container">
   <div class="logo-wrap"><img class="logo" src="icon.png" alt="Markus"></div>
   <h1>Markus</h1>
-  <div class="sub" id="sub">Digital Workforce</div>
+  <div class="sub" id="sub"></div>
   <div class="bar"></div>
-  <p id="status">正在准备 Markus…</p>
+  <p id="status"></p>
   <div id="tip"></div>
 </div>
 <script>
-  const zh = (navigator.language || '').startsWith('zh');
-  // Boot duration and wall-clock time are diagnostics, not product information:
-  // they belong in the startup log (`[timing]` lines from cli/commands/start.ts),
-  // not on a screen the user stares at.
-  const statusEl = document.getElementById('status');
+  // No language logic here on purpose: main.ts injects the localized subtitle,
+  // status and tips. Keeping this file wordless is what makes "half-translated"
+  // states structurally impossible.
+  (function () {
+    var tipEl = document.getElementById('tip');
+    var tips = [];
+    var index = 0;
+    var timer = null;
 
-  statusEl.textContent = zh ? '正在准备 Markus…' : 'Preparing Markus…';
-  document.getElementById('sub').textContent = zh ? '数字劳动力平台' : 'Digital Workforce';
+    function paint() {
+      if (!tips.length) return;
+      tipEl.style.opacity = '0';
+      setTimeout(function () {
+        tipEl.innerHTML = tips[index % tips.length];
+        tipEl.style.opacity = '1';
+        index += 1;
+      }, 250);
+    }
 
-  // Tips rotate so a long boot still feels alive, and teach something while waiting.
-  const tips = zh ? [
-    '<b>⌘K</b> 打开全局搜索，找人、找任务、找文档',
-    '<b>⌘/</b> 查看全部快捷键',
-    'Agent 正在恢复上下文，稍后即可继续对话',
-    '右侧栏可并排打开浏览器与终端：<b>⌘B</b>',
-    '首次升级会检查数据库，大库可能需要几分钟',
-  ] : [
-    '<b>⌘K</b> to search agents, tasks and docs',
-    '<b>⌘/</b> for all keyboard shortcuts',
-    'Agents are restoring their context in the background',
-    'Open browser and terminal side by side: <b>⌘B</b>',
-    'First upgrade checks the database — large ones take a few minutes',
-  ];
-  let tipIndex = 0;
-  const tipEl = document.getElementById('tip');
-  const showTip = () => {
-    tipEl.style.opacity = '0';
-    setTimeout(() => {
-      tipEl.innerHTML = tips[tipIndex % tips.length];
-      tipEl.style.transition = 'opacity .5s ease';
-      tipEl.style.opacity = '1';
-      tipIndex++;
-    }, 250);
-  };
-  showTip();
-  setInterval(showTip, 4200);
+    window.__markusSetTips = function (list) {
+      tips = Array.isArray(list) ? list : [];
+      if (timer) { clearInterval(timer); timer = null; }
+      if (!tips.length) return;
+      index = 0;
+      paint();
+      // Rotate so a long boot still feels alive, and teaches something meanwhile.
+      timer = setInterval(paint, 4200);
+    };
+  })();
 </script>
 </body>
 </html>

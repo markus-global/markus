@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell, dialog, session } from 'electron';
-import { setChromiumProxyApplier } from '@markus/shared';
+import { setChromiumProxyApplier, SPLASH_COPY, splashStatus } from '@markus/shared';
+import { getUiLocale } from './ui-locale.js';
 import { applyEmbeddedBrowserProxy } from './embedded-browser.js';
 import { join } from 'node:path';
 import { startMarkusBackend, shutdownBackend } from './backend.js';
@@ -194,8 +195,12 @@ app.whenReady().then(async () => {
   // Start backend — or reuse the running server when it is equal/newer.
   // Takeover rule lives in version-compare.ts: only a provably OLDER server
   // is stopped; equal/newer/unknown versions are always reused.
-  const isZh = app.getLocale().startsWith('zh');
-  const t = (en: string, zh: string) => isZh ? zh : en;
+  // ONE resolver for the whole desktop (shared/locale.ts): stored user choice →
+  // OS locale → English. The web UI follows the same rule, so the splash, menu,
+  // notifications and app can no longer disagree about the user's language.
+  const uiLocale = getUiLocale();
+  const splashCopy = SPLASH_COPY[uiLocale];
+  const t = (en: string, zh: string) => (uiLocale === 'zh-CN' ? zh : en);
 
   const updateSplash = (msg: string) => {
     return win.webContents.executeJavaScript(
@@ -211,18 +216,17 @@ app.whenReady().then(async () => {
   // 平台" above an English line) while leaking an internal port the user can
   // neither use nor act on. Diagnostics stay in the startup log; the user sees
   // this table, written in one place.
-  const SPLASH_STAGE: Record<string, { en: string; zh: string }> = {
-    boot: { en: 'Preparing Markus…', zh: '正在准备 Markus…' },
-    config: { en: 'Loading your settings…', zh: '正在加载你的设置…' },
-    llm: { en: 'Connecting your models…', zh: '正在连接模型服务…' },
-    services: { en: 'Restoring agents and workspaces…', zh: '正在恢复智能体与工作区…' },
-    ready: { en: 'Opening your workspace…', zh: '正在打开工作区…' },
-  };
-  const splashStageText = (step: string): string => {
-    const entry = SPLASH_STAGE[step];
-    if (!entry) return t('Starting services…', '正在启动服务…');
-    return isZh ? entry.zh : entry.en;
-  };
+  // Splash copy comes from SPLASH_COPY (shared), and splash.html ships with no
+  // words of its own — it cannot disagree with the app the way it used to when
+  // it picked a language on its own while the backend injected English.
+  const splashStageText = (step: string): string => splashStatus(uiLocale, step);
+  await win.webContents.executeJavaScript(`(() => {
+    const sub = document.getElementById('sub');
+    if (sub) sub.textContent = ${JSON.stringify(splashCopy.subtitle)};
+    if (typeof window.__markusSetTips === 'function') {
+      window.__markusSetTips(${JSON.stringify(splashCopy.tips)});
+    }
+  })()`).catch(() => {});
 
   try {
     const port = 8056;

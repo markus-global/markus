@@ -29,6 +29,7 @@ import {
   writeEmbeddedTerminal,
 } from './embedded-terminal.js';
 import { checkForUpdatesNow, getUpdateState, installUpdateNow } from './updater.js';
+import { setStoredUiLocale } from './ui-locale.js';
 
 export function setupIpcHandlers(): void {
   ipcMain.handle('app:get-version', () => {
@@ -112,6 +113,10 @@ export function setupIpcHandlers(): void {
       return { openAtLogin: false };
     }
   });
+
+  // The renderer owns the *choice*; the main process owns the *storage* because
+  // it must know the language before any renderer exists (splash, menu).
+  ipcMain.handle('app:set-ui-locale', (_event, locale: unknown) => setStoredUiLocale(locale));
 
   ipcMain.handle('app:set-login-item-settings', (_event, openAtLogin: boolean) => {
     try {
