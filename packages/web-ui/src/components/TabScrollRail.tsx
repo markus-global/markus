@@ -134,7 +134,7 @@ export default function TabScrollRail({
       ref={trackRef}
       aria-hidden
       data-tab-scroll-rail
-      className="relative h-[3px] mt-[3px] mx-1 shrink-0 rounded-full bg-border-default/30 cursor-pointer select-none"
+      className="relative h-[3px] mt-[3px] mx-1 shrink-0 rounded-full bg-border-default/30 cursor-pointer select-none pointer-events-auto"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}

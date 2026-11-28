@@ -101,6 +101,10 @@ export function UserAccountMenu({
     };
   }, [open, reposition]);
 
+  // 构建期注入的客户端版本（vite define）。守卫与 errorFeedback 的取值口径一致：
+  // 非 vite 构建 / 测试环境里常量不存在，回落为 null 而不是抛 ReferenceError。
+  const appVersion = typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : null;
+
   const displayName =
     authUser?.name
     || hubUser?.displayName
@@ -258,6 +262,16 @@ export function UserAccountMenu({
             {t('common:signOut')}
           </button>
         )}
+      </div>
+
+      {/* 版本号是这一层的「页脚」：菜单最底部、永远存在（折叠侧栏也能看到），
+          不再依赖侧栏那一行要不要显示 —— 客户端版本只有构建期常量这一个来源。 */}
+      <div
+        data-account-version
+        className="px-3.5 py-1.5 border-t border-border-default flex items-center justify-between gap-2 text-[10px] text-fg-muted select-none"
+      >
+        <span className="truncate">Markus</span>
+        <span className="tabular-nums shrink-0">{appVersion ? `v${appVersion}` : '—'}</span>
       </div>
     </div>,
     document.body,
