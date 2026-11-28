@@ -26,6 +26,8 @@ interface MarkusDesktopAPI {
    * Browser / MAS builds have no such owner — see `hasDesktopUpdater()`.
    */
   getUpdateState?(): Promise<DesktopUpdateState>;
+  /** Persist the chosen UI language for the desktop's own surfaces. */
+  setUiLocale?(locale: string): Promise<string>;
   checkForUpdates(): Promise<DesktopUpdateState>;
   /** Restart into the already-downloaded update. */
   installUpdate?(): Promise<{ ok: boolean; error?: string }>;

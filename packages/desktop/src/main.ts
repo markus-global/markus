@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell, dialog, session } from 'electron';
-import { setChromiumProxyApplier } from '@markus/shared';
+import { setChromiumProxyApplier, SPLASH_COPY, splashStatus } from '@markus/shared';
+import { getUiLocale } from './ui-locale.js';
 import { applyEmbeddedBrowserProxy } from './embedded-browser.js';
 import { join } from 'node:path';
 import { startMarkusBackend, shutdownBackend } from './backend.js';
@@ -194,14 +195,38 @@ app.whenReady().then(async () => {
   // Start backend — or reuse the running server when it is equal/newer.
   // Takeover rule lives in version-compare.ts: only a provably OLDER server
   // is stopped; equal/newer/unknown versions are always reused.
-  const isZh = app.getLocale().startsWith('zh');
-  const t = (en: string, zh: string) => isZh ? zh : en;
+  // ONE resolver for the whole desktop (shared/locale.ts): stored user choice →
+  // OS locale → English. The web UI follows the same rule, so the splash, menu,
+  // notifications and app can no longer disagree about the user's language.
+  const uiLocale = getUiLocale();
+  const splashCopy = SPLASH_COPY[uiLocale];
+  const t = (en: string, zh: string) => (uiLocale === 'zh-CN' ? zh : en);
 
   const updateSplash = (msg: string) => {
     return win.webContents.executeJavaScript(
       `document.getElementById('status')&&(document.getElementById('status').textContent=${JSON.stringify(msg)})`,
     ).catch(() => {});
   };
+
+  // Splash copy is owned HERE, keyed by the stage id the backend reports.
+  //
+  // The backend's own `message` strings are English diagnostics —
+  // "services ready on :8056", "server ready at http://…" — and forwarding them
+  // straight to the splash is how the screen ended up half-translated ("数字劳动力
+  // 平台" above an English line) while leaking an internal port the user can
+  // neither use nor act on. Diagnostics stay in the startup log; the user sees
+  // this table, written in one place.
+  // Splash copy comes from SPLASH_COPY (shared), and splash.html ships with no
+  // words of its own — it cannot disagree with the app the way it used to when
+  // it picked a language on its own while the backend injected English.
+  const splashStageText = (step: string): string => splashStatus(uiLocale, step);
+  await win.webContents.executeJavaScript(`(() => {
+    const sub = document.getElementById('sub');
+    if (sub) sub.textContent = ${JSON.stringify(splashCopy.subtitle)};
+    if (typeof window.__markusSetTips === 'function') {
+      window.__markusSetTips(${JSON.stringify(splashCopy.tips)});
+    }
+  })()`).catch(() => {});
 
   try {
     const port = 8056;
@@ -227,7 +252,9 @@ app.whenReady().then(async () => {
       ));
       await new Promise(resolve => setTimeout(resolve, 150));
       const instance = await startMarkusBackend({
-        onProgress: (_step, message) => updateSplash(message),
+        // Only the step id crosses the boundary: the message is backend English
+        // diagnostics and belongs in the log, not on screen.
+        onProgress: (step) => updateSplash(splashStageText(step)),
       });
       backendUrl = instance.url;
       setProtocolBackendUrl(backendUrl);

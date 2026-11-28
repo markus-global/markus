@@ -995,10 +995,27 @@ async function startServerCore(
   startupSection('Markus 启动');
   startupLog('INFO', `日志文件: ${logPath}`);
 
+  // ── Startup phase timing (DIAGNOSTICS ONLY — no behaviour change) ───────────
+  // Observed 2026-11-28: one launch took 20.7s to reach "API listening" while
+  // the other two took 1.7s and 2.7s. That outlier happens when upgrading from a
+  // much older install, i.e. somewhere between "正在启动服务" and the listen
+  // line — but the log only carried the total, so the slow phase was unknowable
+  // and any "fix" would have been a guess. These marks are written to the same
+  // startup log the desktop splash launch produces, so a single slow boot is
+  // enough to attribute the time.
+  const timingStartedAt = Date.now();
+  let timingLastMark = timingStartedAt;
+  const markPhase = (name: string): void => {
+    const now = Date.now();
+    startupLog('INFO', `[timing] ${name} +${now - timingLastMark}ms (since boot ${now - timingStartedAt}ms)`);
+    timingLastMark = now;
+  };
+
   // ── Step 1: Config ─────────────────────────────────────────────────────────
   progress?.setActive(1);
   progress?.complete(1, `config loaded from ~/.markus/markus.json`);
   onProgress?.('config', 'config loaded');
+  markPhase('config loaded');
 
   // LLM preflight check: warn if no VALID LLM API key is configured
   // "***" or other placeholder patterns are NOT valid keys
@@ -1136,6 +1153,7 @@ async function startServerCore(
     auditService,
     bootstrapOwnerId,
   } = await createServices(config);
+  markPhase('services created (storage open + migrations + db self-heal)');
   progress?.complete(3, 'SQLite storage initialised');
   progress?.complete(4, `services ready: agent manager, task service, api server on :${apiPort}`);
   onProgress?.('services', `services ready on :${apiPort}`);
@@ -2107,6 +2125,10 @@ async function startServerCore(
   await llmRouter.ensureMarkusCatalogLoaded?.({ timeoutMs: 8000 });
 
   await apiServer.start();
+  // Closing mark for the span the 20.7s outlier was measured over: from
+  // "正在启动服务" to "API listening". Without it a slow `apiServer.start()` would
+  // be attributed to nothing. Diagnostics only.
+  markPhase('api listening');
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
   deliverableService.setWSBroadcaster(apiServer.getWSBroadcaster());
@@ -2921,7 +2943,16 @@ async function startServerCore(
   // (G2, design §4.2). The legacy integrations path below is the fallback for a
   // platform that has no instance row yet.
   const persistedInstances = storage?.platformInstanceRepo?.listByOrg('default') ?? [];
-  const platformResults = await connectConfiguredPlatforms({
+  // Adapter handshake runs OFF the boot path.
+  //
+  // Measured 2026-11-28 (startup-2026-11-28.log, three launches): the API listens
+  // after 1.7–2.7s, then the Feishu/Telegram handshake adds a steady ~10.6–11.1s —
+  // and the desktop splash waited for it, because this await sat between
+  // startBackend() and the first loadURL(). Nothing about opening the UI needs a
+  // live adapter: the user cannot send a message before the window exists, and
+  // the routing that would deliver one is installed synchronously right below,
+  // before the handshake even starts.
+  const platformConnect = connectConfiguredPlatforms({
     router: messageRouter,
     manifests: PLATFORM_MANIFESTS,
     config,
@@ -2932,13 +2963,6 @@ async function startServerCore(
       return readStoredPlatformConfig({ orgId: 'default', repo: integrationRepo }, manifest);
     },
   });
-  for (const result of platformResults) {
-    if (result.connected) {
-      startupLog('OK', `${result.label} 适配器已连接`);
-    } else {
-      startupLog('WARN', `${result.label} 适配器连接失败，跳过${result.error ? `: ${result.error}` : ''}`);
-    }
-  }
   // Bind each platform to its configured agent before the first inbound message
   // can arrive — the same window the adapters just came up in (defect A).
   applyPersistedPlatformBindings({
@@ -2983,6 +3007,31 @@ async function startServerCore(
       }),
     );
   }
+
+  // Adapter results are reported when they settle — same log lines as before,
+  // just at a later moment, so startup never waits on a remote handshake.
+  void platformConnect
+    .then((platformResults) => {
+      for (const result of platformResults) {
+        if (result.connected) {
+          startupLog('OK', `${result.label} 适配器已连接`);
+        } else {
+          startupLog('WARN', `${result.label} 适配器连接失败，跳过${result.error ? `: ${result.error}` : ''}`);
+        }
+      }
+      const connectedLabels = platformResults.filter((r) => r.connected).map((r) => r.label);
+      const failedLabels = platformResults.filter((r) => !r.connected).map((r) => r.label);
+      const gatewayDetail = connectedLabels.length > 0
+        ? `webhook adapters: ${connectedLabels.join(' + ')}`
+        : 'webhook adapters: none';
+      progress?.complete(5, failedLabels.length > 0
+        ? `${gatewayDetail} (${failedLabels.join(', ')} failed)`
+        : gatewayDetail);
+    })
+    .catch((err) => {
+      startupLog('WARN', `平台适配器初始化失败，跳过: ${String(err)}`);
+      progress?.complete(5, 'webhook adapters: none (initialization failed)');
+    });
 
   // ── Connection verification (Settings → Integrations "Save & test") ───────
   // The registry owns the *state* of a pending handshake; the router owns *when*
@@ -3048,11 +3097,6 @@ async function startServerCore(
     },
   });
 
-  const connectedLabels = platformResults.filter((r) => r.connected).map((r) => r.label);
-  const failedLabels = platformResults.filter((r) => !r.connected).map((r) => r.label);
-  const gatewayDetail =
-    connectedLabels.length > 0 ? `webhook adapters: ${connectedLabels.join(' + ')}` : 'webhook adapters: none';
-  progress?.complete(5, failedLabels.length > 0 ? `${gatewayDetail} (${failedLabels.join(', ')} failed)` : gatewayDetail);
 
   // ── Outbound dispatch: notification/approval routing (G4, design §7) ───────
   // Every approval/notification goes through one dispatcher, resolved

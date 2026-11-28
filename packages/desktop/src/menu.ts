@@ -1,10 +1,17 @@
 import { app, Menu, shell, BrowserWindow } from 'electron';
 import { checkForUpdatesNow } from './updater.js';
+import { getUiLocale } from './ui-locale.js';
 
 const IS_MAS = process.env['MARKUS_MAS'] === 'true';
 const isMac = process.platform === 'darwin';
 
-const i18n: Record<string, Record<string, string>> = {
+/**
+ * Every label the native menu can render, per locale.
+ *
+ * Exported so a test can assert key parity: a locale that misses one key would
+ * otherwise render an empty menu item with no error anywhere.
+ */
+export const i18n: Record<string, Record<string, string>> = {
   zh: {
     file: '文件',
     edit: '编辑',
@@ -83,11 +90,52 @@ const i18n: Record<string, Record<string, string>> = {
     zoom: 'Zoom',
     front: 'Bring All to Front',
   },
+  es: {
+    file: 'Archivo',
+    edit: 'Editar',
+    view: 'Ver',
+    window: 'Ventana',
+    help: 'Ayuda',
+    openInBrowser: 'Abrir en el navegador',
+    settings: 'Ajustes',
+    documentation: 'Documentación',
+    reportIssue: 'Informar de un problema',
+    accountBilling: 'Cuenta y facturación',
+    checkForUpdates: 'Buscar actualizaciones…',
+    upgradeToFull: 'Actualizar a la versión completa',
+    about: 'Acerca de Markus',
+    services: 'Servicios',
+    hide: 'Ocultar',
+    hideOthers: 'Ocultar otros',
+    unhide: 'Mostrar todo',
+    quit: 'Salir',
+    close: 'Cerrar ventana',
+    closeTab: 'Cerrar pestaña',
+    newTab: 'Nueva pestaña',
+    undo: 'Deshacer',
+    redo: 'Rehacer',
+    cut: 'Cortar',
+    copy: 'Copiar',
+    paste: 'Pegar',
+    selectAll: 'Seleccionar todo',
+    reload: 'Recargar',
+    forceReload: 'Forzar recarga',
+    devTools: 'Herramientas de desarrollo',
+    resetZoom: 'Tamaño real',
+    zoomIn: 'Ampliar',
+    zoomOut: 'Reducir',
+    fullscreen: 'Pantalla completa',
+    minimize: 'Minimizar',
+    zoom: 'Zoom',
+    front: 'Traer todo al frente',
+  },
 };
 
 function getLocale(): string {
-  const locale = app.getLocale();
-  return locale.startsWith('zh') ? 'zh' : 'en';
+  // Same resolver as the splash, notifications and the app (shared/locale.ts).
+  // The table below ships all three languages, so this can pass the locale
+  // straight through instead of collapsing everything to en/zh.
+  return getUiLocale() === 'zh-CN' ? 'zh' : getUiLocale();
 }
 
 function sendRendererShortcut(type: 'close-tab' | 'new-tab'): void {
